@@ -28,3 +28,5 @@ def not_found(code: str, message: str) -> DomainException:
 
 def conflict(code: str, message: str) -> DomainException:
     return DomainException(status.HTTP_409_CONFLICT, code, message)
+
+##
