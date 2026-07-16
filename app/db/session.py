@@ -1,4 +1,5 @@
 
+
 from collections.abc import AsyncGenerator
 
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
@@ -25,6 +26,7 @@ async def init_db() -> None:
     """로컬 개발용: 테이블이 없으면 생성한다. 운영에서는 Alembic 등 마이그레이션 도구 사용을 권장."""
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
+
 
 from collections.abc import Generator
 
@@ -54,4 +56,4 @@ def get_db() -> Generator[Session, None, None]:
 def init_db() -> None:
     from app.models import requirement, task  # noqa: F401
     Base.metadata.create_all(bind=engine)
-
+<
