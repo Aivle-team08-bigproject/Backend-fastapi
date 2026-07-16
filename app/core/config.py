@@ -1,4 +1,5 @@
 
+
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -50,6 +51,7 @@ class Settings(BaseSettings):
     bootstrap_admin_password: str
     bootstrap_admin_name: str = "최초 관리자"
     bootstrap_admin_department: str = "IT관리팀"
+
 
 from dataclasses import dataclass
 import os
