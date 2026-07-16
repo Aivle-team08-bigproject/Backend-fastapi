@@ -2,7 +2,7 @@ from fastapi import APIRouter, Depends, Response, status
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from app.db.session import get_db
+from app.db.legacy_session import get_db
 from app.models.task import TaskStatusHistory
 from app.schemas.task import TaskRead, TaskStatusChange, TaskStatusHistoryRead, TaskUpdate
 from app.services import task_service

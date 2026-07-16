@@ -1,5 +1,3 @@
-
-
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -19,6 +17,9 @@ class Settings(BaseSettings):
 
     # --- DB ---
     database_url: str = "sqlite+aiosqlite:///./datamarket.db"
+
+    # requirements/tasks 도메인 전용 DB (동기 엔진, app/db/legacy_session.py에서 사용)
+    requirements_database_url: str = "sqlite:///./requirements.db"
 
     # --- JWT (Access Token) ---
     jwt_issuer: str = "portfolio-data-market"
@@ -51,18 +52,6 @@ class Settings(BaseSettings):
     bootstrap_admin_password: str
     bootstrap_admin_name: str = "최초 관리자"
     bootstrap_admin_department: str = "IT관리팀"
-
-
-from dataclasses import dataclass
-import os
-
- 
-@dataclass(frozen=True)
-class Settings:
-    app_name: str = "Requirements Task Management API"
-    api_prefix: str = os.getenv("API_PREFIX", "/api/v1")
-    database_url: str = os.getenv("DATABASE_URL", "sqlite:///./requirements.db")
-
 
 
 settings = Settings()
