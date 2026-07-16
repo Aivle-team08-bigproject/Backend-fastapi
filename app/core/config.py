@@ -56,7 +56,7 @@ class Settings(BaseSettings):
 from dataclasses import dataclass
 import os
 
-
+ 
 @dataclass(frozen=True)
 class Settings:
     app_name: str = "Requirements Task Management API"
