@@ -2,7 +2,7 @@ from fastapi import APIRouter, Depends, Query, Response, status
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from app.db.session import get_db
+from app.db.legacy_session import get_db
 from app.models.enums import RequirementStatus
 # 요구사항 가져오기
 from app.models.requirement import RequirementStatusHistory
