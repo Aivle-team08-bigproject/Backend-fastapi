@@ -4,17 +4,22 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 
+from app.api.router import api_router
+
+
 from app.common.session_activity_middleware import SessionActivityMiddleware
 from app.api.router import api_router
 from app.core.bootstrap import ensure_bootstrap_admin
 
 from app.api.router import api_router
 
+
 from app.core.config import settings
 from app.db.session import init_db
 
 
 @asynccontextmanager
+
 
 async def lifespan(app: FastAPI):
     await init_db()  # 로컬 개발용 테이블 자동 생성 (운영은 Alembic 등 마이그레이션 권장)
@@ -39,6 +44,7 @@ app.include_router(api_router)
 
 @app.get("/health")
 async def health() -> dict[str, str]:
+
 
 async def lifespan(_: FastAPI):
     init_db()
