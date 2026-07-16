@@ -1,0 +1,20 @@
+.venv/
+venv/
+__pycache__/
+*.pyc
+*.pyo
+*.egg-info/
+
+# 로컬/테스트에서 생기는 SQLite DB 파일
+*.db
+*.db-journal
+
+.pytest_cache/
+.coverage
+htmlcov/
+
+# 비밀값이 들어있는 로컬 환경설정
+.env
+.env.example.auth-addition
+.vscode/
+.idea/
