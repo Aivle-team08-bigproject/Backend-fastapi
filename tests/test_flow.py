@@ -8,7 +8,7 @@ os.environ["DATABASE_URL"] = f"sqlite:///{TEST_DB}"
 
 from fastapi.testclient import TestClient  # noqa: E402
 from app.main import app  # noqa: E402
-
+# 확인
 
 def test_full_requirement_and_task_flow():
     with TestClient(app) as client:
