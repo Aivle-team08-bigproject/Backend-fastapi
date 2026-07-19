@@ -5,10 +5,6 @@ __pycache__/
 *.pyo
 *.egg-info/
 
-# 로컬/테스트에서 생기는 SQLite DB 파일
-*.db
-*.db-journal
-
 .pytest_cache/
 .coverage
 htmlcov/
