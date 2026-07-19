@@ -1,12 +1,7 @@
-import os
-os.environ.setdefault(
-    "REQUIREMENTS_DATABASE_URL",
-    "postgresql+psycopg://appuser:change_me_strong_password@127.0.0.1:5432/appdb",
-)
+# DB 설정과 테이블 정리는 conftest.py(REQUIREMENTS_DATABASE_URL + _clean_test_database)가 담당한다.
+from fastapi.testclient import TestClient
+from app.main import app
 
-from fastapi.testclient import TestClient  # noqa: E402
-from app.main import app  # noqa: E402
-# 확인
 
 def test_full_requirement_and_task_flow():
     with TestClient(app) as client:
