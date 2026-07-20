@@ -53,5 +53,12 @@ class Settings(BaseSettings):
     bootstrap_admin_name: str = "최초 관리자"
     bootstrap_admin_department: str = "IT관리팀"
 
+    # --- 자동화 파이프라인: 요구사항 분석 에이전트 (Strands SDK) ---
+    # 지금은 DeepSeek(저가형)으로 진행하고, 나중에 API를 바꿀 예정 — 그때는 이 값들과
+    # app/domains/automation/agents/model_provider.py만 바꾸면 된다.
+    requirements_analysis_model_provider: str = "deepseek"
+    requirements_analysis_model_id: str = "deepseek-v4-flash"
+    deepseek_api_key: str = ""
+    deepseek_base_url: str = "https://api.deepseek.com"
 
 settings = Settings()

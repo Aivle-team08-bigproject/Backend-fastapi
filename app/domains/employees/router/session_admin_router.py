@@ -28,7 +28,7 @@ def _to_response(session: LoginSession) -> SessionResponse:
         revoke_reason=session.revoke_reason,
     )
 
-
+#직원 세션 조회 및 강제 로그아웃 관련 API
 @router.get("/employees/{employee_code}/sessions", response_model=list[SessionResponse])
 async def list_sessions(
     employee_code: str,
