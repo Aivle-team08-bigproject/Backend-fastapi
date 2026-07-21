@@ -1,120 +1,172 @@
-# 요구사항·작업 관리 API (FastAPI)
+# Backend-fastapi
 
-요구사항을 기준으로 다음 기능을 구현한 Python/FastAPI 백엔드입니다.
+이 레포는 하나 데이터 마켓 백엔드 저장소다. 현재 브랜치의 중심 구현은 기존 인증·요구사항 API와 별도로, 멀티 에이전트 파이프라인의 백엔드 오케스트레이션 예제인 `automation-supervisor-api/`에 있다.
 
-- 요구사항 CRUD
-- 요구사항 상태 변경 및 상태 이력 관리
-- 요구사항별 작업 CRUD
-- 작업 담당자, 우선순위, 시작일·마감일 관리
-- 작업 상태 변경 및 상태 이력 관리
-- 요구사항 진행률 자동 계산
-- 검색·필터·페이징
-- PostgreSQL 기반 실행 (docker-compose로 DB 구동)
-- Swagger UI 제공
+## 현재 구현 범위
 
-## 상태
+현재 브랜치에서 실제로 구현돼 있는 핵심은 `automation-supervisor-api/`다. 이 모듈은 프로젝트의 5단계 파이프라인 중 아래 흐름을 FastAPI Supervisor 형태로 실행한다.
 
-### 요구사항
-- `DRAFT`: 초안
-- `REVIEW`: 검토 중
-- `APPROVED`: 승인
-- `IN_PROGRESS`: 진행 중
-- `COMPLETED`: 완료
-- `REJECTED`: 반려
-- `CANCELLED`: 취소
+- `REQUIREMENT_ANALYSIS`
+- `DATA_SELECTION`
+- `DATA_PROCESSING`
+- `HITL_REVIEW`
 
-### 작업
-- `TODO`: 할 일
-- `IN_PROGRESS`: 진행 중
-- `BLOCKED`: 차단
-- `DONE`: 완료
-- `CANCELLED`: 취소
+즉, 지금 기준 구현 내용은 "3개 에이전트 실행 + 산출물 검증 + 캐시 + 사람 승인(HITL) + 고정 롤백 정책"이다.
 
-## 실행
+## 빠른 실행
 
-### 1. PostgreSQL (docker-compose)
-
-deployment-host 호스트에 Docker/Docker Compose가 설치되어 있다고 가정한다. `.env`의
-`POSTGRES_*` 값으로 컨테이너가 초기화되며, `employees/auth/session` 도메인용 DB
-(`POSTGRES_DB`, 기본 `datamarket`)와 `requirements/tasks` 도메인용 DB
-(`REQUIREMENTS_DB_NAME`, 기본 `requirements`)가 컨테이너 최초 기동 시 함께 생성된다
-(`docker/postgres/init/01-create-additional-db.sh`).
+작업 디렉터리:
 
 ```bash
-docker compose up -d db
-docker compose ps          # healthy 확인
+cd /Users/joupark/bigproject/Backend-fastapi/automation-supervisor-api
 ```
 
-- PostgreSQL은 호스트의 `localhost:5432` (기본값, `POSTGRES_PORT`로 변경 가능)로 노출된다.
-- 데이터는 named volume `postgres_data`에 영구 보존된다.
-- 운영 배포 전 `.env`의 `POSTGRES_PASSWORD`/`JWT_SECRET`/`BOOTSTRAP_ADMIN_PASSWORD`는
-  반드시 새 값으로 교체할 것.
-
-### 2. 백엔드
-
-백엔드는 컨테이너가 아니라 deployment-host 호스트에서 직접 실행하며, `localhost:8000`으로 붙는다.
-DB는 위에서 띄운 PostgreSQL(`localhost:5432`)을 `.env`의 `DATABASE_URL` /
-`REQUIREMENTS_DATABASE_URL`로 사용한다. 앱 기동 시(`app/main.py`의 lifespan)
-두 DB 모두 `create_all()`로 테이블이 자동 생성된다 (운영에서는 Alembic 등 마이그레이션 권장).
+환경 준비:
 
 ```bash
 python -m venv .venv
-
-# Windows
-.venv\Scripts\activate
-
-# macOS/Linux
 source .venv/bin/activate
-
 pip install -r requirements.txt
-uvicorn app.main:app --host 0.0.0.0 --port 8000
+cp .env.example .env
 ```
 
-기존 `Dockerfile`(gunicorn, 8000 포트)로 컨테이너 실행도 가능하다. 이 경우
-`DATABASE_URL`/`REQUIREMENTS_DATABASE_URL`의 호스트를 `localhost` 대신
-`host.docker.internal`(또는 deployment-host에서 docker gateway IP)로 바꿔야 컨테이너 안에서
-호스트에 노출된 PostgreSQL에 접속할 수 있다.
-
-- Swagger UI: http://127.0.0.1:8000/docs
-- Health Check: http://127.0.0.1:8000/health
-
-## 테스트
+서버 실행:
 
 ```bash
-pytest
+uvicorn app.main:app --host 127.0.0.1 --port 8000 --reload
 ```
 
-## 주요 API
+확인 주소:
 
-| 기능 | Method | URL |
-|---|---|---|
-| 요구사항 생성 | POST | `/api/v1/requirements` |
-| 요구사항 목록 | GET | `/api/v1/requirements` |
-| 요구사항 상세 | GET | `/api/v1/requirements/{id}` |
-| 요구사항 수정 | PATCH | `/api/v1/requirements/{id}` |
-| 요구사항 삭제 | DELETE | `/api/v1/requirements/{id}` |
-| 요구사항 상태 변경 | PATCH | `/api/v1/requirements/{id}/status` |
-| 요구사항 상태 이력 | GET | `/api/v1/requirements/{id}/status-history` |
-| 작업 생성 | POST | `/api/v1/requirements/{id}/tasks` |
-| 작업 목록 | GET | `/api/v1/requirements/{id}/tasks` |
-| 작업 상세 | GET | `/api/v1/tasks/{task_id}` |
-| 작업 수정 | PATCH | `/api/v1/tasks/{task_id}` |
-| 작업 삭제 | DELETE | `/api/v1/tasks/{task_id}` |
-| 작업 상태 변경 | PATCH | `/api/v1/tasks/{task_id}/status` |
-| 작업 상태 이력 | GET | `/api/v1/tasks/{task_id}/status-history` |
+- Swagger UI: [http://127.0.0.1:8000/docs](http://127.0.0.1:8000/docs)
+- Health: [http://127.0.0.1:8000/health](http://127.0.0.1:8000/health)
 
-## 인증 모듈과 병합할 때
+주요 환경값:
 
-현재 코드는 독립 실행 가능한 형태입니다. 기존 인증·권한 모듈에 병합할 경우 각 라우터의
-`actor` 문자열을 로그인 사용자 정보로 교체하고, 라우터 의존성에 권한 검사를 추가하면 됩니다.
+- `DATABASE_URL`
+- `MAX_QA_ITERATIONS`
+- `REQUIREMENT_ANALYSIS_MODEL`
+- `DATA_SELECTION_MODEL`
+- `DATA_PROCESSING_MODEL`
+
+## 테스트 방법
+
+현재 구현 기준 검증 방법은 아래 두 가지다.
+
+### 1. Dry-run
+
+DB 없이 `stub agent`로 전체 흐름과 롤백 정책을 확인한다.
+
+```bash
+cd /Users/joupark/bigproject/Backend-fastapi/automation-supervisor-api
+python scripts/dry_run_supervisor.py
+```
 
 예시:
 
-```python
-@router.post(
-    "",
-    dependencies=[Depends(require_permission(PermissionCode.REQUIREMENT_WRITE))]
-)
+```bash
+python scripts/dry_run_supervisor.py --sample travel
+python scripts/dry_run_supervisor.py --sample cafe
+python scripts/dry_run_supervisor.py --requirement "30대 남성의 헬스 업종 월별 결제 변화를 차트와 CSV로 제공해줘."
+python scripts/dry_run_supervisor.py --sample travel --csv /absolute/path/to/selected.csv
+python scripts/dry_run_supervisor.py --sample subscription --feedback "가공 컬럼과 보고서 형식이 맞지 않습니다."
 ```
 
-`created_by`, `updated_by`, 상태 변경 이력의 `changed_by`에는 현재 로그인 사용자 ID를 넣도록 연결하면 됩니다.
+### 2. API 수동 검증
+
+서버를 띄운 뒤 아래 순서로 호출한다.
+
+1. `POST /api/v1/supervisor/jobs`
+2. `POST /api/v1/supervisor/jobs/{job_id}/run`
+3. `POST /api/v1/supervisor/jobs/{job_id}/hitl-review`
+4. `GET /api/v1/supervisor/jobs/{job_id}`
+
+요청 예시는 `automation-supervisor-api/examples.http`를 보면 된다.
+
+## 프로젝트 목표
+
+루트 문서 기준 전체 목표는 아래 5단계 자동화 파이프라인이다.
+
+1. 요구사항 분석
+2. 데이터 선별
+3. 데이터 가공
+4. 시각화 및 보고서 2차 가공
+5. 최종 산출물 QA
+
+관련 문서:
+
+- [프로세스_개요.md](/Users/joupark/bigproject/프로세스_개요.md)
+- [aws_workflow_architecture.md](/Users/joupark/bigproject/aws_workflow_architecture.md)
+
+## 디렉터리
+
+```text
+Backend-fastapi/
+├── automation-supervisor-api/   # 현재 브랜치의 핵심 구현
+├── agent_runtime/               # 독립 배포를 염두에 둔 에이전트 런타임 모듈
+├── app/                         # 기존 인증/세션/요구사항 API
+├── tests/                       # 기존 API 테스트
+└── docker-compose.yml           # 루트 PostgreSQL 실행용
+```
+
+## 에이전트 구현 현황
+
+### 1. Supervisor API
+
+`automation-supervisor-api/app/application/supervisor_service.py`가 전체 흐름을 제어한다.
+
+- 작업 생성
+- 단계별 실행
+- 산출물 검증
+- 동일 입력 재실행 시 캐시 재사용
+- HITL 승인/반려 처리
+- 반려 시 `failure_code -> rollback_stage` 고정 정책 적용
+
+상태 흐름은 대략 아래와 같다.
+
+```text
+QUEUED
+-> RUNNING
+-> REQUIREMENT_ANALYSIS
+-> DATA_SELECTION
+-> DATA_PROCESSING
+-> WAITING_HITL
+-> COMPLETED | WAITING_RETRY | FAILED
+```
+
+### 2. 현재 연결된 에이전트
+
+`automation-supervisor-api` 기준으로 아래 3개 agent 이름을 사용한다.
+
+- `requirement-analysis-agent`
+- `data-selection-agent`
+- `data-processing-agent`
+
+모델명은 `.env`에서 단계별로 분리한다.
+
+```text
+REQUIREMENT_ANALYSIS_MODEL=sonnet-4.6
+DATA_SELECTION_MODEL=aws-nova
+DATA_PROCESSING_MODEL=chatgpt-5.5
+```
+
+로컬에서 Strands 환경이 준비되지 않았으면 `stub agent`로 fallback 되도록 구성돼 있다. 그래서 API 구조와 상태 전이는 실제로 먼저 검증할 수 있다.
+
+### 3. 독립 런타임 모듈
+
+`agent_runtime/`은 나중에 AgentCore 또는 Lambda로 분리 배포할 것을 전제로 둔 실험/준비 코드다.
+
+현재 확인되는 구현:
+
+- `agent_runtime/requirements_analysis/agent.py`
+  요구사항 자연어를 구조화된 JSON으로 변환하는 독립 실행형 Strands 에이전트
+
+이 모듈은 FastAPI 앱에 직접 의존하지 않도록 분리돼 있다.
+
+## 미구현 항목
+
+시각화 및 보고서 2차 가공, 최종 QA 자동화, 운영 데이터 소스 및 외부 오케스트레이션 연동은 아직 구현되지 않았다.
+
+## 기존 루트 API
+
+루트 `app/`은 기존 인증, 세션, 관리자, 요구사항/작업 관리 API를 담고 있다. 이쪽은 현재 브랜치의 핵심 에이전트 구현 대상은 아니지만, 기존 서비스 백엔드로 계속 남아 있다. 관련 내용은 [AUTH_MODULE.md](/Users/joupark/bigproject/Backend-fastapi/AUTH_MODULE.md)를 참고하면 된다.
