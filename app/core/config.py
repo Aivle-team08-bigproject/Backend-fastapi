@@ -53,12 +53,8 @@ class Settings(BaseSettings):
     bootstrap_admin_name: str = "최초 관리자"
     bootstrap_admin_department: str = "IT관리팀"
 
-    # --- 자동화 파이프라인: 요구사항 분석 에이전트 (Strands SDK) ---
-    # 지금은 DeepSeek(저가형)으로 진행하고, 나중에 API를 바꿀 예정 — 그때는 이 값들과
-    # app/domains/automation/agents/model_provider.py만 바꾸면 된다.
-    requirements_analysis_model_provider: str = "deepseek"
-    requirements_analysis_model_id: str = "deepseek-v4-flash"
-    deepseek_api_key: str = ""
-    deepseek_base_url: str = "https://api.deepseek.com"
+    # 자동화 파이프라인 에이전트(요구사항 분석 등)의 모델/API 설정은 여기 없다 —
+    # agent_runtime/ 아래 각 에이전트가 자체 설정을 갖는다. FastAPI 앱은 에이전트를
+    # "호출"만 하고 그 내부 설정(API 키 등)을 알 필요가 없어야 한다는 원칙 때문.
 
 settings = Settings()
