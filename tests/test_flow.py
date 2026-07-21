@@ -1,10 +1,8 @@
 import os
-from pathlib import Path
-
-TEST_DB = Path("test_requirements.db")
-if TEST_DB.exists():
-    TEST_DB.unlink()
-os.environ["DATABASE_URL"] = f"sqlite:///{TEST_DB}"
+os.environ.setdefault(
+    "REQUIREMENTS_DATABASE_URL",
+    "postgresql+psycopg://appuser:change_me_strong_password@127.0.0.1:5432/appdb",
+)
 
 from fastapi.testclient import TestClient  # noqa: E402
 from app.main import app  # noqa: E402
