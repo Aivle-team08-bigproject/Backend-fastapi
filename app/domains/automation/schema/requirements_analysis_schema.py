@@ -9,10 +9,12 @@ class AnalyzeRequirementRequest(BaseModel):
     raw_request: str = Field(min_length=1, max_length=8000)
 
 
-class StagePrompts(BaseModel):
-    data_selection_prompt: str
-    data_processing_prompt: str
-    qa_prompt: str
+class AnalysisResult(BaseModel):
+    usage_purpose: str
+    requested_data_summary: str
+    requested_data_categories: dict[str, str]
+    delivery_channel: str
+    output_format: list[str]
 
 
 class AnalyzeRequirementResponse(BaseModel):
@@ -24,7 +26,6 @@ class AnalyzeRequirementResponse(BaseModel):
     status: AnalysisStatus
     model_provider: str
     model_id: str
-    summary: str | None
-    stage_prompts: StagePrompts | None
+    analysis_result: AnalysisResult | None
     error_message: str | None
     created_at: datetime
