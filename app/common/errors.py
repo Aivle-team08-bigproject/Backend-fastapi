@@ -29,4 +29,6 @@ def not_found(code: str, message: str) -> DomainException:
 def conflict(code: str, message: str) -> DomainException:
     return DomainException(status.HTTP_409_CONFLICT, code, message)
 
-##
+
+def bad_gateway(code: str, message: str) -> DomainException:
+    return DomainException(status.HTTP_502_BAD_GATEWAY, code, message)
