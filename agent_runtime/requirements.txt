@@ -1,0 +1,5 @@
+# agent_runtime/은 FastAPI 앱과 별개로(나중엔 AgentCore/Lambda 컨테이너로) 배포될 독립 모듈이라
+# 자체 의존성 목록을 따로 둔다. 지금은 같은 프로세스에서 함께 실행되므로 루트 requirements.txt에도
+# 동일하게 포함되어 있다.
+strands-agents[openai]==1.48.0
+pydantic-settings==2.5.2

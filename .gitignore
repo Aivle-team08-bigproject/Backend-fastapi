@@ -13,3 +13,7 @@ htmlcov/
 .env.example.auth-addition
 .vscode/
 .idea/
+.env
+
+# OS가 자동 생성하는 파일
+.DS_Store
