@@ -1,8 +1,8 @@
 """requirements/tasks 도메인 전용 동기 SQLAlchemy 세션.
 
-employee/auth/session 도메인은 app/db/session.py의 비동기 엔진을 쓰고,
-requirements/tasks 도메인은 별도 동기 엔진 + 별도 Base(메타데이터)를 쓴다.
-두 도메인은 서로 다른 DB 파일/모델 집합이므로 엔진을 공유하지 않는다.
+employee/auth/session 도메인은 app/db/session.py의 비동기 엔진(asyncpg)을 쓰고,
+requirements/tasks 도메인은 별도 동기 엔진(psycopg2) + 별도 Base(메타데이터)를 쓴다.
+두 도메인은 서로 다른 데이터베이스/모델 집합이므로 엔진을 공유하지 않는다.
 """
 
 from collections.abc import Generator

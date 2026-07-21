@@ -31,7 +31,7 @@ def _clean_test_database():
 
 @pytest.fixture()
 def client():
-    """세션 전체가 이 fixture를 쓰는 테스트들 사이에 DB를 공유한다 (한 프로세스 = 한 SQLite 파일).
+    """테스트들이 하나의 Postgres 테스트 DB를 공유한다.
     테스트마다 독립적인 상태가 필요하면 employee_code를 유니크하게 만들어서 격리하는 걸 권장.
     """
     from fastapi.testclient import TestClient
