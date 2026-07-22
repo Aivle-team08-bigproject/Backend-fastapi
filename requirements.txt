@@ -1,0 +1,16 @@
+fastapi==0.116.1
+uvicorn[standard]==0.35.0
+gunicorn==23.0.0
+sqlalchemy[asyncio]==2.0.41
+psycopg[binary]==3.2.9
+pydantic==2.11.7
+pydantic-settings==2.5.2
+bcrypt==4.2.1
+PyJWT==2.10.1  # strands-agents -> mcp가 PyJWT>=2.10.1 요구
+
+# --- 자동화 파이프라인 (Strands Agents SDK) ---
+strands-agents[openai]==1.48.0
+
+# --- 테스트 전용 ---
+pytest==8.4.1
+httpx==0.28.1
