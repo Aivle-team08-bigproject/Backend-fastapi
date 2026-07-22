@@ -4,4 +4,4 @@ sqlalchemy==2.0.41
 psycopg[binary]==3.2.9
 pydantic==2.11.7
 pydantic-settings==2.5.2
-strands-agents==1.9.0
+strands-agents[openai]==1.48.0
