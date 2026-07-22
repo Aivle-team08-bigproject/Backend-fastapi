@@ -26,6 +26,8 @@ class StrandsAgentClient(AgentClient):
             return await self._run_requirement_analysis(payload)
         if agent_name == "data-selection-agent":
             return await self._run_data_selection(payload)
+        if agent_name == "data-processing-agent":
+            return await self._run_data_processing(payload)
 
         agent = build_strands_agent(agent_name, model_name)
         if agent is None:
@@ -95,4 +97,20 @@ class StrandsAgentClient(AgentClient):
         if not result["ok"]:
             return {"_agent_error": result["error_message"] or "data selection agent failed"}
 
+        return result["data"]
+
+    async def _run_data_processing(self, payload: dict) -> dict:
+        """Call the deterministic data-processing Strands tool.
+
+        The query layer must attach actual rows to ``selected_rows`` (or
+        ``selection.selected_rows``) before this stage runs.
+        """
+        from agent_runtime.data_processing.agent import run as run_data_processing
+
+        result = await asyncio.to_thread(run_data_processing, payload)
+        if not result["ok"]:
+            return {
+                "_agent_error": result["error_message"] or "data processing agent failed",
+                "_failure_code": result.get("failure_code", "PROCESSING_RULE_INVALID"),
+            }
         return result["data"]
