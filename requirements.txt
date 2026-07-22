@@ -3,6 +3,7 @@ uvicorn[standard]==0.35.0
 gunicorn==23.0.0
 sqlalchemy==2.0.41
 psycopg[binary]==3.2.9
+asyncpg==0.31.0  # 로컬 env의 postgresql+asyncpg DATABASE_URL 지원
 pydantic==2.11.7
 pydantic-settings==2.5.2
 bcrypt==4.2.1
@@ -10,6 +11,10 @@ PyJWT==2.10.1  # strands-agents -> mcp가 PyJWT>=2.10.1 요구
 
 # --- 자동화 파이프라인 (Strands Agents SDK) ---
 strands-agents[openai]==1.48.0
+
+# --- 로컬 비동기 에이전트 실행 ---
+celery[redis]==5.5.3
+redis==5.2.1
 
 # --- 테스트 전용 ---
 pytest==8.4.1
