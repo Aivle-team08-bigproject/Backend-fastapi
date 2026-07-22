@@ -1,0 +1,52 @@
+### Health
+GET http://127.0.0.1:8000/health
+
+### 요구사항 생성
+POST http://127.0.0.1:8000/api/v1/requirements
+Content-Type: application/json
+
+{
+  "title": "데이터 상품 요구사항 관리",
+  "description": "관리자가 요구사항을 등록·조회·수정·삭제한다.",
+  "business_purpose": "업무 요청의 누락 방지",
+  "acceptance_criteria": "CRUD와 상태 이력 조회가 가능해야 한다.",
+  "requester": "기획팀",
+  "owner": "개발팀",
+  "priority": "HIGH",
+  "actor": "admin"
+}
+
+### 요구사항 목록
+GET http://127.0.0.1:8000/api/v1/requirements?page=1&size=20
+
+### 요구사항 상태 변경
+PATCH http://127.0.0.1:8000/api/v1/requirements/1/status
+Content-Type: application/json
+
+{
+  "status": "REVIEW",
+  "reason": "기획 검토 요청",
+  "actor": "admin"
+}
+
+### 작업 생성
+POST http://127.0.0.1:8000/api/v1/requirements/1/tasks
+Content-Type: application/json
+
+{
+  "title": "요구사항 목록 API 구현",
+  "description": "검색, 필터, 페이징 포함",
+  "assignee": "developer01",
+  "priority": "HIGH",
+  "actor": "admin"
+}
+
+### 작업 상태 변경
+PATCH http://127.0.0.1:8000/api/v1/tasks/1/status
+Content-Type: application/json
+
+{
+  "status": "IN_PROGRESS",
+  "reason": "개발 착수",
+  "actor": "developer01"
+}
