@@ -1,4 +1,9 @@
+from pathlib import Path
+
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
+
+REPO_ROOT_ENV = Path(__file__).resolve().parents[2] / ".env"
 
 
 class AgentSettings(BaseSettings):
@@ -11,7 +16,7 @@ class AgentSettings(BaseSettings):
     """
 
     model_config = SettingsConfigDict(
-        env_file=".env",
+        env_file=REPO_ROOT_ENV,
         env_file_encoding="utf-8",
         case_sensitive=False,
         extra="ignore",
