@@ -96,7 +96,7 @@ def _build_model() -> OpenAIModel:
 
 
 def build_agent() -> Agent:
-    return Agent(model=_build_model(), tools=[], system_prompt=SYSTEM_PROMPT)
+    return Agent(model=_build_model(), tools=[], system_prompt=SYSTEM_PROMPT, callback_handler=None)
 
 
 def _extract_json(raw_text: str) -> dict:
