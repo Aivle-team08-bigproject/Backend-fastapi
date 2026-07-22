@@ -22,7 +22,7 @@ Spring Boot로 먼저 만들었던 `hana-employee-auth-backend`를 ARCHITECTURE.
 - **`.env.example`**: `.env.example.auth-addition` 파일 내용을 기존 `.env.example`에
   이어붙이세요.
 - **`pyproject.toml`**: `dependencies`에 fastapi/sqlalchemy 등이 이미 있다면 버전만
-  맞추고, `pyjwt`/`bcrypt`/`aiosqlite`가 없다면 추가해주세요.
+  맞추고, `pyjwt`/`bcrypt`/`asyncpg`(비동기)·`psycopg2-binary`(동기)가 없다면 추가해주세요.
 
 나머지(`app/core/config.py`, `app/core/security.py`, `app/core/bootstrap.py`,
 `app/db/`, `app/common/`, `app/domains/auth/`, `app/domains/employees/`, 테스트 2개)는
