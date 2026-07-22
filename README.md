@@ -49,6 +49,41 @@ uvicorn app.main:app --host 127.0.0.1 --port 8000 --reload
 - `DATA_SELECTION_MODEL`
 - `DATA_PROCESSING_MODEL`
 
+## 로컬 비동기 실행 환경
+
+루트 FastAPI 앱은 짧은 HTTP 요청만 처리하고, 향후 파이프라인 단계는 Celery worker에서
+실행한다. 로컬에서는 Redis가 broker/result backend 역할을 하며, AWS 전환 시에는
+`AgentRunner` 계약을 유지한 채 Celery 실행 adapter를 AgentCore adapter로 교체한다.
+
+```bash
+cd /Users/joupark/bigproject/Backend-fastapi
+cp .env.example .env
+docker compose up --build
+```
+
+worker 연결 확인:
+
+```bash
+docker compose exec worker celery -A app.pipeline.celery_app:celery_app inspect ping
+```
+
+현재 `pipeline.health_check` task는 환경 smoke test다. 실제 `execute_stage` task와
+`pipeline_runs`/`stage_runs`/`pipeline_events` 저장은 설계 문서의 다음 구현 단계다.
+
+### 데모 요구사항·원천 데이터 적재
+
+`dummyData/`의 고객·카드·가맹점·MCC·거래 CSV와 `REQ-20260714-001`부터
+`REQ-20260714-005`까지의 데모 요청을 서비스 DB에 적재한다. 각 요청은 아직
+요구사항 분석 에이전트가 실행되지 않은 `WAITING_REQUIREMENT_REVIEW` 상태로 생성된다.
+
+```bash
+cd /Users/joupark/bigproject/Backend-fastapi
+python -m scripts.seed_demo_data
+```
+
+이미 등록된 `source_datasets.dataset_code` 또는 `data_requests.request_no`는 건너뛰므로
+명령을 다시 실행해도 중복 데이터가 생기지 않는다.
+
 ## 테스트 방법
 
 현재 구현 기준 검증 방법은 아래 두 가지다.

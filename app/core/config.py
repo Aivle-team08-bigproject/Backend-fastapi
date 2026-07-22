@@ -9,7 +9,9 @@ class Settings(BaseSettings):
     """
 
     model_config = SettingsConfigDict(
-        env_file=".env",
+        # 로컬 팀 환경에서 기존 `env` 파일과 표준 `.env` 파일을 모두 허용한다.
+        # dotenv parser를 거치므로 JSON 값(CORS_ALLOWED_ORIGINS)과 CRLF도 안전하게 처리된다.
+        env_file=("env", ".env"),
         env_file_encoding="utf-8",
         case_sensitive=False,
         extra="ignore",
@@ -20,6 +22,12 @@ class Settings(BaseSettings):
 
     # requirements/tasks 도메인 전용 DB (동기 엔진, app/db/legacy_session.py에서 사용)
     requirements_database_url: str = "postgresql+psycopg://appuser:change_me_strong_password@127.0.0.1:5432/appdb"
+
+    # --- 로컬 비동기 에이전트 실행 (Celery) ---
+    # AgentCore로 전환할 때에도 FastAPI의 실행/이벤트 계약은 유지하고 runner만 교체한다.
+    celery_broker_url: str = "redis://127.0.0.1:6379/0"
+    celery_result_backend: str = "redis://127.0.0.1:6379/1"
+    celery_task_always_eager: bool = False
 
     # --- JWT (Access Token) ---
     jwt_issuer: str = "portfolio-data-market"
@@ -45,7 +53,12 @@ class Settings(BaseSettings):
     cookie_domain: str | None = None
 
     # --- CORS ---
-    cors_allowed_origins: list[str] = ["http://localhost:5173", "http://localhost:3000"]
+    cors_allowed_origins: list[str] = [
+        "http://localhost:5173",
+        "http://127.0.0.1:5173",
+        "http://localhost:3000",
+        "http://127.0.0.1:3000",
+    ]
 
     # --- 최초 관리자 계정 부트스트랩 ---
     bootstrap_admin_id: str = "DEMO-ADMIN-001"
