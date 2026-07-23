@@ -10,7 +10,6 @@ __pycache__/
 htmlcov/
 
 # 비밀값이 들어있는 로컬 환경설정
-.env.example.auth-addition
 .vscode/
 .idea/
 .env
