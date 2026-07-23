@@ -120,6 +120,28 @@ def test_update_permissions_with_overlap_does_not_fail(client):
     assert set(updated.json()["permissions"]) == {"QUOTE_READ", "CONTRACT_MANAGE"}
 
 
+def test_update_role_applies_server_side_permission_profile(client):
+    headers = _login_as_admin(client)
+    client.post(
+        "/api/admin/employees",
+        headers=headers,
+        json={
+            "employee_code": "DEMO-ROLE-001",
+            "name": "역할 테스트",
+            "department": "데이터사업팀",
+            "permissions": ["DATA_PRODUCT_READ"],
+        },
+    )
+
+    updated = client.patch(
+        "/api/admin/employees/DEMO-ROLE-001/role",
+        headers=headers,
+        json={"role": "SENIOR"},
+    )
+    assert updated.status_code == 200, updated.text
+    assert set(updated.json()["permissions"]) == {"DATA_PRODUCT_READ", "DATA_PRODUCT_WRITE", "QUOTE_READ"}
+
+
 def test_self_lockout_protections(client):
     headers = _login_as_admin(client)
 

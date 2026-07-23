@@ -3,7 +3,7 @@ from datetime import datetime
 
 from pydantic import BaseModel, Field, field_validator
 
-from app.domains.employees.model.employee_model import EmployeeStatus, PermissionCode
+from app.domains.employees.model.employee_model import EmployeeRole, EmployeeStatus, PermissionCode
 
 _EMPLOYEE_CODE_PATTERN = re.compile(r"^[A-Z0-9-]{5,40}$")
 
@@ -24,6 +24,10 @@ class CreateEmployeeRequest(BaseModel):
 
 class UpdatePermissionsRequest(BaseModel):
     permissions: set[PermissionCode]
+
+
+class UpdateRoleRequest(BaseModel):
+    role: EmployeeRole
 
 
 class UpdateStatusRequest(BaseModel):

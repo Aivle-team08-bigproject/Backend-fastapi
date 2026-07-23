@@ -1,3 +1,5 @@
+from decimal import Decimal
+
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -28,6 +30,10 @@ class Settings(BaseSettings):
     celery_broker_url: str = "redis://127.0.0.1:6379/0"
     celery_result_backend: str = "redis://127.0.0.1:6379/1"
     celery_task_always_eager: bool = False
+
+    # --- 개발자 대시보드 ---
+    dashboard_usd_to_krw_rate: Decimal = Decimal("1330")
+    dashboard_timezone: str = "Asia/Seoul"
 
     # --- JWT (Access Token) ---
     jwt_issuer: str = "portfolio-data-market"
