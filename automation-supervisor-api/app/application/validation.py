@@ -23,13 +23,25 @@ def validate_stage_output(stage_name: StageName, output: dict) -> dict:
             failure_code = FailureCode.SCHEMA_INVALID
 
     if stage_name == StageName.DATA_PROCESSING:
-        required = ["processed_columns", "api_result", "csv_columns", "visualization", "report"]
+        required = [
+            "processed_columns",
+            "api_result",
+            "csv_columns",
+            "visualization",
+            "report",
+            "processing_explanation",
+            "quality_report",
+        ]
         errors.extend(_missing(required, output))
         if not output.get("processed_columns"):
             errors.append("processed_columns must not be empty")
             failure_code = FailureCode.PROCESSING_RULE_INVALID
         if errors and failure_code is None:
-            failure_code = FailureCode.FORMAT_INVALID
+            raw_code = output.get("_failure_code")
+            try:
+                failure_code = FailureCode(raw_code) if raw_code else FailureCode.FORMAT_INVALID
+            except ValueError:
+                failure_code = FailureCode.PROCESSING_RULE_INVALID
 
     if stage_name == StageName.HITL_REVIEW:
         required = ["approved", "reviewer", "natural_feedback"]
