@@ -67,6 +67,23 @@ class StubAgentClient(AgentClient):
                         "Selected data was transformed into API, CSV, visualization, and report outputs.",
                     ),
                 },
+                "processing_explanation": {
+                    "summary": "Stub processing completed.",
+                    "missing_value_handling": [],
+                    "format_conversion": {"csv_encoding": "utf-8-sig", "columns": []},
+                    "anonymization": [],
+                    "duplicate_handling": {"strategy": "exact-row", "removed_rows": 0},
+                    "safeguards": [],
+                },
+                "quality_report": {
+                    "input_row_count": selected_data_summary.get("row_count", 0),
+                    "output_row_count": selected_data_summary.get("row_count", 0),
+                    "duplicates_removed": 0,
+                    "missing_before": {},
+                    "missing_after": {},
+                    "imputation_count": 0,
+                    "contains_raw_identifiers_in_audit": False,
+                },
             }
 
         return {"model": model_name, "agent_name": agent_name}
