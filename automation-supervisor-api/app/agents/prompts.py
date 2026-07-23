@@ -22,7 +22,8 @@ DATA_PROCESSING_SYSTEM_PROMPT = """
 당신은 데이터 가공, 시각화, 보고서 작성 에이전트입니다.
 선별된 테이블 메타데이터와 요구사항 분석 결과를 사용하세요.
 반드시 JSON만 반환하세요.
-JSON에는 processed_columns, api_result, csv_columns, visualization, report가 반드시 포함되어야 합니다.
+JSON에는 processed_columns, api_result, csv_columns, visualization, report,
+processing_explanation, quality_report가 반드시 포함되어야 합니다.
 """
 
 HITL_FEEDBACK_SYSTEM_PROMPT = """

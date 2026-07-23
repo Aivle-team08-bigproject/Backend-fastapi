@@ -11,6 +11,7 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(PROJECT_ROOT))
 
 from app.adapters.model.stub_agent_client import StubAgentClient
+from app.adapters.model.strands_agent_client import StrandsAgentClient
 from app.application.validation import validate_stage_output
 from app.domain.enums import StageName
 from app.policies.rollback_policy import classify_hitl_feedback, rollback_stage_for
@@ -24,11 +25,17 @@ SAMPLES = {
     "subscription": "OTT와 디지털 콘텐츠 정기결제 이용자의 구독 유지 경향을 분석해서 보고서와 CSV로 만들어줘.",
 }
 
+VERBOSE = False
+
 
 async def main() -> None:
+    global VERBOSE
     args = parse_args()
+    VERBOSE = args.verbose
     raw_requirement = args.requirement or SAMPLES[args.sample]
-    client = StubAgentClient()
+    # --client real calls all three agent_runtime stages. Data processing requires --csv because
+    # data selection currently creates a query plan rather than fetching actual database rows.
+    client = StrandsAgentClient() if args.client == "real" else StubAgentClient()
 
     print("RAW_REQUIREMENT")
     print(raw_requirement)
@@ -38,7 +45,10 @@ async def main() -> None:
         "sonnet-4.6",
         {"raw_requirement": raw_requirement},
     )
-    print_result("REQUIREMENT_ANALYSIS", analysis)
+    analysis_validation = print_result("REQUIREMENT_ANALYSIS", analysis)
+    if not analysis_validation["passed"]:
+        print("\nPIPELINE_STOPPED: 요구사항 분석 실패로 이후 단계를 실행하지 않습니다.")
+        return
 
     selection = await client.run(
         "data-selection-agent",
@@ -49,24 +59,32 @@ async def main() -> None:
             "available_data": ["merchant", "member_pseudonymized", "transaction_pseudonymized"],
         },
     )
-    print_result("DATA_SELECTION", selection)
+    selection_validation = print_result("DATA_SELECTION", selection)
+    if not selection_validation["passed"]:
+        print("\nPIPELINE_STOPPED: 데이터 선별 실패로 이후 단계를 실행하지 않습니다.")
+        return
 
-    selected_data_summary = summarize_csv(args.csv) if args.csv else {}
+    selected_rows = read_csv_rows(args.csv) if args.csv else []
+    selected_data_summary = summarize_rows(selected_rows, args.csv) if selected_rows else {}
     if selected_data_summary:
         print("SELECTED_DATA_SUMMARY")
-        print(json.dumps(selected_data_summary, ensure_ascii=False))
+        print(json.dumps(selected_data_summary, ensure_ascii=False, indent=2))
 
     processing = await client.run(
         "data-processing-agent",
-        "chatgpt-5.5",
+        "deterministic-python-v1",
         {
             "raw_requirement": raw_requirement,
             "analysis": analysis,
             "selection": selection,
+            "selected_rows": selected_rows,
             "selected_data_summary": selected_data_summary,
         },
     )
-    print_result("DATA_PROCESSING", processing)
+    processing_validation = print_result("DATA_PROCESSING", processing)
+    if not processing_validation["passed"]:
+        print("\nPIPELINE_STOPPED: 데이터 가공 실패로 HITL 단계를 실행하지 않습니다.")
+        return
 
     approved_review = {
         "approved": True,
@@ -86,16 +104,118 @@ async def main() -> None:
     }
     print_result("HITL_REVIEW", rejected_review)
     print("ROLLBACK_TEST")
-    print(json.dumps({"failure_code": failure_code.value, "rollback_to": rollback_stage.value}, ensure_ascii=False))
+    print(
+        json.dumps(
+            {"failure_code": failure_code.value, "rollback_to": rollback_stage.value},
+            ensure_ascii=False,
+            indent=2,
+        )
+    )
 
 
-def print_result(stage_name: str, artifact: dict) -> None:
+def print_result(stage_name: str, artifact: dict) -> dict:
     validation = validate_stage_output(StageName(stage_name), artifact)
-    print(stage_name)
-    print(json.dumps({"validation": validation, "artifact": artifact}, ensure_ascii=False))
+    print(f"\n[{stage_name}]")
+    output = artifact if VERBOSE else summarize_artifact(stage_name, artifact)
+    print(json.dumps({"validation": validation, "artifact": output}, ensure_ascii=False, indent=2))
+    return validation
 
 
-def summarize_csv(csv_path: str) -> dict:
+def summarize_artifact(stage_name: str, artifact: dict) -> dict:
+    """Return a developer-readable summary without raw rows or Base64 content."""
+    if artifact.get("_agent_error"):
+        return {
+            "agent_error": artifact.get("_agent_error"),
+            "failure_code": artifact.get("_failure_code"),
+        }
+
+    if stage_name == "REQUIREMENT_ANALYSIS":
+        return {
+            "usage_purpose": artifact.get("usage_purpose"),
+            "requested_data_sentence": artifact.get("requested_data_sentence"),
+            "categories": artifact.get("categories"),
+            "delivery_channel": artifact.get("delivery_channel"),
+            "output_formats": artifact.get("output_formats"),
+        }
+
+    if stage_name == "DATA_SELECTION":
+        query = artifact.get("selection_query") or {}
+        return {
+            "selected_tables": [
+                {"table": item.get("table"), "reason": item.get("reason")}
+                for item in artifact.get("selected_tables", [])
+            ],
+            "top_k": query.get("top_k"),
+            "filters": query.get("filters"),
+            "sample_columns": [
+                {
+                    "name": item.get("name"),
+                    "is_predicted": item.get("is_predicted"),
+                    "description": item.get("description"),
+                }
+                for item in artifact.get("sample_columns", [])
+            ],
+        }
+
+    if stage_name == "DATA_PROCESSING":
+        quality = artifact.get("quality_report") or {}
+        csv_artifact = artifact.get("csv_artifact") or {}
+        api_result = artifact.get("api_result") or {}
+        visualization = artifact.get("visualization") or {}
+        report = artifact.get("report") or {}
+        explanation = artifact.get("processing_explanation") or {}
+        return {
+            "processing_engine": artifact.get("processing_engine"),
+            "processed_columns": artifact.get("processed_columns"),
+            "rows": {
+                "input": quality.get("input_row_count"),
+                "output": quality.get("output_row_count"),
+                "duplicates_removed": quality.get("duplicates_removed"),
+                "imputed": quality.get("imputation_count"),
+            },
+            "missing_after": {
+                key: value for key, value in (quality.get("missing_after") or {}).items() if value
+            },
+            "anonymization": explanation.get("anonymization", []),
+            "processing_explanation": {
+                "summary": explanation.get("summary"),
+                "missing_value_handling": explanation.get("missing_value_handling", []),
+                "format_conversion": explanation.get("format_conversion", {}),
+                "duplicate_handling": explanation.get("duplicate_handling", {}),
+                "safeguards": explanation.get("safeguards", []),
+            },
+            "csv": {
+                "generated": bool(csv_artifact),
+                "encoding": csv_artifact.get("encoding"),
+                "byte_size": csv_artifact.get("byte_size"),
+                "sha256": csv_artifact.get("sha256"),
+            },
+            "api_item_count": len(api_result.get("items") or []),
+            "visualization": {
+                "generated": bool(visualization),
+                "chart_type": visualization.get("chart_type"),
+                "x": visualization.get("x"),
+                "y": visualization.get("y"),
+            },
+            "report": {
+                "generated": bool(report),
+                "title": report.get("title"),
+                "summary": report.get("summary"),
+            },
+        }
+
+    if stage_name == "HITL_REVIEW":
+        return {
+            "approved": artifact.get("approved"),
+            "reviewer": artifact.get("reviewer"),
+            "failure_code": artifact.get("failure_code"),
+            "feedback": artifact.get("natural_feedback"),
+        }
+
+    return artifact
+
+
+def read_csv_rows(csv_path: str) -> list[dict]:
     path = Path(csv_path)
     encodings = ["utf-8-sig", "utf-8", "cp949"]
     last_error: Exception | None = None
@@ -103,12 +223,15 @@ def summarize_csv(csv_path: str) -> dict:
     for encoding in encodings:
         try:
             with path.open("r", encoding=encoding, newline="") as file:
-                rows = list(csv.DictReader(file))
-            break
+                return list(csv.DictReader(file))
         except UnicodeDecodeError as exc:
             last_error = exc
     else:
         raise RuntimeError(f"CSV encoding failed: {last_error}")
+
+
+def summarize_rows(rows: list[dict], csv_path: str) -> dict:
+    path = Path(csv_path)
 
     row_count = len(rows)
     columns = list(rows[0].keys()) if rows else []
@@ -159,6 +282,18 @@ def parse_args() -> argparse.Namespace:
         "--feedback",
         default="선별된 데이터가 부족하고 테이블 선택이 요구사항과 맞지 않습니다.",
         help="Rejected HITL feedback used for rollback policy test.",
+    )
+    parser.add_argument(
+        "--client",
+        choices=["stub", "real"],
+        default="stub",
+        help="stub: 고정 응답. real: agent_runtime의 실제 세 단계를 호출하며 앞의 두 단계는 "
+        "DeepSeek API를 사용합니다. data-processing에는 --csv가 필요합니다.",
+    )
+    parser.add_argument(
+        "--verbose",
+        action="store_true",
+        help="Base64 CSV와 전체 API 행을 포함한 원본 산출물 JSON을 출력합니다.",
     )
     return parser.parse_args()
 
