@@ -23,6 +23,8 @@ from app.domains.employees.model.employee_model import (
 
 
 DEMO_EMPLOYEE_CODE = "DEMO-001"
+DEMO_EMPLOYEE_NAME = "홍길동 책임"
+DEMO_DEPARTMENT = "데이터 운영팀"
 DEMO_PERMISSIONS = (
     PermissionCode.DATA_PRODUCT_READ,
     PermissionCode.DATA_PRODUCT_WRITE,
@@ -47,8 +49,8 @@ async def seed_demo_user() -> tuple[str, str]:
         if employee is None:
             employee = Employee(
                 employee_code=DEMO_EMPLOYEE_CODE,
-                name="데모 사용자",
-                department="데모 운영팀",
+                name=DEMO_EMPLOYEE_NAME,
+                department=DEMO_DEPARTMENT,
                 password_hash=hash_password(password),
                 status=EmployeeStatus.ACTIVE,
                 must_change_password=False,
@@ -64,8 +66,8 @@ async def seed_demo_user() -> tuple[str, str]:
             ]
             session.add(employee)
         else:
-            employee.name = "데모 사용자"
-            employee.department = "데모 운영팀"
+            employee.name = DEMO_EMPLOYEE_NAME
+            employee.department = DEMO_DEPARTMENT
             employee.password_hash = hash_password(password)
             employee.status = EmployeeStatus.ACTIVE
             employee.must_change_password = False

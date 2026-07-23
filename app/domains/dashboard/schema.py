@@ -58,6 +58,17 @@ class PractitionerDashboardResponse(BaseModel):
     page_size: int
 
 
+class MyTaskStatusResponse(BaseModel):
+    employee_code: str
+    user_name: str
+    department: str
+    active_count: int
+    urgent_count: int
+    completed_count: int
+    completion_rate: float
+    tasks: list[TaskRowResponse]
+
+
 class TaskLookupResponse(BaseModel):
     banner_title: str
     banner_description: str
