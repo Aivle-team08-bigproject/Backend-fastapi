@@ -13,6 +13,13 @@ class EmployeeStatus(str, enum.Enum):
     DISABLED = "DISABLED"
 
 
+class EmployeeRole(str, enum.Enum):
+    ADMIN = "ADMIN"
+    MANAGER = "MANAGER"
+    SENIOR = "SENIOR"
+    GENERAL = "GENERAL"
+
+
 class PermissionCode(str, enum.Enum):
     EMPLOYEE_READ = "EMPLOYEE_READ"
     EMPLOYEE_CREATE = "EMPLOYEE_CREATE"

@@ -25,13 +25,8 @@ from app.domains.employees.model.employee_model import (
 DEMO_EMPLOYEE_CODE = "DEMO-001"
 DEMO_EMPLOYEE_NAME = "홍길동 책임"
 DEMO_DEPARTMENT = "데이터 운영팀"
-DEMO_PERMISSIONS = (
-    PermissionCode.DATA_PRODUCT_READ,
-    PermissionCode.DATA_PRODUCT_WRITE,
-    PermissionCode.QUOTE_READ,
-    PermissionCode.QUOTE_PROCESS,
-    PermissionCode.CONTRACT_MANAGE,
-)
+# 회원 관리·권한 변경 UI까지 로컬에서 검증할 수 있도록 데모 계정은 관리자 프로필을 사용한다.
+DEMO_PERMISSIONS = tuple(PermissionCode)
 
 
 async def seed_demo_user() -> tuple[str, str]:
