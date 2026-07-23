@@ -8,6 +8,7 @@ from app.domains.dashboard.schema import (
     DeveloperDashboardResponse,
     MemberManagementResponse,
     MemberResponse,
+    MyTaskStatusResponse,
     PreferredItemResponse,
     StatCardResponse,
     SupplementItemResponse,
@@ -109,6 +110,32 @@ async def get_practitioner_dashboard(db: AsyncSession) -> PractitionerDashboardR
         ],
         task_rows=task_rows,
         page_size=4,
+    )
+
+
+async def get_my_task_status(db: AsyncSession, employee: Employee) -> MyTaskStatusResponse:
+    task_pairs = await _demo_tasks(db)
+    assigned_tasks = []
+    for request, client in task_pairs:
+        metadata = request.analysis_condition or {}
+        is_assigned = metadata.get("assignee_employee_code") == employee.employee_code
+        if not is_assigned and not metadata.get("assignee_employee_code"):
+            is_assigned = metadata.get("assignee") == employee.name
+        if is_assigned:
+            assigned_tasks.append(_task_row(request, client))
+
+    active_tasks = [task for task in assigned_tasks if task.status != "완료"]
+    completed_count = sum(task.status == "완료" for task in assigned_tasks)
+    completion_rate = round(completed_count / len(assigned_tasks) * 100, 1) if assigned_tasks else 0.0
+    return MyTaskStatusResponse(
+        employee_code=employee.employee_code,
+        user_name=employee.name,
+        department=employee.department,
+        active_count=len(active_tasks),
+        urgent_count=sum(task.status == "요구사항 분석" for task in active_tasks),
+        completed_count=completed_count,
+        completion_rate=completion_rate,
+        tasks=assigned_tasks,
     )
 
 

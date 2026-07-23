@@ -200,6 +200,13 @@ DEMO_EMPLOYEES = [
     ("DEMO-QA-001", "윤서진", "품질 검증 파트", EmployeeStatus.ACTIVE, {PermissionCode.DATA_PRODUCT_READ}),
 ]
 
+ASSIGNEE_EMPLOYEE_CODES = {
+    "홍길동 책임": "DEMO-001",
+    "김민수 선임": "DEMO-KIM-001",
+    "이지은 선임": "DEMO-LEE-001",
+    "박준영 책임": "DEMO-PARK-001",
+}
+
 
 def status_for(label: str) -> tuple[DataRequestStatus, str]:
     return {
@@ -250,6 +257,7 @@ async def upsert_dashboard_data() -> None:
                 "data_type": data_type,
                 "detail": detail,
                 "assignee": assignee,
+                "assignee_employee_code": ASSIGNEE_EMPLOYEE_CODES[assignee],
                 "dashboard_status": label,
             }
             if request_no in {"REQ-2024-0847", "REQ-2024-0812"}:
