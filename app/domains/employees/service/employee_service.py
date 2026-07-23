@@ -10,6 +10,7 @@ from app.domains.employees.model.audit_log_model import AdminAuditLog
 from app.domains.employees.model.employee_model import (
     Employee,
     EmployeePermission,
+    EmployeeRole,
     EmployeeStatus,
     PermissionCode,
 )
@@ -174,6 +175,31 @@ async def replace_permissions(
     await db.refresh(employee, attribute_names=["permissions"])
 
     return employee
+
+
+ROLE_PERMISSIONS: dict[EmployeeRole, set[PermissionCode]] = {
+    EmployeeRole.ADMIN: set(PermissionCode),
+    EmployeeRole.MANAGER: {
+        PermissionCode.EMPLOYEE_READ,
+        PermissionCode.EMPLOYEE_UPDATE,
+        PermissionCode.DATA_PRODUCT_READ,
+        PermissionCode.QUOTE_READ,
+        PermissionCode.QUOTE_PROCESS,
+    },
+    EmployeeRole.SENIOR: {
+        PermissionCode.DATA_PRODUCT_READ,
+        PermissionCode.DATA_PRODUCT_WRITE,
+        PermissionCode.QUOTE_READ,
+    },
+    EmployeeRole.GENERAL: {PermissionCode.DATA_PRODUCT_READ, PermissionCode.QUOTE_READ},
+}
+
+
+async def replace_role(
+    db: AsyncSession, employee_code: str, role: EmployeeRole, operator_code: str
+) -> Employee:
+    permissions = ROLE_PERMISSIONS[role]
+    return await replace_permissions(db, employee_code, permissions, operator_code)
 
 async def change_status(
     db: AsyncSession, employee_code: str, status: EmployeeStatus, operator_code: str

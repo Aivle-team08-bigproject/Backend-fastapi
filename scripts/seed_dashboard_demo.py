@@ -1,16 +1,30 @@
 """대시보드와 작업 상세 API용 데모 데이터를 멱등 적재한다."""
 
 import asyncio
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
+from decimal import Decimal
+from zoneinfo import ZoneInfo
 
-from sqlalchemy import select
+from sqlalchemy import delete, select
 
 from app.common.time_utils import utcnow
+from app.core.config import settings
 from app.db.session import AsyncSessionLocal, engine, init_db
 from app.core.security import generate_temporary_password, hash_password
-from app.domains.dashboard.model import DashboardAlert, DashboardInsight, SystemDashboardSnapshot, TaskViewSnapshot
+from app.domains.dashboard.model import DashboardAlert, DashboardInsight, TaskViewSnapshot
 from app.domains.employees.model.employee_model import Employee, EmployeePermission, EmployeeStatus, PermissionCode
-from app.domains.pipeline.model import Client, DataRequest, DataRequestStatus
+from app.domains.pipeline.model import (
+    AgentMetric,
+    Client,
+    DataRequest,
+    DataRequestStatus,
+    EventType,
+    PipelineEvent,
+    PipelineRun,
+    PipelineRunStatus,
+    StageRun,
+    StageRunStatus,
+)
 
 
 BASE_TASKS = [
@@ -167,30 +181,6 @@ VIEW_PAYLOADS = {
     },
 }
 
-DEVELOPER_DASHBOARD_PAYLOAD = {
-    "summaryCards": [
-        {"label": "금월 누적 토큰 사용량", "value": "42,819,401", "unit": "tokens"},
-        {"label": "금일 토큰 사용량", "value": "1,452,091", "unit": "tokens", "highlight": True},
-        {"label": "예상 비용 (USD)", "value": "$324.50", "unit": "≈ 431,200 원"},
-    ],
-    "agentCards": [
-        {"name": "요구사항 분석 에이전트", "status": "ok", "statusLabel": "정상 작동", "responseTimeLabel": "14ms (양호)", "responseTimeColor": "#1a1a1b", "throughputLabel": "124건"},
-        {"name": "데이터 선별 에이전트", "status": "delayed", "statusLabel": "응답 지연", "responseTimeLabel": "2.4s (지연)", "responseTimeColor": "#ea580c", "throughputLabel": "89건"},
-        {"name": "데이터 가공 에이전트", "status": "error", "statusLabel": "프로세스 오류", "responseTimeLabel": "ERR (무응답)", "responseTimeColor": "#dc2626", "throughputLabel": "42건"},
-    ],
-    "failureBars": [
-        {"label": "요구사항 분석", "percentLabel": "3.4%", "percent": 3.4, "color": "#0f5a52"},
-        {"label": "데이터 선별", "percentLabel": "12.8%", "percent": 12.8, "color": "#ea580c"},
-        {"label": "데이터 가공", "percentLabel": "24.1%", "percent": 24.1, "color": "#dc2626"},
-        {"label": "배포 파이프라인", "percentLabel": "1.2%", "percent": 1.2, "color": "#6b7280"},
-    ],
-    "errorLogs": [
-        {"time": "14:24:01", "agent": "데이터 가공 에이전트", "message": "ERR-500: 머징 결측치 비율 임계치 초과 (12.4%)", "severity": "HIGH", "severityBg": "#fde8e8", "severityColor": "#dc2626"},
-        {"time": "14:15:32", "agent": "데이터 선별 에이전트", "message": "TIMEOUT: DICOM 헤더 가이드 확인 요청 타임아웃", "severity": "MEDIUM", "severityBg": "#fef3c7", "severityColor": "#ea580c"},
-        {"time": "13:02:11", "agent": "배포 에이전트", "message": "JWT: 보안 토큰 갱신 지연 에러 발생", "severity": "LOW", "severityBg": "#f8f9fa", "severityColor": "#6b7280"},
-    ],
-}
-
 DEMO_EMPLOYEES = [
     ("HANA-KIM-001", "김민수", "데이터 가공 파트", EmployeeStatus.ACTIVE, {PermissionCode.EMPLOYEE_UPDATE, PermissionCode.DATA_PRODUCT_WRITE}),
     ("HANA-LEE-001", "이지은", "요구사항 분석 파트", EmployeeStatus.ACTIVE, {PermissionCode.DATA_PRODUCT_WRITE}),
@@ -217,7 +207,169 @@ def status_for(label: str) -> tuple[DataRequestStatus, str]:
     }[label]
 
 
-async def upsert_dashboard_data() -> None:
+async def seed_developer_monitoring_data(session, data_request: DataRequest, now: datetime) -> int:
+    pipeline_run = await session.scalar(
+        select(PipelineRun).where(
+            PipelineRun.data_request_id == data_request.id,
+            PipelineRun.attempt_no == 1,
+        )
+    )
+    if pipeline_run is None:
+        pipeline_run = PipelineRun(
+            data_request_id=data_request.id,
+            attempt_no=1,
+            status=PipelineRunStatus.COMPLETED,
+            current_stage="COMPLETED",
+            progress_percent=100,
+            started_at=now - timedelta(days=2),
+            completed_at=now - timedelta(days=2) + timedelta(hours=1),
+        )
+        session.add(pipeline_run)
+        await session.flush()
+
+    stage_specs = {
+        "REQUIREMENT_ANALYSIS": "requirement-analysis-agent",
+        "DATA_SELECTION": "data-selection-agent",
+        "DATA_PROCESSING": "data-processing-agent",
+        "DELIVERY": "delivery-pipeline",
+    }
+    stage_runs: dict[str, StageRun] = {}
+    for stage_code in stage_specs:
+        stage_run = await session.scalar(
+            select(StageRun).where(
+                StageRun.pipeline_run_id == pipeline_run.id,
+                StageRun.stage_code == stage_code,
+                StageRun.attempt_no == 1,
+            )
+        )
+        if stage_run is None:
+            stage_run = StageRun(
+                pipeline_run_id=pipeline_run.id,
+                stage_code=stage_code,
+                attempt_no=1,
+                status=StageRunStatus.COMPLETED,
+                executor="DEMO",
+                model_name="dashboard-demo-v1",
+                started_at=now - timedelta(days=2),
+                completed_at=now - timedelta(days=2) + timedelta(hours=1),
+            )
+            session.add(stage_run)
+            await session.flush()
+        stage_runs[stage_code] = stage_run
+
+    await session.execute(delete(AgentMetric).where(AgentMetric.model_name == "dashboard-demo-v1"))
+    await session.execute(delete(PipelineEvent).where(PipelineEvent.message.like("[DEMO]%")))
+
+    local_now = now.replace(tzinfo=timezone.utc).astimezone(ZoneInfo(settings.dashboard_timezone))
+    local_today = local_now.replace(hour=0, minute=0, second=0, microsecond=0)
+    today = local_today.astimezone(timezone.utc).replace(tzinfo=None)
+    month_start = local_today.replace(day=1).astimezone(timezone.utc).replace(tzinfo=None)
+    agent_specs = [
+        ("requirement-analysis-agent", "REQUIREMENT_ANALYSIS", 4200, 900, 110, 17),
+        ("data-selection-agent", "DATA_SELECTION", 5600, 1200, 820, 9),
+        ("data-processing-agent", "DATA_PROCESSING", 7800, 2100, 1450, 6),
+        ("delivery-pipeline", "DELIVERY", 900, 180, 260, 23),
+    ]
+    metric_count = 0
+    day_count = (today - month_start).days + 1
+    for day_index in range(day_count):
+        day = month_start + timedelta(days=day_index)
+        for agent_index, (
+            agent_name,
+            stage_code,
+            input_base,
+            output_base,
+            latency_base,
+            failure_every,
+        ) in enumerate(agent_specs):
+            for call_index, hour in enumerate((2, 10, 18)):
+                created_at = day + timedelta(hours=hour, minutes=agent_index * 7 + call_index)
+                if created_at >= now:
+                    continue
+                outcome = (
+                    "FAILED"
+                    if (day_index * 3 + call_index + agent_index + 1) % failure_every == 0
+                    else "SUCCEEDED"
+                )
+                input_tokens = input_base + day_index * 37 + call_index * 113
+                output_tokens = output_base + day_index * 19 + call_index * 47
+                total_tokens = input_tokens + output_tokens
+                session.add(
+                    AgentMetric(
+                        stage_run_id=stage_runs[stage_code].id,
+                        agent_name=agent_name,
+                        model_name="dashboard-demo-v1",
+                        input_tokens=input_tokens,
+                        output_tokens=output_tokens,
+                        cost_usd=(Decimal(total_tokens) * Decimal("0.0000075")).quantize(Decimal("0.000001")),
+                        latency_ms=latency_base + call_index * 75,
+                        outcome=outcome,
+                        created_at=created_at,
+                    )
+                )
+                metric_count += 1
+
+    latest_metrics = [
+        ("requirement-analysis-agent", "REQUIREMENT_ANALYSIS", 4800, 980, 118, "SUCCEEDED", 3),
+        ("data-selection-agent", "DATA_SELECTION", 6300, 1310, 2400, "SUCCEEDED", 2),
+        ("data-processing-agent", "DATA_PROCESSING", 8100, 2250, None, "FAILED", 1),
+    ]
+    for agent_name, stage_code, input_tokens, output_tokens, latency_ms, outcome, minutes_ago in latest_metrics:
+        total_tokens = input_tokens + output_tokens
+        session.add(
+            AgentMetric(
+                stage_run_id=stage_runs[stage_code].id,
+                agent_name=agent_name,
+                model_name="dashboard-demo-v1",
+                input_tokens=input_tokens,
+                output_tokens=output_tokens,
+                cost_usd=(Decimal(total_tokens) * Decimal("0.0000075")).quantize(Decimal("0.000001")),
+                latency_ms=latency_ms,
+                outcome=outcome,
+                created_at=now - timedelta(minutes=minutes_ago),
+            )
+        )
+        metric_count += 1
+
+    demo_errors = [
+        (
+            "DATA_PROCESSING",
+            "data-processing-agent",
+            "[DEMO] 머징 결측치 비율 임계치 초과 (12.4%)",
+            "HIGH",
+            8,
+        ),
+        (
+            "DATA_SELECTION",
+            "data-selection-agent",
+            "[DEMO] 데이터 카탈로그 조회 응답 시간이 제한을 초과했습니다.",
+            "MEDIUM",
+            37,
+        ),
+        (
+            "DELIVERY",
+            "delivery-pipeline",
+            "[DEMO] 전달 API 인증 토큰 갱신이 지연되었습니다.",
+            "LOW",
+            83,
+        ),
+    ]
+    for stage_code, agent_name, message, severity, minutes_ago in demo_errors:
+        session.add(
+            PipelineEvent(
+                pipeline_run_id=pipeline_run.id,
+                stage_run_id=stage_runs[stage_code].id,
+                event_type=EventType.FAILED,
+                severity=severity,
+                message=message,
+                payload={"agent_name": agent_name, "seed_code": "DEVELOPER_DASHBOARD"},
+                occurred_at=now - timedelta(minutes=minutes_ago),
+            )
+        )
+    return metric_count
+
+
+async def upsert_dashboard_data() -> int:
     await init_db()
     async with AsyncSessionLocal() as session:
         now = utcnow()
@@ -243,6 +395,7 @@ async def upsert_dashboard_data() -> None:
 
         all_tasks = BASE_TASKS + EXTRA_TASKS
         base_date = datetime(2024, 11, 12, 9, 0)
+        monitoring_request = None
         for index, (request_no, company, data_type, detail, assignee, label) in enumerate(all_tasks):
             client = await session.scalar(select(Client).where(Client.company_name == company))
             if client is None:
@@ -291,6 +444,9 @@ async def upsert_dashboard_data() -> None:
                 request.current_stage = current_stage
                 request.created_at = created_at
                 request.updated_at = created_at + timedelta(days=min(index % 3, 1))
+
+            if request_no == "REQ-2024-0847":
+                monitoring_request = request
 
             for view_code, payload in VIEW_PAYLOADS.items():
                 snapshot = await session.scalar(
@@ -341,24 +497,20 @@ async def upsert_dashboard_data() -> None:
                 for key, value in values.items():
                     setattr(insight, key, value)
 
-        system_snapshot = await session.scalar(
-            select(SystemDashboardSnapshot).where(SystemDashboardSnapshot.snapshot_code == "DEVELOPER_OVERVIEW")
-        )
-        if system_snapshot is None:
-            session.add(
-                SystemDashboardSnapshot(snapshot_code="DEVELOPER_OVERVIEW", payload=DEVELOPER_DASHBOARD_PAYLOAD)
-            )
-        else:
-            system_snapshot.payload = DEVELOPER_DASHBOARD_PAYLOAD
+        if monitoring_request is None:
+            raise RuntimeError("개발자 대시보드용 기준 요청을 찾을 수 없습니다.")
+        metric_count = await seed_developer_monitoring_data(session, monitoring_request, now)
 
         await session.commit()
+        return metric_count
 
 
 async def main() -> None:
     try:
-        await upsert_dashboard_data()
+        metric_count = await upsert_dashboard_data()
         print("dashboard_demo_tasks=24")
         print(f"task_view_snapshots={24 * len(VIEW_PAYLOADS)}")
+        print(f"developer_dashboard_metrics={metric_count}")
     finally:
         await engine.dispose()
 

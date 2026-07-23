@@ -1,10 +1,11 @@
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, Query
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.common.security_deps import CurrentAuth, get_current_auth
 from app.db.session import get_db
 from app.domains.dashboard.schema import (
     DeveloperDashboardResponse,
+    DeveloperDashboardPeriod,
     MemberManagementResponse,
     MyTaskStatusResponse,
     PractitionerDashboardResponse,
@@ -43,8 +44,11 @@ async def task_lookup(db: AsyncSession = Depends(get_db)) -> TaskLookupResponse:
 
 
 @router.get("/dashboard/developer", response_model=DeveloperDashboardResponse)
-async def developer_dashboard(db: AsyncSession = Depends(get_db)) -> DeveloperDashboardResponse:
-    return await get_developer_dashboard(db)
+async def developer_dashboard(
+    period: DeveloperDashboardPeriod = Query(default=DeveloperDashboardPeriod.DAILY),
+    db: AsyncSession = Depends(get_db),
+) -> DeveloperDashboardResponse:
+    return await get_developer_dashboard(db, period)
 
 
 @router.get("/dashboard/members", response_model=MemberManagementResponse)

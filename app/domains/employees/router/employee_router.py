@@ -17,6 +17,7 @@ from app.domains.employees.schema.employee_schema import (
     PermissionCatalogItem,
     ResetPasswordResponse,
     UpdatePermissionsRequest,
+    UpdateRoleRequest,
     UpdateStatusRequest,
 )
 from app.domains.employees.service import employee_service
@@ -114,6 +115,19 @@ async def replace_permissions(
 ) -> EmployeeResponse:
     employee = await employee_service.replace_permissions(
         db, employee_code, payload.permissions, auth.employee.employee_code
+    )
+    return _to_response(employee)
+
+
+@router.patch("/{employee_code}/role", response_model=EmployeeResponse)
+async def replace_role(
+    employee_code: str,
+    payload: UpdateRoleRequest,
+    auth: CurrentAuth = Depends(require_permission(PermissionCode.EMPLOYEE_PERMISSION_MANAGE)),
+    db: AsyncSession = Depends(get_db),
+) -> EmployeeResponse:
+    employee = await employee_service.replace_role(
+        db, employee_code, payload.role, auth.employee.employee_code
     )
     return _to_response(employee)
 
