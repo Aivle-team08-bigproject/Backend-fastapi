@@ -12,10 +12,6 @@ PyJWT==2.10.1  # strands-agents -> mcp가 PyJWT>=2.10.1 요구
 # --- 자동화 파이프라인 (Strands Agents SDK) ---
 strands-agents[openai]==1.48.0
 
-# --- 로컬 비동기 에이전트 실행 ---
-celery[redis]==5.5.3
-redis==5.2.1
-
 # --- 테스트 전용 ---
 pytest==8.4.1
 httpx==0.28.1
