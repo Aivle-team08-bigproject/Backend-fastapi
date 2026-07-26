@@ -69,7 +69,6 @@ async def create_data_request(
         stage_code="REQUIREMENT_ANALYSIS",
         attempt_no=1,
         status=StageRunStatus.PENDING,
-        executor="CELERY",
         input_payload={
             "request_no": data_request.request_no,
             "raw_requirement": data_request.raw_requirement,
@@ -142,7 +141,6 @@ async def get_pipeline_run(db: AsyncSession, run_id: int) -> PipelineRunResponse
             RunStageResponse(
                 stage_code=stage.stage_code,
                 status=stage.status,
-                executor=stage.executor,
                 created_at=stage.created_at,
             )
             for stage in stages

@@ -28,8 +28,7 @@
 - [x] PostgreSQL service DB 모델
 - [x] JWT Access Token·Refresh Token·로그인 세션
 - [x] 직원·권한·감사 로그 모델과 관리자 API
-- [x] Redis·Celery worker Docker 구성
-- [x] `AgentRunner` 공통 실행 계약
+- [ ] 별도 worker 실행 방식과 공통 실행 계약 확정
 - [x] 요구사항 분석 agent runtime
 - [x] 데이터 선별 agent runtime
 - [x] 데이터 가공 agent runtime
@@ -65,14 +64,13 @@
 
 ## 3. Worker와 Agent 실행
 
-- [x] Celery app과 Redis broker/result backend 설정
-- [x] worker 연결 확인용 `pipeline.health_check`
+- [ ] worker 실행 환경 구성
 - [x] 독립 agent runtime 3종
 - [x] 별도 Supervisor에서 agent 3단계 실행 검증
 - [ ] `pipeline.execute_stage` Celery task 구현
 - [ ] 요청 생성 직후 최초 task enqueue
 - [ ] Worker에서 Supervisor/agent runtime 호출
-- [ ] `AgentRunner`의 Local Celery adapter 구현
+- [ ] 로컬 worker adapter 구현
 - [ ] stage 시작 시 `RUNNING`, 완료 시 `COMPLETED` 저장
 - [ ] 실패 시 error와 `FAILED` event 저장
 - [ ] agent log를 `pipeline_events`에 누적
@@ -81,7 +79,7 @@
 - [ ] Celery retry와 pipeline retry 정책 분리
 - [ ] worker 중복 실행 방지 및 idempotency 적용
 - [ ] AgentCore adapter 구현
-- [ ] AgentCore session ID를 `executor_reference`에 저장
+- [ ] 외부 실행기 식별자 저장 방식 확정
 
 ---
 

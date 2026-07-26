@@ -303,8 +303,6 @@ class StageRun(Base):
     status: Mapped[StageRunStatus] = mapped_column(
         SAEnum(StageRunStatus, native_enum=False, length=20), nullable=False, default=StageRunStatus.PENDING, index=True
     )
-    executor: Mapped[str] = mapped_column(String(30), nullable=False, default="CELERY")
-    executor_reference: Mapped[str | None] = mapped_column(String(255), index=True)
     model_name: Mapped[str | None] = mapped_column(String(120))
     input_payload: Mapped[dict] = mapped_column(JSON, nullable=False, default=dict)
     output_payload: Mapped[dict] = mapped_column(JSON, nullable=False, default=dict)

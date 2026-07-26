@@ -25,12 +25,6 @@ class Settings(BaseSettings):
     # requirements/tasks 도메인 전용 DB (동기 엔진, app/db/legacy_session.py에서 사용)
     requirements_database_url: str = "postgresql+psycopg://appuser:change_me_strong_password@127.0.0.1:5432/appdb"
 
-    # --- 로컬 비동기 에이전트 실행 (Celery) ---
-    # AgentCore로 전환할 때에도 FastAPI의 실행/이벤트 계약은 유지하고 runner만 교체한다.
-    celery_broker_url: str = "redis://127.0.0.1:6379/0"
-    celery_result_backend: str = "redis://127.0.0.1:6379/1"
-    celery_task_always_eager: bool = False
-
     # --- 개발자 대시보드 ---
     dashboard_usd_to_krw_rate: Decimal = Decimal("1330")
     dashboard_timezone: str = "Asia/Seoul"

@@ -248,7 +248,6 @@ async def seed_developer_monitoring_data(session, data_request: DataRequest, now
                 stage_code=stage_code,
                 attempt_no=1,
                 status=StageRunStatus.COMPLETED,
-                executor="DEMO",
                 model_name="dashboard-demo-v1",
                 started_at=now - timedelta(days=2),
                 completed_at=now - timedelta(days=2) + timedelta(hours=1),
