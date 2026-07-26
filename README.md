@@ -49,11 +49,11 @@ uvicorn app.main:app --host 127.0.0.1 --port 8000 --reload
 - `DATA_SELECTION_MODEL`
 - `DATA_PROCESSING_MODEL`
 
-## 로컬 비동기 실행 환경
+## 파이프라인 실행 환경
 
-루트 FastAPI 앱은 짧은 HTTP 요청만 처리하고, 향후 파이프라인 단계는 Celery worker에서
-실행한다. 로컬에서는 Redis가 broker/result backend 역할을 하며, AWS 전환 시에는
-`AgentRunner` 계약을 유지한 채 Celery 실행 adapter를 AgentCore adapter로 교체한다.
+현재 루트 FastAPI 앱은 요청과 파이프라인 상태를 PostgreSQL에 저장하고 조회하는 역할만
+담당한다. 에이전트 worker 실행기는 공동 설계를 위해 분리했으며, 이 브랜치에는 실행기와
+메시지 브로커가 포함되어 있지 않다.
 
 ```bash
 cd /Users/joupark/bigproject/Backend-fastapi
@@ -61,14 +61,17 @@ cp .env.example .env
 docker compose up --build
 ```
 
-worker 연결 확인:
+요청 생성 직후 `pipeline_runs`/`stage_runs`/`pipeline_events`가 저장되며, 실제 에이전트
+실행과 상태 전이는 별도 worker 설계 브랜치에서 연결한다.
+
+기존 PostgreSQL volume을 재사용하는 경우 모델에서 삭제한 `stage_runs.executor`와
+`stage_runs.executor_reference` 컬럼이 물리적으로 남을 수 있다. 먼저 점검한 뒤 명시적으로
+삭제한다.
 
 ```bash
-docker compose exec worker celery -A app.pipeline.celery_app:celery_app inspect ping
+python -m scripts.migrate_remove_executor_columns
+python -m scripts.migrate_remove_executor_columns --apply
 ```
-
-현재 `pipeline.health_check` task는 환경 smoke test다. 실제 `execute_stage` task와
-`pipeline_runs`/`stage_runs`/`pipeline_events` 저장은 설계 문서의 다음 구현 단계다.
 
 ### 데모 요구사항·원천 데이터 적재
 

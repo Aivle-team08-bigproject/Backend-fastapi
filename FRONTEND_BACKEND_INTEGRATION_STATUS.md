@@ -332,10 +332,7 @@ employees.employee_code
 - `data_requests`, `pipeline_runs`, `stage_runs`, `pipeline_events` 모델
 - 요청 생성 및 최초 실행/단계/event 저장
 - 프론트 실행 상태 polling 계약
-- 실행기 이름을 저장하는 `executor` 및 외부 실행 ID용 `executor_reference`
-- `AgentRunner.stream()` / `AgentRunner.result()` protocol
-- Redis broker/result backend 설정
-- Celery app과 worker container
+- 실행기와 독립적인 `stage_runs` 상태·event 저장 구조
 - 향후 AgentCore로 바꿀 때 유지할 이벤트·결과 계약 구조
 
 ### 아직 연결되지 않은 것
@@ -350,7 +347,7 @@ employees.employee_code
 - SSE event stream
 - AgentCore adapter 및 runtime session 연결
 
-현재 `app/pipeline/tasks.py`에는 Redis/worker 확인용 `pipeline.health_check`만 있다.
+현재 브랜치에는 worker 실행 코드가 포함되어 있지 않다.
 
 ### 현재 별도로 존재하는 실행 코드
 

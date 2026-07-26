@@ -212,7 +212,6 @@ async def seed_requests() -> int:
                 stage_code="REQUIREMENT_ANALYSIS",
                 attempt_no=1,
                 status=StageRunStatus.PENDING,
-                executor="CELERY",
                 input_payload={"request_no": request.request_no, "raw_requirement": request.raw_requirement},
             )
             session.add(stage)
