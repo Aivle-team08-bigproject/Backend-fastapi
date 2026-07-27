@@ -28,6 +28,7 @@ class CreateDataRequestResponse(BaseModel):
 class RunStageResponse(BaseModel):
     stage_code: str
     status: StageRunStatus
+    executor: str
     created_at: datetime
 
 
