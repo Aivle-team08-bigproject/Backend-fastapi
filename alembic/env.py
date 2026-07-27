@@ -7,7 +7,7 @@ from alembic import context
 
 from app.db.base import Base
 # 아래 import들은 Base.metadata에 테이블을 등록시키기 위한 것 — 실제로 안 써도 import 자체가 필요
-from app.domains.employees.model import employee_model, audit_log_model  # noqa: F401
+from app.domains.employees import model as employee_model  # noqa: F401
 from app.domains.auth.model import session_model  # noqa: F401
 from app.domains.automation.model import requirements_analysis_model  # noqa: F401
 from app.domains.pipeline import model as pipeline_model  # noqa: F401

@@ -7,12 +7,12 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from app.core import security
-from app.common.time_utils import utcnow
+from app.common.time_utils import as_utc, utcnow
 from app.core.config import settings
 from app.common.errors import bad_request, forbidden, not_found, unauthorized
 from app.domains.auth.model.session_model import LoginSession
 from app.domains.auth.schema.auth_schema import ChangePasswordRequest, LoginRequest
-from app.domains.employees.model.employee_model import Employee, EmployeeStatus
+from app.domains.employees.model import Employee, EmployeeStatus
 
 MAX_LOGIN_FAILURES = 5
 LOCK_MINUTES = 15
@@ -67,7 +67,7 @@ async def _enforce_concurrent_session_limit(db: AsyncSession, employee_id: int, 
 
     active: list[LoginSession] = []
     for session in sessions:
-        if session.expires_at <= now:
+        if as_utc(session.expires_at) <= now:
             session.revoked_at = now
             session.revoke_reason = "만료 세션 정리"
         else:
@@ -201,7 +201,7 @@ async def refresh(
     #
     # expires_at은 로그인 시 한 번만 결정된다.
     # Refresh 요청으로 절대 연장하지 않는다.
-    if session.expires_at <= now:
+    if as_utc(session.expires_at) <= now:
         session.revoked_at = now
         session.revoke_reason = "최대 세션 사용 시간 초과"
 
@@ -217,7 +217,7 @@ async def refresh(
         minutes=settings.session_idle_timeout_minutes
     )
 
-    if session.last_seen_at + idle_timeout <= now:
+    if as_utc(session.last_seen_at) + idle_timeout <= now:
         session.revoked_at = now
         session.revoke_reason = "유휴시간 초과"
 

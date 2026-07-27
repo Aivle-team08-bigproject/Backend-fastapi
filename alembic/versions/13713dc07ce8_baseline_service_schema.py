@@ -1,7 +1,7 @@
 """baseline: service schema
 
 Revision ID: 13713dc07ce8
-Revises: 
+Revises:
 Create Date: 2026-07-23 17:29:46.018475
 
 """
