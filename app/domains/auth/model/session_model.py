@@ -5,6 +5,7 @@ from sqlalchemy import BigInteger, Boolean, DateTime, ForeignKey, Index, String,
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.db.base import Base
+from app.common.time_utils import as_utc
 
 
 class LoginSession(Base):
@@ -32,4 +33,4 @@ class LoginSession(Base):
     revoke_reason: Mapped[str | None] = mapped_column(String(200), nullable=True)
 
     def is_active(self, now: datetime) -> bool:
-        return self.revoked_at is None and self.expires_at > now
+        return self.revoked_at is None and as_utc(self.expires_at) > as_utc(now)

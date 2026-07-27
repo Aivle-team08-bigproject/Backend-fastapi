@@ -3,7 +3,7 @@ from uuid import UUID
 
 from sqlalchemy import update
 
-from app.common.time_utils import utcnow
+from app.common.time_utils import as_utc, utcnow
 from app.core.config import settings
 from app.db.session import AsyncSessionLocal
 from app.domains.auth.model.session_model import LoginSession
@@ -31,7 +31,7 @@ async def touch_session_if_stale(
 
     # 인증 과정에서 확인한 활동 시간이 아직 충분히 최근이면
     # DB 쿼리 자체를 실행하지 않는다.
-    if observed_last_seen_at >= threshold:
+    if as_utc(observed_last_seen_at) >= threshold:
         return False
 
     async with AsyncSessionLocal() as db:
