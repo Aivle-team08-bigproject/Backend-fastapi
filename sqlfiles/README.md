@@ -2,7 +2,8 @@
 
 > 포트폴리오 데모 맞춤형 데이터 자동화 가공 시스템 / 8조 3팀
 > 이 번들은 백엔드 레포 안에서 앱 코드·Alembic과 함께 관리한다. 새 환경은 레포를 clone한 뒤
-> 아래 부트스트랩 명령만으로 DB 구조를 구성할 수 있다.
+> 아래 부트스트랩 명령만으로 DB 구조를 구성할 수 있다. 원천 CSV는 개인정보 보호를 위해
+> Git에 포함하지 않으며, 별도 권한 저장소에서 받은 경우에만 선택적으로 적재한다.
 
 ---
 
@@ -47,7 +48,7 @@ docker compose up -d db
 # 역할·mart·anon·service·권한을 순서대로 구성
 ./sqlfiles/bootstrap.sh --with-v001 --create-roles
 
-# CSV 원천 데이터와 검증 리포트까지 포함한 신규 구성
+# 별도 전달받은 CSV가 seed/에 있을 때만 데이터 적재·검증
 ./sqlfiles/bootstrap.sh --with-v001 --create-roles --with-seed --with-verify
 ```
 
@@ -60,7 +61,7 @@ docker compose up -d db
 # 데이터 적재 (CSV가 있는 경우에만 — 구조만 필요하면 생략 가능)
 #   ⚠️ load_csv.sql은 psql의 \copy를 쓰는데, \copy의 상대경로는 "SQL 파일 위치"가
 #      아니라 "psql을 실행한 디렉터리" 기준으로 해석된다. 반드시 seed/ 안에서 실행할 것.
-#      (CSV 5개도 seed/ 에 함께 둔다)
+#      (CSV 파일은 별도 권한 저장소에서 seed/에 받아 둔다)
 cd seed && psql -U portfolio_admin -d portfolio -f load_csv.sql && cd ..
 
 # 검증 리포트 (언제든 재실행 가능, DB를 변경하지 않음)
@@ -99,8 +100,7 @@ psql -v ON_ERROR_STOP=1 -U postgres -d portfolio -f patch/P001__align_existing_d
 
 ```
 migrations/   순서대로 실행하는 스키마 파일 (mart/anon + service GRANT)
-seed/         데이터 적재 — 마이그레이션이 아님, 선택 실행
-              load_csv.sql + CSV 5개를 함께 둔다(\copy 상대경로 때문)
+seed/         데이터 적재 SQL — 마이그레이션이 아님, CSV는 별도 전달
 verify/       검증 리포트 — DB를 바꾸지 않음, 언제든 재실행
 patch/        기존 환경 보정 — 신규 환경에는 불필요
 ```
@@ -114,7 +114,7 @@ patch/        기존 환경 보정 — 신규 환경에는 불필요
 ## 6. 주의 사항
 
 - **비밀번호는 어떤 SQL 파일에도 넣지 않는다.** `.env` 또는 시크릿 매니저로만 관리.
-- **CSV 원천 데이터는 초기화 재현성을 위해 이 번들에 포함되어 git으로 관리한다.**
+- **CSV 원천 데이터는 개인정보 보호를 위해 Git에 올리지 않는다.**
 - 스키마 레벨 코멘트(`COMMENT ON SCHEMA`)는 **권한 없는 계정도 읽을 수 있다.**
   민감한 설계 근거(취약점 수준, 실측 수치)는 반드시 테이블/컬럼 레벨 코멘트에만 기재할 것.
 - 대량 적재 시에는 정합성 트리거를 `DISABLE` → 적재 → 검증 → `ENABLE` 순으로 다룬다

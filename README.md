@@ -15,24 +15,19 @@
 
 ## 빠른 실행
 
-작업 디렉터리:
+루트 FastAPI와 PostgreSQL을 함께 실행하는 순서는 다음과 같다.
 
 ```bash
-cd /Users/joupark/bigproject/Backend-fastapi/automation-supervisor-api
-```
-
-환경 준비:
-
-```bash
+cd /path/to/Backend-fastapi
 python -m venv .venv
 source .venv/bin/activate
 pip install -r requirements.txt
-cp .env.example .env
-```
+cp .env.example .env                 # 비밀번호와 로컬 설정 확인
 
-서버 실행:
+docker compose up -d db
+docker compose ps                     # db가 healthy인지 확인
+./sqlfiles/bootstrap.sh --with-v001 --create-roles
 
-```bash
 uvicorn app.main:app --host 127.0.0.1 --port 8000 --reload
 ```
 
@@ -41,23 +36,13 @@ uvicorn app.main:app --host 127.0.0.1 --port 8000 --reload
 - Swagger UI: [http://127.0.0.1:8000/docs](http://127.0.0.1:8000/docs)
 - Health: [http://127.0.0.1:8000/health](http://127.0.0.1:8000/health)
 
-주요 환경값:
-
-- `DATABASE_URL`
-- `MAX_QA_ITERATIONS`
-- `REQUIREMENT_ANALYSIS_MODEL`
-- `DATA_SELECTION_MODEL`
-- `DATA_PROCESSING_MODEL`
-
 ## 파이프라인 실행 환경
 
 현재 루트 FastAPI 앱은 `service` 스키마에 인증·요청·파이프라인 상태를 저장하고 조회한다.
 파이프라인 단계는 현재 하드코딩 실행기로 완료 처리한다.
 
 ```bash
-cd /Users/joupark/bigproject/Backend-fastapi
-cp .env.example .env
-docker compose up --build
+docker compose up -d db
 ```
 
 요청 생성 직후 `pipeline_runs`/`stage_runs`/`pipeline_events`와 작업 화면 snapshot이 저장된다.
@@ -73,15 +58,35 @@ python -m scripts.migrate_remove_executor_columns --apply
 
 ### DB 구축
 
-이 브랜치만 clone하면 `sqlfiles`와 Alembic을 함께 사용해 전체 DB를 초기화할 수 있다.
+`sqlfiles`는 PostgreSQL의 `mart`·`anon`·`service` 스키마를 초기화한다. `mart`와 `anon`의
+구조·권한은 SQL migration이 만들고, FastAPI가 사용하는 `service` 21개 테이블은 Alembic이
+생성한다. 새 환경에서는 애플리케이션 실행 전에 아래 명령을 한 번 실행한다.
 
 ```bash
-cp .env.example .env                 # 비밀번호·JWT_SECRET을 로컬 값으로 변경
+cp .env.example .env                 # 역할 비밀번호·JWT_SECRET을 로컬 값으로 변경
 docker compose up -d db
-./sqlfiles/bootstrap.sh --with-v001 --create-roles --with-seed --with-verify
+docker compose ps                     # db가 healthy인지 확인
+./sqlfiles/bootstrap.sh --with-v001 --create-roles
 ```
 
-`sqlfiles`는 `mart`·`anon`과 권한을 만들고, `service` 21개 테이블은 Alembic이 생성한다.
+`--with-v001`은 DB·스키마 기본 설정, `--create-roles`는 `agent_svc`, `app_svc`,
+`portfolio_admin` 계정을 생성·보정한다. 기존 DB에 다시 실행할 때는 두 옵션을 생략하고,
+소유권이 어긋난 경우에만 `sqlfiles/patch/P001__align_existing_db.sql`을 검토한다.
+
+CSV 원천 데이터는 개인정보 보호를 위해 Git에 포함하지 않는다. 별도 권한 저장소에서
+`sqlfiles/seed/*.csv`를 받은 환경에서만 선택적으로 적재·검증한다.
+
+```bash
+./sqlfiles/bootstrap.sh --with-seed --with-verify
+```
+
+DB 볼륨까지 삭제하고 처음부터 다시 구성하려면 다음 명령을 사용한다.
+
+```bash
+docker compose down -v
+docker compose up -d db
+./sqlfiles/bootstrap.sh --with-v001 --create-roles
+```
 
 ## 테스트 방법
 
