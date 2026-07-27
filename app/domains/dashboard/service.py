@@ -32,7 +32,7 @@ from app.domains.dashboard.schema import (
 )
 from app.domains.pipeline.model import Client, DataRequest
 from app.domains.pipeline.model import AgentMetric, EventType, PipelineEvent, StageRun
-from app.domains.employees.model.employee_model import Employee, EmployeeStatus, PermissionCode
+from app.domains.employees.model import Employee, EmployeeStatus, PermissionCode
 
 
 AGENT_LABELS = {

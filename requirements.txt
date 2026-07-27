@@ -4,6 +4,7 @@ gunicorn==23.0.0
 sqlalchemy[asyncio]==2.0.41
 psycopg[binary]==3.2.9
 asyncpg==0.31.0  # 로컬 env의 postgresql+asyncpg DATABASE_URL 지원
+greenlet==3.5.4
 pydantic==2.11.7
 pydantic-settings==2.5.2
 bcrypt==4.2.1

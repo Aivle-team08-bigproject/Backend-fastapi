@@ -3,7 +3,7 @@ from datetime import datetime
 
 from pydantic import BaseModel, Field, field_validator
 
-from app.domains.employees.model.employee_model import EmployeeRole, EmployeeStatus, PermissionCode
+from app.domains.employees.model import EmployeeRole, EmployeeStatus, PermissionCode
 
 _EMPLOYEE_CODE_PATTERN = re.compile(r"^[A-Z0-9-]{5,40}$")
 
