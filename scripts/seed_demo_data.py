@@ -15,7 +15,8 @@ from pathlib import Path
 
 from sqlalchemy import select
 
-from app.db.session import AsyncSessionLocal, engine, init_db
+from app.common.time_utils import utcnow
+from app.db.session import AsyncSessionLocal, engine
 from app.domains.pipeline.model import (
     Client,
     DataRequest,
@@ -169,13 +170,19 @@ async def seed_source_data(data_dir: Path) -> dict[str, int]:
 
 async def seed_requests() -> int:
     created = 0
+    now = utcnow()
     async with AsyncSessionLocal() as session:
         for item in REQUESTS:
             if await session.scalar(select(DataRequest.id).where(DataRequest.request_no == item["request_no"])):
                 continue
             client = await session.scalar(select(Client).where(Client.company_name == item["client"]))
             if client is None:
-                client = Client(company_name=item["client"], contact_email="demo-contact@example.invalid")
+                client = Client(
+                    company_name=item["client"],
+                    contact_email="demo-contact@example.invalid",
+                    created_at=now,
+                    updated_at=now,
+                )
                 session.add(client)
                 await session.flush()
             request = DataRequest(
@@ -195,6 +202,8 @@ async def seed_requests() -> int:
                 },
                 status=DataRequestStatus.WAITING_REVIEW,
                 current_stage="REQUIREMENT_ANALYSIS",
+                created_at=now,
+                updated_at=now,
             )
             session.add(request)
             await session.flush()
@@ -204,6 +213,8 @@ async def seed_requests() -> int:
                 status=PipelineRunStatus.WAITING_REQUIREMENT_REVIEW,
                 current_stage="REQUIREMENT_ANALYSIS",
                 progress_percent=0,
+                created_at=now,
+                updated_at=now,
             )
             session.add(run)
             await session.flush()
@@ -213,6 +224,7 @@ async def seed_requests() -> int:
                 attempt_no=1,
                 status=StageRunStatus.PENDING,
                 input_payload={"request_no": request.request_no, "raw_requirement": request.raw_requirement},
+                created_at=now,
             )
             session.add(stage)
             await session.flush()
@@ -229,7 +241,6 @@ async def seed_requests() -> int:
 
 
 async def main(data_dir: Path) -> None:
-    await init_db()
     loaded = await seed_source_data(data_dir)
     requests = await seed_requests()
     print(f"원천 데이터 적재: {loaded}; 데모 요구사항 생성: {requests}")

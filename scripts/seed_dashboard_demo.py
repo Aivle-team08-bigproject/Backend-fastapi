@@ -9,10 +9,10 @@ from sqlalchemy import delete, select
 
 from app.common.time_utils import utcnow
 from app.core.config import settings
-from app.db.session import AsyncSessionLocal, engine, init_db
+from app.db.session import AsyncSessionLocal, engine
 from app.core.security import generate_temporary_password, hash_password
 from app.domains.dashboard.model import DashboardAlert, DashboardInsight, TaskViewSnapshot
-from app.domains.employees.model.employee_model import Employee, EmployeePermission, EmployeeStatus, PermissionCode
+from app.domains.employees.model import Employee, EmployeePermission, EmployeeStatus, PermissionCode
 from app.domains.pipeline.model import (
     AgentMetric,
     Client,
@@ -223,6 +223,8 @@ async def seed_developer_monitoring_data(session, data_request: DataRequest, now
             progress_percent=100,
             started_at=now - timedelta(days=2),
             completed_at=now - timedelta(days=2) + timedelta(hours=1),
+            created_at=now - timedelta(days=2),
+            updated_at=now - timedelta(days=2) + timedelta(hours=1),
         )
         session.add(pipeline_run)
         await session.flush()
@@ -251,6 +253,7 @@ async def seed_developer_monitoring_data(session, data_request: DataRequest, now
                 model_name="dashboard-demo-v1",
                 started_at=now - timedelta(days=2),
                 completed_at=now - timedelta(days=2) + timedelta(hours=1),
+                created_at=now - timedelta(days=2),
             )
             session.add(stage_run)
             await session.flush()
@@ -261,8 +264,8 @@ async def seed_developer_monitoring_data(session, data_request: DataRequest, now
 
     local_now = now.replace(tzinfo=timezone.utc).astimezone(ZoneInfo(settings.dashboard_timezone))
     local_today = local_now.replace(hour=0, minute=0, second=0, microsecond=0)
-    today = local_today.astimezone(timezone.utc).replace(tzinfo=None)
-    month_start = local_today.replace(day=1).astimezone(timezone.utc).replace(tzinfo=None)
+    today = local_today.astimezone(timezone.utc)
+    month_start = local_today.replace(day=1).astimezone(timezone.utc)
     agent_specs = [
         ("requirement-analysis-agent", "REQUIREMENT_ANALYSIS", 4200, 900, 110, 17),
         ("data-selection-agent", "DATA_SELECTION", 5600, 1200, 820, 9),
@@ -369,7 +372,6 @@ async def seed_developer_monitoring_data(session, data_request: DataRequest, now
 
 
 async def upsert_dashboard_data() -> int:
-    await init_db()
     async with AsyncSessionLocal() as session:
         now = utcnow()
         for employee_code, name, department, employee_status, permissions in DEMO_EMPLOYEES:
@@ -398,7 +400,7 @@ async def upsert_dashboard_data() -> int:
         for index, (request_no, company, data_type, detail, assignee, label) in enumerate(all_tasks):
             client = await session.scalar(select(Client).where(Client.company_name == company))
             if client is None:
-                client = Client(company_name=company)
+                client = Client(company_name=company, created_at=now, updated_at=now)
                 session.add(client)
                 await session.flush()
 
@@ -427,7 +429,6 @@ async def upsert_dashboard_data() -> int:
                     delivery_channels=["API"],
                     analysis_condition=metadata,
                     status=db_status,
-                    current_stage=current_stage,
                     created_at=created_at,
                     updated_at=created_at + timedelta(days=min(index % 3, 1)),
                 )
@@ -440,7 +441,6 @@ async def upsert_dashboard_data() -> int:
                 request.raw_requirement = detail
                 request.analysis_condition = metadata
                 request.status = db_status
-                request.current_stage = current_stage
                 request.created_at = created_at
                 request.updated_at = created_at + timedelta(days=min(index % 3, 1))
 
@@ -455,9 +455,18 @@ async def upsert_dashboard_data() -> int:
                     )
                 )
                 if snapshot is None:
-                    session.add(TaskViewSnapshot(data_request_id=request.id, view_code=view_code, payload=payload))
+                    session.add(
+                        TaskViewSnapshot(
+                            data_request_id=request.id,
+                            view_code=view_code,
+                            payload=payload,
+                            created_at=now,
+                            updated_at=now,
+                        )
+                    )
                 else:
                     snapshot.payload = payload
+                    snapshot.updated_at = now
 
         alert_rows = [
             ("REQUIREMENT_GUIDE", "요구사항 가이드 미확정", "2건", "#fde8e8", "#dc2626", "ABC마케팅 가이드 미달성 오류 피드백 지연", "대기 3일 경과", "/tasks/review?requestNo=REQ-2024-0847"),
@@ -469,6 +478,7 @@ async def upsert_dashboard_data() -> int:
             values = dict(
                 alert_code=row[0], title=row[1], count_label=row[2], count_bg=row[3], count_color=row[4],
                 description=row[5], foot_note=row[6], action_to=row[7], display_order=order,
+                updated_at=now,
             )
             if alert is None:
                 session.add(DashboardAlert(**values))

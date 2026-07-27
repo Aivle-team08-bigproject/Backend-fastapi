@@ -13,8 +13,8 @@ from sqlalchemy.orm import selectinload
 
 from app.common.time_utils import utcnow
 from app.core.security import generate_temporary_password, hash_password, verify_password
-from app.db.session import AsyncSessionLocal, engine, init_db
-from app.domains.employees.model.employee_model import (
+from app.db.session import AsyncSessionLocal, engine
+from app.domains.employees.model import (
     Employee,
     EmployeePermission,
     EmployeeStatus,
@@ -30,7 +30,6 @@ DEMO_PERMISSIONS = tuple(PermissionCode)
 
 
 async def seed_demo_user() -> tuple[str, str]:
-    await init_db()
     password = generate_temporary_password()
     now = utcnow()
 
