@@ -1,7 +1,7 @@
 import enum
 from datetime import datetime
 
-from sqlalchemy import DateTime, Enum as SAEnum, ForeignKey, Integer, String, Boolean
+from sqlalchemy import BigInteger, DateTime, Enum as SAEnum, ForeignKey, Integer, String, Boolean
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.db.base import Base
@@ -45,21 +45,21 @@ PERMISSION_DESCRIPTIONS: dict[PermissionCode, str] = {
 class Employee(Base):
     __tablename__ = "employees"
 
-    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
     employee_code: Mapped[str] = mapped_column(String(40), unique=True, nullable=False, index=True)
-    name: Mapped[str] = mapped_column(String(80), nullable=False)
-    department: Mapped[str] = mapped_column(String(100), nullable=False)
-    password_hash: Mapped[str] = mapped_column(String(200), nullable=False)
+    name: Mapped[str] = mapped_column(String(100), nullable=False)
+    department: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    password_hash: Mapped[str] = mapped_column(String(255), nullable=False)
     status: Mapped[EmployeeStatus] = mapped_column(
         SAEnum(EmployeeStatus, native_enum=False, length=20), nullable=False, default=EmployeeStatus.ACTIVE
     )
     must_change_password: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
     failed_login_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
-    locked_until: Mapped[datetime | None] = mapped_column(DateTime(), nullable=True)
+    locked_until: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     auth_version: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
     created_by: Mapped[str] = mapped_column(String(40), nullable=False)
-    created_at: Mapped[datetime] = mapped_column(DateTime(), nullable=False)
-    updated_at: Mapped[datetime] = mapped_column(DateTime(), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
 
     permissions: Mapped[list["EmployeePermission"]] = relationship(
         back_populates="employee",
@@ -71,9 +71,9 @@ class Employee(Base):
 class EmployeePermission(Base):
     __tablename__ = "employee_permissions"
 
-    employee_id: Mapped[int] = mapped_column(ForeignKey("employees.id"), primary_key=True)
+    employee_id: Mapped[int] = mapped_column(BigInteger, ForeignKey("service.employees.id"), primary_key=True)
     permission_code: Mapped[PermissionCode] = mapped_column(
-        SAEnum(PermissionCode, native_enum=False, length=80), primary_key=True
+        SAEnum(PermissionCode, native_enum=False, length=40), primary_key=True
     )
 
     employee: Mapped["Employee"] = relationship(back_populates="permissions")
