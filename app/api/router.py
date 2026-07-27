@@ -7,8 +7,6 @@ from app.domains.automation.router.requirements_analysis_router import (
 )
 from app.domains.pipeline.router import router as pipeline_router
 from app.domains.dashboard.router import router as dashboard_router
-from app.api.requirements import router as requirements_router
-from app.api.tasks import router as tasks_router
 
 api_router = APIRouter()
 api_router.include_router(auth_router)
@@ -17,5 +15,3 @@ api_router.include_router(session_router)
 api_router.include_router(requirements_analysis_router)
 api_router.include_router(pipeline_router)
 api_router.include_router(dashboard_router)
-api_router.include_router(requirements_router)
-api_router.include_router(tasks_router)

@@ -2,7 +2,7 @@ from app.db import session as _service_session  # noqa: F401 - import registers 
 from app.db.base import Base
 
 
-def test_demo_erd_tables_are_registered_on_service_database_base():
+def test_service_tables_are_registered_on_service_database_base():
     expected = {
         "clients",
         "data_requests",
@@ -16,27 +16,23 @@ def test_demo_erd_tables_are_registered_on_service_database_base():
         "artifacts",
         "reviews",
         "deliveries",
-        "source_datasets",
-        "source_customers",
-        "source_cards",
-        "source_merchants",
-        "source_mcc_codes",
-        "source_transactions",
+        "admin_audit_logs",
+        "employees",
+        "employee_permissions",
+        "login_sessions",
+        "requirements_analysis_runs",
+        "dashboard_alerts",
+        "dashboard_insights",
+        "system_dashboard_snapshots",
+        "task_view_snapshots",
     }
 
-    assert expected <= set(Base.metadata.tables)
+    assert expected <= {table.name for table in Base.metadata.tables.values()}
 
 
 def test_pipeline_run_has_unique_attempt_per_request():
-    table = Base.metadata.tables["pipeline_runs"]
+    table = Base.metadata.tables["service.pipeline_runs"]
     assert any(
         constraint.name == "uq_pipeline_run_attempt"
         for constraint in table.constraints
     )
-
-
-def test_source_transactions_only_requires_dataset_reference():
-    table = Base.metadata.tables["source_transactions"]
-    foreign_key_targets = {foreign_key.target_fullname for foreign_key in table.foreign_keys}
-
-    assert foreign_key_targets == {"source_datasets.id"}

@@ -1,17 +1,17 @@
 # Backend-fastapi
 
-이 레포는 하나 데이터 마켓 백엔드 저장소다. 현재 브랜치의 중심 구현은 기존 인증·요구사항 API와 별도로, 멀티 에이전트 파이프라인의 백엔드 오케스트레이션 예제인 `automation-supervisor-api/`에 있다.
+이 레포는 하나 데이터 마켓 백엔드 저장소다. 현재 브랜치는 인증·직원 관리와 `service` 스키마 기반의 데이터 요청·대시보드 API를 제공한다.
 
 ## 현재 구현 범위
 
-현재 브랜치에서 실제로 구현돼 있는 핵심은 `automation-supervisor-api/`다. 이 모듈은 프로젝트의 5단계 파이프라인 중 아래 흐름을 FastAPI Supervisor 형태로 실행한다.
+현재 브랜치의 파이프라인 API는 DB 상태 계약을 검증하기 위한 하드코딩 실행기로 동작한다. 요청 생성 시 아래 단계의 완료 상태와 화면 snapshot을 `service` DB에 저장한다.
 
 - `REQUIREMENT_ANALYSIS`
 - `DATA_SELECTION`
 - `DATA_PROCESSING`
 - `HITL_REVIEW`
 
-즉, 지금 기준 구현 내용은 "3개 에이전트 실행 + 산출물 검증 + 캐시 + 사람 승인(HITL) + 고정 롤백 정책"이다.
+실제 에이전트 실행기와 외부 브로커 연결은 후속 작업 범위다.
 
 ## 빠른 실행
 
@@ -51,9 +51,8 @@ uvicorn app.main:app --host 127.0.0.1 --port 8000 --reload
 
 ## 파이프라인 실행 환경
 
-현재 루트 FastAPI 앱은 요청과 파이프라인 상태를 PostgreSQL에 저장하고 조회하는 역할만
-담당한다. 에이전트 worker 실행기는 공동 설계를 위해 분리했으며, 이 브랜치에는 실행기와
-메시지 브로커가 포함되어 있지 않다.
+현재 루트 FastAPI 앱은 `service` 스키마에 인증·요청·파이프라인 상태를 저장하고 조회한다.
+파이프라인 단계는 현재 하드코딩 실행기로 완료 처리한다.
 
 ```bash
 cd /Users/joupark/bigproject/Backend-fastapi
@@ -61,8 +60,7 @@ cp .env.example .env
 docker compose up --build
 ```
 
-요청 생성 직후 `pipeline_runs`/`stage_runs`/`pipeline_events`가 저장되며, 실제 에이전트
-실행과 상태 전이는 별도 worker 설계 브랜치에서 연결한다.
+요청 생성 직후 `pipeline_runs`/`stage_runs`/`pipeline_events`와 작업 화면 snapshot이 저장된다.
 
 기존 PostgreSQL volume을 재사용하는 경우 모델에서 삭제한 `stage_runs.executor`와
 `stage_runs.executor_reference` 컬럼이 물리적으로 남을 수 있다. 먼저 점검한 뒤 명시적으로
@@ -73,19 +71,10 @@ python -m scripts.migrate_remove_executor_columns
 python -m scripts.migrate_remove_executor_columns --apply
 ```
 
-### 데모 요구사항·원천 데이터 적재
+### DB 구축
 
-`dummyData/`의 고객·카드·가맹점·MCC·거래 CSV와 `REQ-20260714-001`부터
-`REQ-20260714-005`까지의 데모 요청을 서비스 DB에 적재한다. 각 요청은 아직
-요구사항 분석 에이전트가 실행되지 않은 `WAITING_REQUIREMENT_REVIEW` 상태로 생성된다.
-
-```bash
-cd /Users/joupark/bigproject/Backend-fastapi
-python -m scripts.seed_demo_data
-```
-
-이미 등록된 `source_datasets.dataset_code` 또는 `data_requests.request_no`는 건너뛰므로
-명령을 다시 실행해도 중복 데이터가 생기지 않는다.
+`mart`·`anon` 스키마와 권한은 별도 `sqlfiles` 번들로 구축하고, `service` 테이블은
+이 레포의 Alembic으로 구축한다.
 
 ## 테스트 방법
 
@@ -140,10 +129,11 @@ python scripts/dry_run_supervisor.py --sample subscription --feedback "가공 �
 
 ```text
 Backend-fastapi/
-├── automation-supervisor-api/   # 현재 브랜치의 핵심 구현
 ├── agent_runtime/               # 독립 배포를 염두에 둔 에이전트 런타임 모듈
-├── app/                         # 기존 인증/세션/요구사항 API
-├── tests/                       # 기존 API 테스트
+├── app/                         # 인증·직원·파이프라인·대시보드 API
+├── alembic/                     # service 스키마 마이그레이션
+├── scripts/                     # 테스트·데모 데이터 적재
+├── tests/                       # API·모델 테스트
 └── docker-compose.yml           # 루트 PostgreSQL 실행용
 ```
 
@@ -205,6 +195,7 @@ DATA_PROCESSING_MODEL=chatgpt-5.5
 
 시각화 및 보고서 2차 가공, 최종 QA 자동화, 운영 데이터 소스 및 외부 오케스트레이션 연동은 아직 구현되지 않았다.
 
-## 기존 루트 API
+## API 범위
 
-루트 `app/`은 기존 인증, 세션, 관리자, 요구사항/작업 관리 API를 담고 있다. 이쪽은 현재 브랜치의 핵심 에이전트 구현 대상은 아니지만, 기존 서비스 백엔드로 계속 남아 있다. 관련 내용은 [docs/AUTH_MODULE.md](docs/AUTH_MODULE.md)를 참고하면 된다.
+루트 `app/`은 인증, 세션, 직원 관리, 데이터 요청·파이프라인, 대시보드 API를 제공한다.
+기존 `/requirements`·`/tasks` 레거시 API는 제거되었으며, 현재 작업 흐름은 `/api/v1` API를 사용한다.
