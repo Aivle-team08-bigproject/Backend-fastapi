@@ -15,11 +15,11 @@ class Settings(BaseSettings):
         extra="ignore",
     )
 
-    # --- DB ---
-    database_url: str = "postgresql+psycopg://appuser:change_me_strong_password@127.0.0.1:5432/appdb"
+    # # --- DB ---
+    # database_url: str = "postgresql+psycopg://appuser:change_me_strong_password@127.0.0.1:5432/appdb"
 
-    # requirements/tasks 도메인 전용 DB (동기 엔진, app/db/legacy_session.py에서 사용)
-    requirements_database_url: str = "postgresql+psycopg://appuser:change_me_strong_password@127.0.0.1:5432/appdb"
+    # # requirements/tasks 도메인 전용 DB (동기 엔진, app/db/legacy_session.py에서 사용)
+    # requirements_database_url: str = "postgresql+psycopg://appuser:change_me_strong_password@127.0.0.1:5432/appdb"
 
     # --- JWT (Access Token) ---
     jwt_issuer: str = "hana-data-market"
@@ -57,10 +57,18 @@ class Settings(BaseSettings):
     # agent_runtime/ 아래 각 에이전트가 자체 설정을 갖는다. FastAPI 앱은 에이전트를
     # "호출"만 하고 그 내부 설정(API 키 등)을 알 필요가 없어야 한다는 원칙 때문.
 
-    # --- hanacard DB (agent_svc/app_svc 2계정, 인수인계서 확정 전략) ---
-    # agent_svc: anon 스키마 전체 + service 스키마 중 파이프라인 로그성 테이블만 (읽기/쓰기)
+    # --- hanacard DB (agent_svc / app_svc / hanacard_admin 3계정) ---
+    # agent_svc: anon 스키마 전체 + service 스키마 중 실행계층 테이블만 (읽기/쓰기)
     hanacard_agent_database_url: str = "postgresql+psycopg://agent_svc:change_me@127.0.0.1:5432/hanacard"
+
     # app_svc: service 스키마 전체 (mart 접근권한 없음 — 화면설계상 불필요함이 확인되어 철회됨)
     hanacard_app_database_url: str = "postgresql+psycopg://app_svc:change_me@127.0.0.1:5432/hanacard"
-    hanacard_migration_database_url: str = "postgresql+psycopg://postgres:change_me@127.0.0.1:5432/hanacard"
+
+    # hanacard_admin: Alembic 마이그레이션·익명화 배치 전용 (앱 런타임에는 사용하지 않음)
+    hanacard_migration_database_url: str = "postgresql+psycopg://hanacard_admin:change_me@127.0.0.1:5432/hanacard"
+    
+    # 익명화 배치(scripts/anon_batch)의 가맹점 가명화 salt.
+    # .env로만 주입하며 저장소에 두지 않는다 — 유출 시 토큰 역산 위험.
+    anon_hash_salt: str = ""
+
 settings = Settings()
