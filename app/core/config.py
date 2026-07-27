@@ -1,3 +1,5 @@
+from decimal import Decimal
+
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -9,7 +11,9 @@ class Settings(BaseSettings):
     """
 
     model_config = SettingsConfigDict(
-        env_file=".env",
+        # 로컬 팀 환경에서 기존 `env` 파일과 표준 `.env` 파일을 모두 허용한다.
+        # dotenv parser를 거치므로 JSON 값(CORS_ALLOWED_ORIGINS)과 CRLF도 안전하게 처리된다.
+        env_file=("env", ".env"),
         env_file_encoding="utf-8",
         case_sensitive=False,
         extra="ignore",
@@ -18,8 +22,9 @@ class Settings(BaseSettings):
     # --- DB ---
     database_url: str = "postgresql+psycopg://appuser:change_me_strong_password@127.0.0.1:5432/appdb"
 
-    # requirements/tasks 도메인 전용 DB (동기 엔진, app/db/legacy_session.py에서 사용)
-    requirements_database_url: str = "postgresql+psycopg://appuser:change_me_strong_password@127.0.0.1:5432/appdb"
+    # --- 개발자 대시보드 ---
+    dashboard_usd_to_krw_rate: Decimal = Decimal("1330")
+    dashboard_timezone: str = "Asia/Seoul"
 
     # --- JWT (Access Token) ---
     jwt_issuer: str = "portfolio-data-market"
@@ -45,7 +50,12 @@ class Settings(BaseSettings):
     cookie_domain: str | None = None
 
     # --- CORS ---
-    cors_allowed_origins: list[str] = ["http://localhost:5173", "http://localhost:3000"]
+    cors_allowed_origins: list[str] = [
+        "http://localhost:5173",
+        "http://127.0.0.1:5173",
+        "http://localhost:3000",
+        "http://127.0.0.1:3000",
+    ]
 
     # --- 최초 관리자 계정 부트스트랩 ---
     bootstrap_admin_id: str = "DEMO-ADMIN-001"
@@ -57,4 +67,14 @@ class Settings(BaseSettings):
     # agent_runtime/ 아래 각 에이전트가 자체 설정을 갖는다. FastAPI 앱은 에이전트를
     # "호출"만 하고 그 내부 설정(API 키 등)을 알 필요가 없어야 한다는 원칙 때문.
 
+    # --- portfolio DB (agent_svc / app_svc / portfolio_admin 3계정) ---
+    # agent_svc: anon 스키마 전체 + service 실행계층 테이블 (읽기/쓰기)
+    portfolio_agent_database_url: str = "postgresql+psycopg://agent_svc:change_me@127.0.0.1:5432/portfolio"
+    # app_svc: service 스키마 전체 (mart 접근권한 없음 — 화면설계상 불필요함이 확인되어 철회됨)
+    portfolio_app_database_url: str = "postgresql+psycopg://app_svc:change_me@127.0.0.1:5432/portfolio"
+    # portfolio_admin: Alembic 마이그레이션·익명화 배치 전용
+    portfolio_migration_database_url: str = "postgresql+psycopg://portfolio_admin:change_me@127.0.0.1:5432/portfolio"
+
+    # 익명화 배치에서 사용하는 가맹점 가명화 salt. 저장소에는 두지 않는다.
+    anon_hash_salt: str = ""
 settings = Settings()

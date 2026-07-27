@@ -1,7 +1,8 @@
 import enum
 from datetime import datetime
 
-from sqlalchemy import JSON, DateTime, Enum, String, Text
+from sqlalchemy import BigInteger, DateTime, Enum, String, Text
+from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.common.time_utils import utcnow
@@ -26,15 +27,18 @@ class RequirementsAnalysisRun(Base):
     """
 
     __tablename__ = "requirements_analysis_runs"
+    __table_args__ = {"schema": "service"}
 
-    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
     raw_request: Mapped[str] = mapped_column(Text, nullable=False)
     requested_by: Mapped[str] = mapped_column(String(100), nullable=False, index=True)
-    status: Mapped[AnalysisStatus] = mapped_column(Enum(AnalysisStatus), nullable=False, index=True)
+    status: Mapped[AnalysisStatus] = mapped_column(
+        Enum(AnalysisStatus, native_enum=False, length=20), nullable=False, index=True
+    )
     model_provider: Mapped[str] = mapped_column(String(50), nullable=False)
     model_id: Mapped[str] = mapped_column(String(100), nullable=False)
     # {"usage_purpose", "requested_data_summary", "requested_data_categories",
     #  "delivery_channel", "output_format"}
-    analysis_result: Mapped[dict | None] = mapped_column(JSON)
+    analysis_result: Mapped[dict | None] = mapped_column(JSONB)
     error_message: Mapped[str | None] = mapped_column(Text)
-    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)

@@ -1,24 +1,27 @@
+# portfolio 로컬 개발용 PostgreSQL
+# 스키마와 seed 데이터는 sqlfiles/bootstrap.sh로 구성한다.
 services:
   db:
-    image: postgres:16-alpine
-    container_name: datamarket-postgres
+    image: postgres:17-alpine
+    container_name: portfolio-postgres
     restart: unless-stopped
     environment:
-      POSTGRES_USER: ${POSTGRES_USER}
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
-      POSTGRES_DB: ${POSTGRES_DB}
-      REQUIREMENTS_DB_NAME: ${REQUIREMENTS_DB_NAME}
+      POSTGRES_USER: ${POSTGRES_USER:-postgres}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD가 .env에 필요합니다}
+      POSTGRES_DB: ${POSTGRES_DB:-portfolio}
+      TZ: UTC
+      PGTZ: UTC
+    command: ["postgres", "-c", "timezone=UTC"]
     ports:
-      # 백엔드가 호스트(deployment-host)에서 localhost:5432로 접속한다.
       - "${POSTGRES_PORT:-5432}:5432"
     volumes:
       - postgres_data:/var/lib/postgresql/data
-      - ./docker/postgres/init:/docker-entrypoint-initdb.d:ro
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER} -d ${POSTGRES_DB}"]
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-postgres} -d ${POSTGRES_DB:-portfolio}"]
       interval: 10s
       timeout: 5s
       retries: 5
+      start_period: 10s
 
 volumes:
   postgres_data:
