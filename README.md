@@ -73,8 +73,15 @@ python -m scripts.migrate_remove_executor_columns --apply
 
 ### DB 구축
 
-`mart`·`anon` 스키마와 권한은 별도 `sqlfiles` 번들로 구축하고, `service` 테이블은
-이 레포의 Alembic으로 구축한다.
+이 브랜치만 clone하면 `sqlfiles`와 Alembic을 함께 사용해 전체 DB를 초기화할 수 있다.
+
+```bash
+cp .env.example .env                 # 비밀번호·JWT_SECRET을 로컬 값으로 변경
+docker compose up -d db
+./sqlfiles/bootstrap.sh --with-v001 --create-roles --with-seed --with-verify
+```
+
+`sqlfiles`는 `mart`·`anon`과 권한을 만들고, `service` 21개 테이블은 Alembic이 생성한다.
 
 ## 테스트 방법
 
