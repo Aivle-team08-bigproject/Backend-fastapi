@@ -8,7 +8,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from app.common.errors import forbidden, unauthorized
-from app.common.time_utils import utcnow
+from app.common.time_utils import as_utc, utcnow
 from app.core import security
 from app.core.config import settings
 from app.db.session import get_db
@@ -94,7 +94,7 @@ async def get_current_auth(
 
     # 6. 절대 세션 만료시간 확인
     # expires_at은 최초 로그인 시 결정되며 Refresh로 연장하지 않는다.
-    if session.expires_at <= now:
+    if as_utc(session.expires_at) <= now:
         await auth_service.revoke_session(
             db,
             session,
@@ -112,7 +112,7 @@ async def get_current_auth(
         minutes=settings.session_idle_timeout_minutes
     )
 
-    if session.last_seen_at + idle_timeout <= now:
+    if as_utc(session.last_seen_at) + idle_timeout <= now:
         await auth_service.revoke_session(
             db,
             session,
@@ -180,7 +180,7 @@ async def get_current_auth(
     # 13. 인증 단계에서는 last_seen_at을 갱신하지 않는다.
     # 성공한 업무 API가 끝난 뒤 SessionActivityMiddleware가 사용한다.
     request.state.session_id = session.id
-    request.state.session_last_seen_at = session.last_seen_at
+    request.state.session_last_seen_at = as_utc(session.last_seen_at)
 
     return CurrentAuth(
         employee=employee,
