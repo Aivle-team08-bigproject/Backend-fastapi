@@ -207,4 +207,4 @@ DATA_PROCESSING_MODEL=chatgpt-5.5
 
 ## 기존 루트 API
 
-루트 `app/`은 기존 인증, 세션, 관리자, 요구사항/작업 관리 API를 담고 있다. 이쪽은 현재 브랜치의 핵심 에이전트 구현 대상은 아니지만, 기존 서비스 백엔드로 계속 남아 있다. 관련 내용은 [AUTH_MODULE.md](/Users/joupark/bigproject/Backend-fastapi/AUTH_MODULE.md)를 참고하면 된다.
+루트 `app/`은 기존 인증, 세션, 관리자, 요구사항/작업 관리 API를 담고 있다. 이쪽은 현재 브랜치의 핵심 에이전트 구현 대상은 아니지만, 기존 서비스 백엔드로 계속 남아 있다. 관련 내용은 [docs/AUTH_MODULE.md](docs/AUTH_MODULE.md)를 참고하면 된다.
