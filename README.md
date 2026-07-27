@@ -1,120 +1,213 @@
-# 요구사항·작업 관리 API (FastAPI)
+# Backend-fastapi
 
-요구사항을 기준으로 다음 기능을 구현한 Python/FastAPI 백엔드입니다.
+이 레포는 하나 데이터 마켓 백엔드 저장소다. 현재 브랜치는 인증·직원 관리와 `service` 스키마 기반의 데이터 요청·대시보드 API를 제공한다.
 
-- 요구사항 CRUD
-- 요구사항 상태 변경 및 상태 이력 관리
-- 요구사항별 작업 CRUD
-- 작업 담당자, 우선순위, 시작일·마감일 관리
-- 작업 상태 변경 및 상태 이력 관리
-- 요구사항 진행률 자동 계산
-- 검색·필터·페이징
-- PostgreSQL 기반 실행 (docker-compose로 DB 구동)
-- Swagger UI 제공
+## 현재 구현 범위
 
-## 상태
+현재 브랜치의 파이프라인 API는 DB 상태 계약을 검증하기 위한 하드코딩 실행기로 동작한다. 요청 생성 시 아래 단계의 완료 상태와 화면 snapshot을 `service` DB에 저장한다.
 
-### 요구사항
-- `DRAFT`: 초안
-- `REVIEW`: 검토 중
-- `APPROVED`: 승인
-- `IN_PROGRESS`: 진행 중
-- `COMPLETED`: 완료
-- `REJECTED`: 반려
-- `CANCELLED`: 취소
+- `REQUIREMENT_ANALYSIS`
+- `DATA_SELECTION`
+- `DATA_PROCESSING`
+- `HITL_REVIEW`
 
-### 작업
-- `TODO`: 할 일
-- `IN_PROGRESS`: 진행 중
-- `BLOCKED`: 차단
-- `DONE`: 완료
-- `CANCELLED`: 취소
+실제 에이전트 실행기와 외부 브로커 연결은 후속 작업 범위다.
 
-## 실행
+## 빠른 실행
 
-### 1. PostgreSQL (docker-compose)
+루트 FastAPI와 PostgreSQL을 함께 실행하는 순서는 다음과 같다.
 
-rocky9 호스트에 Docker/Docker Compose가 설치되어 있다고 가정한다. `.env`의
-`POSTGRES_*` 값으로 컨테이너가 초기화되며, `employees/auth/session` 도메인용 DB
-(`POSTGRES_DB`, 기본 `datamarket`)와 `requirements/tasks` 도메인용 DB
-(`REQUIREMENTS_DB_NAME`, 기본 `requirements`)가 컨테이너 최초 기동 시 함께 생성된다
-(`docker/postgres/init/01-create-additional-db.sh`).
+```bash
+cd /path/to/Backend-fastapi
+python -m venv .venv
+source .venv/bin/activate
+pip install -r requirements.txt
+cp .env.example .env                 # 비밀번호와 로컬 설정 확인
+
+docker compose up -d db
+docker compose ps                     # db가 healthy인지 확인
+./sqlfiles/bootstrap.sh --with-v001 --create-roles
+
+uvicorn app.main:app --host 127.0.0.1 --port 8000 --reload
+```
+
+확인 주소:
+
+- Swagger UI: [http://127.0.0.1:8000/docs](http://127.0.0.1:8000/docs)
+- Health: [http://127.0.0.1:8000/health](http://127.0.0.1:8000/health)
+
+## 파이프라인 실행 환경
+
+현재 루트 FastAPI 앱은 `service` 스키마에 인증·요청·파이프라인 상태를 저장하고 조회한다.
+파이프라인 단계는 현재 하드코딩 실행기로 완료 처리한다.
 
 ```bash
 docker compose up -d db
-docker compose ps          # healthy 확인
 ```
 
-- PostgreSQL은 호스트의 `localhost:5432` (기본값, `POSTGRES_PORT`로 변경 가능)로 노출된다.
-- 데이터는 named volume `postgres_data`에 영구 보존된다.
-- 운영 배포 전 `.env`의 `POSTGRES_PASSWORD`/`JWT_SECRET`/`BOOTSTRAP_ADMIN_PASSWORD`는
-  반드시 새 값으로 교체할 것.
+요청 생성 직후 `pipeline_runs`/`stage_runs`/`pipeline_events`와 작업 화면 snapshot이 저장된다.
 
-### 2. 백엔드
-
-백엔드는 컨테이너가 아니라 rocky9 호스트에서 직접 실행하며, `localhost:8000`으로 붙는다.
-DB는 위에서 띄운 PostgreSQL(`localhost:5432`)을 `.env`의 `DATABASE_URL` /
-`REQUIREMENTS_DATABASE_URL`로 사용한다. 앱 기동 시(`app/main.py`의 lifespan)
-두 DB 모두 `create_all()`로 테이블이 자동 생성된다 (운영에서는 Alembic 등 마이그레이션 권장).
+기존 PostgreSQL volume을 재사용하는 경우 모델에서 삭제한 `stage_runs.executor`와
+`stage_runs.executor_reference` 컬럼이 물리적으로 남을 수 있다. 먼저 점검한 뒤 명시적으로
+삭제한다.
 
 ```bash
-python -m venv .venv
-
-# Windows
-.venv\Scripts\activate
-
-# macOS/Linux
-source .venv/bin/activate
-
-pip install -r requirements.txt
-uvicorn app.main:app --host 0.0.0.0 --port 8000
+python -m scripts.migrate_remove_executor_columns
+python -m scripts.migrate_remove_executor_columns --apply
 ```
 
-기존 `Dockerfile`(gunicorn, 8000 포트)로 컨테이너 실행도 가능하다. 이 경우
-`DATABASE_URL`/`REQUIREMENTS_DATABASE_URL`의 호스트를 `localhost` 대신
-`host.docker.internal`(또는 rocky9에서 docker gateway IP)로 바꿔야 컨테이너 안에서
-호스트에 노출된 PostgreSQL에 접속할 수 있다.
+### DB 구축
 
-- Swagger UI: http://127.0.0.1:8000/docs
-- Health Check: http://127.0.0.1:8000/health
-
-## 테스트
+`sqlfiles`는 PostgreSQL의 `mart`·`anon`·`service` 스키마를 초기화한다. `mart`와 `anon`의
+구조·권한은 SQL migration이 만들고, FastAPI가 사용하는 `service` 21개 테이블은 Alembic이
+생성한다. 새 환경에서는 애플리케이션 실행 전에 아래 명령을 한 번 실행한다.
 
 ```bash
-pytest
+cp .env.example .env                 # 역할 비밀번호·JWT_SECRET을 로컬 값으로 변경
+docker compose up -d db
+docker compose ps                     # db가 healthy인지 확인
+./sqlfiles/bootstrap.sh --with-v001 --create-roles
 ```
 
-## 주요 API
+`--with-v001`은 DB·스키마 기본 설정, `--create-roles`는 `agent_svc`, `app_svc`,
+`hanacard_admin` 계정을 생성·보정한다. 기존 DB에 다시 실행할 때는 두 옵션을 생략하고,
+소유권이 어긋난 경우에만 `sqlfiles/patch/P001__align_existing_db.sql`을 검토한다.
 
-| 기능 | Method | URL |
-|---|---|---|
-| 요구사항 생성 | POST | `/api/v1/requirements` |
-| 요구사항 목록 | GET | `/api/v1/requirements` |
-| 요구사항 상세 | GET | `/api/v1/requirements/{id}` |
-| 요구사항 수정 | PATCH | `/api/v1/requirements/{id}` |
-| 요구사항 삭제 | DELETE | `/api/v1/requirements/{id}` |
-| 요구사항 상태 변경 | PATCH | `/api/v1/requirements/{id}/status` |
-| 요구사항 상태 이력 | GET | `/api/v1/requirements/{id}/status-history` |
-| 작업 생성 | POST | `/api/v1/requirements/{id}/tasks` |
-| 작업 목록 | GET | `/api/v1/requirements/{id}/tasks` |
-| 작업 상세 | GET | `/api/v1/tasks/{task_id}` |
-| 작업 수정 | PATCH | `/api/v1/tasks/{task_id}` |
-| 작업 삭제 | DELETE | `/api/v1/tasks/{task_id}` |
-| 작업 상태 변경 | PATCH | `/api/v1/tasks/{task_id}/status` |
-| 작업 상태 이력 | GET | `/api/v1/tasks/{task_id}/status-history` |
+CSV 원천 데이터는 개인정보 보호를 위해 Git에 포함하지 않는다. 별도 권한 저장소에서
+`sqlfiles/seed/*.csv`를 받은 환경에서만 선택적으로 적재·검증한다.
 
-## 인증 모듈과 병합할 때
+```bash
+./sqlfiles/bootstrap.sh --with-seed --with-verify
+```
 
-현재 코드는 독립 실행 가능한 형태입니다. 기존 인증·권한 모듈에 병합할 경우 각 라우터의
-`actor` 문자열을 로그인 사용자 정보로 교체하고, 라우터 의존성에 권한 검사를 추가하면 됩니다.
+DB 볼륨까지 삭제하고 처음부터 다시 구성하려면 다음 명령을 사용한다.
+
+```bash
+docker compose down -v
+docker compose up -d db
+./sqlfiles/bootstrap.sh --with-v001 --create-roles
+```
+
+## 테스트 방법
+
+현재 구현 기준 검증 방법은 아래 두 가지다.
+
+### 1. Dry-run
+
+DB 없이 `stub agent`로 전체 흐름과 롤백 정책을 확인한다.
+
+```bash
+cd /Users/joupark/bigproject/Backend-fastapi/automation-supervisor-api
+python scripts/dry_run_supervisor.py
+```
 
 예시:
 
-```python
-@router.post(
-    "",
-    dependencies=[Depends(require_permission(PermissionCode.REQUIREMENT_WRITE))]
-)
+```bash
+python scripts/dry_run_supervisor.py --sample travel
+python scripts/dry_run_supervisor.py --sample cafe
+python scripts/dry_run_supervisor.py --requirement "30대 남성의 헬스 업종 월별 결제 변화를 차트와 CSV로 제공해줘."
+python scripts/dry_run_supervisor.py --sample travel --csv /absolute/path/to/selected.csv
+python scripts/dry_run_supervisor.py --sample subscription --feedback "가공 컬럼과 보고서 형식이 맞지 않습니다."
 ```
 
-`created_by`, `updated_by`, 상태 변경 이력의 `changed_by`에는 현재 로그인 사용자 ID를 넣도록 연결하면 됩니다.
+### 2. API 수동 검증
+
+서버를 띄운 뒤 아래 순서로 호출한다.
+
+1. `POST /api/v1/supervisor/jobs`
+2. `POST /api/v1/supervisor/jobs/{job_id}/run`
+3. `POST /api/v1/supervisor/jobs/{job_id}/hitl-review`
+4. `GET /api/v1/supervisor/jobs/{job_id}`
+
+요청 예시는 `automation-supervisor-api/examples.http`를 보면 된다.
+
+## 프로젝트 목표
+
+루트 문서 기준 전체 목표는 아래 5단계 자동화 파이프라인이다.
+
+1. 요구사항 분석
+2. 데이터 선별
+3. 데이터 가공
+4. 시각화 및 보고서 2차 가공
+5. 최종 산출물 QA
+
+관련 문서:
+
+- [프로세스_개요.md](/Users/joupark/bigproject/프로세스_개요.md)
+- [aws_workflow_architecture.md](/Users/joupark/bigproject/aws_workflow_architecture.md)
+
+## 디렉터리
+
+```text
+Backend-fastapi/
+├── agent_runtime/               # 독립 배포를 염두에 둔 에이전트 런타임 모듈
+├── app/                         # 인증·직원·파이프라인·대시보드 API
+├── alembic/                     # service 스키마 마이그레이션
+├── scripts/                     # 테스트·데모 데이터 적재
+├── tests/                       # API·모델 테스트
+└── docker-compose.yml           # 루트 PostgreSQL 실행용
+```
+
+## 에이전트 구현 현황
+
+### 1. Supervisor API
+
+`automation-supervisor-api/app/application/supervisor_service.py`가 전체 흐름을 제어한다.
+
+- 작업 생성
+- 단계별 실행
+- 산출물 검증
+- 동일 입력 재실행 시 캐시 재사용
+- HITL 승인/반려 처리
+- 반려 시 `failure_code -> rollback_stage` 고정 정책 적용
+
+상태 흐름은 대략 아래와 같다.
+
+```text
+QUEUED
+-> RUNNING
+-> REQUIREMENT_ANALYSIS
+-> DATA_SELECTION
+-> DATA_PROCESSING
+-> WAITING_HITL
+-> COMPLETED | WAITING_RETRY | FAILED
+```
+
+### 2. 현재 연결된 에이전트
+
+`automation-supervisor-api` 기준으로 아래 3개 agent 이름을 사용한다.
+
+- `requirement-analysis-agent`
+- `data-selection-agent`
+- `data-processing-agent`
+
+모델명은 `.env`에서 단계별로 분리한다.
+
+```text
+REQUIREMENT_ANALYSIS_MODEL=sonnet-4.6
+DATA_SELECTION_MODEL=aws-nova
+DATA_PROCESSING_MODEL=chatgpt-5.5
+```
+
+로컬에서 Strands 환경이 준비되지 않았으면 `stub agent`로 fallback 되도록 구성돼 있다. 그래서 API 구조와 상태 전이는 실제로 먼저 검증할 수 있다.
+
+### 3. 독립 런타임 모듈
+
+`agent_runtime/`은 나중에 AgentCore 또는 Lambda로 분리 배포할 것을 전제로 둔 실험/준비 코드다.
+
+현재 확인되는 구현:
+
+- `agent_runtime/requirements_analysis/agent.py`
+  요구사항 자연어를 구조화된 JSON으로 변환하는 독립 실행형 Strands 에이전트
+
+이 모듈은 FastAPI 앱에 직접 의존하지 않도록 분리돼 있다.
+
+## 미구현 항목
+
+시각화 및 보고서 2차 가공, 최종 QA 자동화, 운영 데이터 소스 및 외부 오케스트레이션 연동은 아직 구현되지 않았다.
+
+## API 범위
+
+루트 `app/`은 인증, 세션, 직원 관리, 데이터 요청·파이프라인, 대시보드 API를 제공한다.
+기존 `/requirements`·`/tasks` 레거시 API는 제거되었으며, 현재 작업 흐름은 `/api/v1` API를 사용한다.

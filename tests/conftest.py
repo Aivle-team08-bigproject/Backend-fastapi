@@ -9,10 +9,6 @@ os.environ.setdefault(
     "DATABASE_URL",
     "postgresql+psycopg://appuser:change_me_strong_password@127.0.0.1:5432/appdb",
 )
-os.environ.setdefault(
-    "REQUIREMENTS_DATABASE_URL",
-    "postgresql+psycopg://appuser:change_me_strong_password@127.0.0.1:5432/appdb",
-)
 os.environ.setdefault("JWT_SECRET", "test-only-jwt-secret-at-least-32-bytes-long-2026")
 os.environ.setdefault("BOOTSTRAP_ADMIN_PASSWORD", "TestAdmin!2026Secure")
 os.environ.setdefault("BOOTSTRAP_ADMIN_ID", "HANA-ADMIN-001")

@@ -4,7 +4,7 @@ from fastapi import APIRouter, Depends, Request, Response, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.common.security_deps import CurrentAuth, get_current_auth
-from app.common.time_utils import utcnow
+from app.common.time_utils import as_utc, utcnow
 from app.core.config import settings
 from app.db.session import get_db
 from app.domains.auth.schema.auth_schema import (
@@ -15,7 +15,7 @@ from app.domains.auth.schema.auth_schema import (
     TokenResponse,
 )
 from app.domains.auth.service import auth_service
-from app.domains.employees.model.employee_model import Employee
+from app.domains.employees.model import Employee
 
 router = APIRouter(prefix="/api/auth", tags=["auth"])
 
@@ -32,11 +32,11 @@ def _to_summary(employee: Employee) -> EmployeeSummary:
 
 
 def _expires_in_seconds(expires_at: datetime) -> int:
-    return max(0, int((expires_at - utcnow()).total_seconds()))
+    return max(0, int((as_utc(expires_at) - utcnow()).total_seconds()))
 
 
 def _set_refresh_cookie(response: Response, raw_token: str, session_expires_at: datetime) -> None:
-    max_age = max(0, int((session_expires_at - utcnow()).total_seconds()))
+    max_age = max(0, int((as_utc(session_expires_at) - utcnow()).total_seconds()))
     response.set_cookie(
         key=settings.refresh_cookie_name,
         value=raw_token,
