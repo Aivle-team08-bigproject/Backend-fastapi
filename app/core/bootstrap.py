@@ -4,7 +4,7 @@ from app.core import security
 from app.core.config import settings
 from app.common.time_utils import utcnow
 from app.db.session import AsyncSessionLocal
-from app.domains.employees.model.employee_model import (
+from app.domains.employees.model import (
     Employee,
     EmployeePermission,
     EmployeeStatus,

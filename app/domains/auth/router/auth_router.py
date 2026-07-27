@@ -15,7 +15,7 @@ from app.domains.auth.schema.auth_schema import (
     TokenResponse,
 )
 from app.domains.auth.service import auth_service
-from app.domains.employees.model.employee_model import Employee
+from app.domains.employees.model import Employee
 
 router = APIRouter(prefix="/api/auth", tags=["auth"])
 

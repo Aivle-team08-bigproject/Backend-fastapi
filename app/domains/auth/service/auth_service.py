@@ -12,7 +12,7 @@ from app.core.config import settings
 from app.common.errors import bad_request, forbidden, not_found, unauthorized
 from app.domains.auth.model.session_model import LoginSession
 from app.domains.auth.schema.auth_schema import ChangePasswordRequest, LoginRequest
-from app.domains.employees.model.employee_model import Employee, EmployeeStatus
+from app.domains.employees.model import Employee, EmployeeStatus
 
 MAX_LOGIN_FAILURES = 5
 LOCK_MINUTES = 15

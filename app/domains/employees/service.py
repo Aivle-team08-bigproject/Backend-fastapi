@@ -1,3 +1,5 @@
+import uuid
+
 from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
@@ -6,15 +8,15 @@ from app.core import security
 from app.common.time_utils import utcnow
 from app.common.errors import bad_request, conflict, not_found
 from app.domains.auth.model.session_model import LoginSession
-from app.domains.employees.model.audit_log_model import AdminAuditLog
-from app.domains.employees.model.employee_model import (
+from app.domains.employees.model import (
+    AdminAuditLog,
     Employee,
     EmployeePermission,
     EmployeeRole,
     EmployeeStatus,
     PermissionCode,
 )
-from app.domains.employees.schema.employee_schema import CreateEmployeeRequest
+from app.domains.employees.schema import CreateEmployeeRequest
 
 async def _find_employee(db: AsyncSession, employee_code: str) -> Employee:
     result = await db.execute(
@@ -264,3 +266,34 @@ async def list_audit_logs(db: AsyncSession, limit: int = 200) -> list[AdminAudit
         select(AdminAuditLog).order_by(AdminAuditLog.created_at.desc()).limit(limit)
     )
     return list(result.scalars().all())
+
+
+async def find_sessions_by_employee(db: AsyncSession, employee_code: str) -> list[LoginSession]:
+    result = await db.execute(
+        select(LoginSession)
+        .join(Employee, Employee.id == LoginSession.employee_id)
+        .where(Employee.employee_code == employee_code)
+        .order_by(LoginSession.created_at.desc())
+    )
+    return list(result.scalars().all())
+
+
+async def revoke_session(db: AsyncSession, session_id: uuid.UUID, operator_code: str) -> None:
+    session = await db.get(LoginSession, session_id)
+    if session is None:
+        raise not_found("SESSION_NOT_FOUND", "로그인 세션을 찾을 수 없습니다.")
+
+    employee = await db.get(Employee, session.employee_id)
+    if session.revoked_at is None:
+        session.revoked_at = utcnow()
+        session.revoke_reason = f"관리자 강제 로그아웃: {operator_code}"
+        db.add(
+            AdminAuditLog(
+                actor_employee_code=operator_code,
+                action="SESSION_REVOKED",
+                target_employee_code=employee.employee_code if employee else None,
+                detail=f"session_id={session_id}",
+                created_at=utcnow(),
+            )
+        )
+    await db.commit()

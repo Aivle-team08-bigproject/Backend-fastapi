@@ -14,7 +14,7 @@ from app.core.config import settings
 from app.db.session import get_db
 from app.domains.auth.model.session_model import LoginSession
 from app.domains.auth.service import auth_service
-from app.domains.employees.model.employee_model import (
+from app.domains.employees.model import (
     Employee,
     EmployeeStatus,
     PermissionCode,
