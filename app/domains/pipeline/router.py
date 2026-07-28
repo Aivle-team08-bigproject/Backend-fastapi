@@ -1,13 +1,28 @@
-from fastapi import APIRouter, Depends, status
+import asyncio
+
+from fastapi import APIRouter, Depends, File, UploadFile, status
+from fastapi.responses import FileResponse, StreamingResponse
+from redis.asyncio import Redis
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.common.errors import DomainException, bad_request, not_found
+from app.core.config import settings
 from app.db.session import get_db
+from app.domains.pipeline.model import PipelineRun
 from app.domains.pipeline.schema import (
     CreateDataRequestRequest,
     CreateDataRequestResponse,
+    CsvUploadResponse,
     PipelineRunResponse,
 )
-from app.domains.pipeline.service import create_data_request, get_pipeline_run
+from app.domains.pipeline.service import (
+    create_data_request,
+    dispatch_uploaded_csv,
+    get_pipeline_run,
+    get_result_artifact,
+)
+from app.worker.file_storage import resolve_storage_key, save_upload
+from app.worker.status_event import PipelineStatusEvent
 
 router = APIRouter(prefix="/api/v1", tags=["pipeline"])
 
@@ -30,3 +45,109 @@ async def get_run(
     db: AsyncSession = Depends(get_db),
 ) -> PipelineRunResponse:
     return await get_pipeline_run(db, run_id)
+
+
+@router.post(
+    "/runs/{run_id}/input-csv",
+    response_model=CsvUploadResponse,
+    status_code=status.HTTP_202_ACCEPTED,
+)
+@router.post(
+    "/runs/{run_id}/csv",
+    response_model=CsvUploadResponse,
+    status_code=status.HTTP_202_ACCEPTED,
+    include_in_schema=False,
+)
+async def upload_run_csv(
+    run_id: int,
+    file: UploadFile = File(...),
+    db: AsyncSession = Depends(get_db),
+) -> CsvUploadResponse:
+    if await db.get(PipelineRun, run_id) is None:
+        raise not_found("PIPELINE_RUN_NOT_FOUND", "파이프라인 실행을 찾을 수 없습니다.")
+    try:
+        metadata = await save_upload(run_id, file)
+    except ValueError as exc:
+        raise bad_request("INVALID_CSV_UPLOAD", str(exc)) from exc
+    try:
+        celery_task_id = await dispatch_uploaded_csv(db, run_id, metadata)
+    except DomainException:
+        resolve_storage_key(metadata["storage_key"]).unlink(missing_ok=True)
+        raise
+    return CsvUploadResponse(
+        run_id=run_id,
+        celery_task_id=celery_task_id,
+        filename=metadata["original_filename"],
+        size_bytes=metadata["size_bytes"],
+        checksum=metadata["checksum"],
+        run_status="QUEUED",
+    )
+
+
+@router.get("/runs/{run_id}/result.csv")
+async def download_run_result(run_id: int, db: AsyncSession = Depends(get_db)):
+    artifact = await get_result_artifact(db, run_id)
+    try:
+        path = resolve_storage_key(artifact.storage_key)
+    except ValueError as exc:
+        raise not_found("PIPELINE_RESULT_NOT_FOUND", "결과 파일을 찾을 수 없습니다.") from exc
+    if not path.is_file():
+        raise not_found("PIPELINE_RESULT_NOT_FOUND", "결과 파일을 찾을 수 없습니다.")
+    return FileResponse(
+        path,
+        media_type=artifact.mime_type or "text/csv",
+        filename=f"pipeline-run-{run_id}-result.csv",
+    )
+
+
+def _sse_message(event: str, data: str) -> str:
+    return f"event: {event}\ndata: {data}\n\n"
+
+
+@router.get("/runs/{run_id}/events")
+async def stream_run_events(run_id: int, db: AsyncSession = Depends(get_db)):
+    run = await db.get(PipelineRun, run_id)
+    if run is None:
+        raise not_found("PIPELINE_RUN_NOT_FOUND", "파이프라인 실행을 찾을 수 없습니다.")
+    database_initial = PipelineStatusEvent(
+        run_id=run.id,
+        celery_task_id=run.celery_task_id or "not-dispatched",
+        run_status=run.status,
+        current_stage=run.current_stage,
+        progress_percent=run.progress_percent,
+        message="현재 파이프라인 상태입니다.",
+        occurred_at=run.updated_at,
+    ).model_dump_json()
+
+    async def event_stream():
+        redis_client = Redis.from_url(settings.worker_status_redis_url, decode_responses=True)
+        pubsub = redis_client.pubsub(ignore_subscribe_messages=True)
+        await pubsub.subscribe(settings.worker_status_sse_channel)
+        try:
+            latest_key = f"{settings.worker_status_key_prefix}:{run_id}"
+            latest = await redis_client.get(latest_key)
+            yield _sse_message("status", latest or database_initial)
+            while True:
+                message = await pubsub.get_message(timeout=15)
+                if message is None:
+                    yield ": heartbeat\n\n"
+                    continue
+                event = PipelineStatusEvent.model_validate_json(message["data"])
+                if event.run_id == run_id:
+                    yield _sse_message("status", event.model_dump_json())
+        except asyncio.CancelledError:
+            raise
+        finally:
+            await pubsub.unsubscribe(settings.worker_status_sse_channel)
+            await pubsub.aclose()
+            await redis_client.aclose()
+
+    return StreamingResponse(
+        event_stream(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no",
+        },
+    )

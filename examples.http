@@ -50,3 +50,35 @@ Content-Type: application/json
   "reason": "개발 착수",
   "actor": "developer01"
 }
+### Celery 파이프라인 요청 발행 (202 + celery_task_id)
+POST http://127.0.0.1:8000/api/v1/data-requests
+Content-Type: application/json
+
+{
+  "raw_requirement": "서울 지역 시간대별 결제 데이터를 CSV로 제공해주세요.",
+  "title": "서울 결제 데이터 분석",
+  "requester_name": "통합 테스트 요청자"
+}
+
+### 파이프라인 상태 조회
+GET http://127.0.0.1:8000/api/v1/runs/1
+
+### 파이프라인 실시간 상태 구독 (SSE)
+GET http://127.0.0.1:8000/api/v1/runs/1/events
+Accept: text/event-stream
+
+### 실행 입력 CSV 업로드 및 Celery 재처리
+POST http://127.0.0.1:8000/api/v1/runs/1/input-csv
+Content-Type: multipart/form-data; boundary=Boundary
+
+--Boundary
+Content-Disposition: form-data; name="file"; filename="input.csv"
+Content-Type: text/csv
+
+customer_id,region,amount
+user-1,서울,1000
+user-2,부산,2000
+--Boundary--
+
+### 완료된 결과 CSV 다운로드
+GET http://127.0.0.1:8000/api/v1/runs/1/result.csv
