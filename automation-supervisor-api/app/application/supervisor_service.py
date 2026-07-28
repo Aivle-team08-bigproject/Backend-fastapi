@@ -6,6 +6,7 @@ from sqlalchemy.orm import selectinload
 
 from app.adapters.model.strands_agent_client import StrandsAgentClient
 from app.application.cache import build_cache_key
+from app.application.event_publisher import publish_job_event
 from app.application.ports.agent_client import AgentClient
 from app.application.validation import validate_stage_output
 from app.core.config import settings
@@ -189,6 +190,153 @@ class SupervisorService:
             job.rollback_to_stage = rollback_stage_for(validation.get("failure_code")).value
 
         await self.db.flush()
+        return stage
+
+    async def start_job(self, job_id: int) -> AutomationStageRun:
+        """Celery 경로의 진입점(Supervisor 워커). 첫 스테이지의 stage_run을 등록하고 반환한다.
+
+        실제 스테이지 실행은 여기서 하지 않는다 — 호출자(run_supervisor_job_task)가
+        반환된 stage_run.id로 run_stage_task를 dispatch해서 하위 워커에 넘긴다.
+        """
+        job = await self.get_job(job_id)
+        if not job:
+            raise ValueError("job not found")
+
+        job.status = JobStatus.RUNNING.value
+        job.started_at = job.started_at or datetime.utcnow()
+
+        start_index = self._stage_index(job.rollback_to_stage) if job.rollback_to_stage else 0
+        job.rollback_to_stage = None
+        stage_name = self.stage_order[start_index]
+
+        artifacts = await self._load_artifacts(job.id)
+        stage = await self._dispatch_stage(job, stage_name, artifacts)
+        await self.db.commit()
+        await publish_job_event(
+            job.id,
+            {
+                "type": "stage.queued",
+                "stage_name": stage.stage_name,
+                "job_status": job.status,
+            },
+        )
+        return stage
+
+    async def execute_stage(self, stage_run_id: int) -> tuple[AutomationStageRun, AutomationStageRun | None]:
+        """Celery 경로의 하위 Worker. 이미 등록된 stage_run 하나를 실행하고,
+
+        성공 시 다음 스테이지의 stage_run을 등록해 반환한다(호출자가 그걸로 다음
+        run_stage_task를 dispatch한다). 마지막 스테이지거나 실패하면 None을 반환한다.
+        """
+        stage = await self._get_stage_run(stage_run_id)
+        job = await self.get_job(stage.job_id)
+        if not job:
+            raise ValueError("job not found")
+        stage_name = StageName(stage.stage_name)
+
+        cached = await self._find_cached(stage, stage.model_name, stage.input_payload)
+        if cached:
+            stage.status = StageStatus.CACHED.value
+            stage.output_payload = cached.artifact
+            stage.validation_result = {"passed": True, "cached": True}
+        else:
+            stage.status = StageStatus.RUNNING.value
+            stage.started_at = datetime.utcnow()
+            await self.db.commit()
+            await publish_job_event(
+                job.id,
+                {
+                    "type": "stage.running",
+                    "stage_name": stage.stage_name,
+                    "job_status": job.status,
+                },
+            )
+
+            agent_name = self._agent_for(stage_name)
+            output = await self.agent_client.run(agent_name, stage.model_name, stage.input_payload)
+            validation = validate_stage_output(stage_name, output)
+
+            stage.output_payload = output
+            stage.validation_result = validation
+            stage.completed_at = datetime.utcnow()
+
+            if validation["passed"]:
+                stage.status = StageStatus.COMPLETED.value
+                self.db.add(
+                    StageArtifactCache(
+                        stage_id=stage.id,
+                        cache_key=build_cache_key(stage_name.value, stage.model_name, stage.input_payload),
+                        artifact=output,
+                    )
+                )
+            else:
+                stage.status = StageStatus.FAILED.value
+                stage.error_message = "; ".join(validation["errors"])
+                job.rollback_to_stage = rollback_stage_for(validation.get("failure_code")).value
+
+        job.progress_percent = self.progress[stage_name]
+        await self.db.flush()
+
+        next_stage: AutomationStageRun | None = None
+        if stage.status == StageStatus.FAILED.value:
+            job.status = JobStatus.FAILED.value
+            job.error_message = stage.error_message
+        else:
+            next_index = self._stage_index(stage_name) + 1
+            if next_index < len(self.stage_order):
+                artifacts = await self._load_artifacts(job.id)
+                next_stage = await self._dispatch_stage(job, self.stage_order[next_index], artifacts)
+            else:
+                job.status = JobStatus.WAITING_HITL.value
+                job.current_stage = StageName.HITL_REVIEW.value
+                job.progress_percent = 90
+                job.final_result = await self._load_artifacts(job.id)
+
+        await self.db.commit()
+        await publish_job_event(
+            job.id,
+            {
+                "type": "stage.completed" if stage.status != StageStatus.FAILED.value else "stage.failed",
+                "stage_name": stage.stage_name,
+                "stage_status": stage.status,
+                "job_status": job.status,
+                "progress_percent": job.progress_percent,
+                "next_stage": next_stage.stage_name if next_stage else None,
+            },
+        )
+        return stage, next_stage
+
+    async def _dispatch_stage(
+        self,
+        job: AutomationJob,
+        stage_name: StageName,
+        artifacts: dict[str, dict],
+    ) -> AutomationStageRun:
+        model_name = self._model_for(stage_name)
+        payload = self._payload_for(job, stage_name, artifacts)
+        stage = await self._create_stage_run(job.id, stage_name, model_name, payload)
+        job.current_stage = stage_name.value
+        await self.db.flush()
+        return stage
+
+    async def _load_artifacts(self, job_id: int) -> dict[str, dict]:
+        result = await self.db.execute(
+            select(AutomationStageRun)
+            .where(
+                AutomationStageRun.job_id == job_id,
+                AutomationStageRun.status.in_([StageStatus.COMPLETED.value, StageStatus.CACHED.value]),
+            )
+            .order_by(AutomationStageRun.run_order)
+        )
+        return {stage.stage_name: stage.output_payload for stage in result.scalars().all()}
+
+    async def _get_stage_run(self, stage_run_id: int) -> AutomationStageRun:
+        result = await self.db.execute(
+            select(AutomationStageRun).where(AutomationStageRun.id == stage_run_id)
+        )
+        stage = result.scalar_one_or_none()
+        if not stage:
+            raise ValueError("stage run not found")
         return stage
 
     async def get_job(self, job_id: int) -> AutomationJob | None:
