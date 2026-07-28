@@ -119,6 +119,7 @@ if [[ "$CREATE_ROLES" -eq 1 ]]; then
     create_role "agent_svc" "AGENT_SVC_PASSWORD"
     create_role "app_svc" "APP_SVC_PASSWORD"
     create_role "portfolio_admin" "PORTFOLIO_ADMIN_PASSWORD"
+    create_role "supervisor_svc" "SUPERVISOR_SVC_PASSWORD"
 fi
 
 if [[ "$WITH_V001" -eq 1 ]]; then
@@ -157,6 +158,21 @@ fi
 
 # --- 4. service GRANT (테이블 생성 후에만 유효) ------------------------
 run_sql "$ADMIN_USER" "$HERE/migrations/V006__service_grants.sql"
+
+# --- 4-b. 추가 마이그레이션 -------------------------------------------
+# V007  mart.anonymization_log  익명처리 이력(법정 3년 보존)
+# V008  anon 컬럼 코멘트        LLM이 읽는 스키마 설명
+# V009  automation 스키마       Supervisor 실행 계층 (supervisor_svc 롤 필요)
+# V010  agent_svc 권한 축소     테이블 -> 컬럼 단위. V006 다음이어야 함
+for f in \
+    "$HERE/migrations/V007__anonymization_log.sql" \
+    "$HERE/migrations/V008__anon_column_comments.sql" \
+    "$HERE/migrations/V009__automation_schema.sql" \
+    "$HERE/migrations/V010__agent_svc_column_grants.sql"
+do
+    run_sql "$ADMIN_USER" "$f"
+done
+
 
 # --- 5. 선택 데이터 적재·검증 ------------------------------------------
 if [[ "$WITH_SEED" -eq 1 ]]; then
