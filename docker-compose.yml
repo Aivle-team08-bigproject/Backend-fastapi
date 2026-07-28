@@ -1,6 +1,18 @@
 # portfolio 로컬 개발용 PostgreSQL
 # 스키마와 seed 데이터는 sqlfiles/bootstrap.sh로 구성한다.
 services:
+  redis:
+    image: redis:7.4-alpine
+    container_name: portfolio-redis
+    restart: unless-stopped
+    ports:
+      - "${REDIS_PORT:-6379}:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
   db:
     image: postgres:17-alpine
     container_name: portfolio-postgres
@@ -15,7 +27,7 @@ services:
     ports:
       - "${POSTGRES_PORT:-5432}:5432"
     volumes:
-      - postgres_data:/var/lib/postgresql/data
+      - postgres17_data:/var/lib/postgresql/data
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-postgres} -d ${POSTGRES_DB:-portfolio}"]
       interval: 10s
@@ -23,5 +35,67 @@ services:
       retries: 5
       start_period: 10s
 
+  api:
+    build: .
+    container_name: portfolio-api
+    restart: unless-stopped
+    env_file: .env
+    ports:
+      - "${API_PORT:-8000}:8000"
+    environment:
+      PYTHONPATH: /app
+      DATABASE_HOST_OVERRIDE: db
+      CELERY_BROKER_URL: redis://redis:6379/0
+      CELERY_RESULT_BACKEND: redis://redis:6379/1
+      WORKER_STATUS_REDIS_URL: redis://redis:6379/2
+      UPLOAD_ROOT: /app/uploads
+      PIPELINE_QUERY_SOURCE: ${PIPELINE_QUERY_SOURCE:-csv}
+    volumes:
+      - uploaded_data:/app/uploads
+    depends_on:
+      redis:
+        condition: service_healthy
+      db:
+        condition: service_healthy
+
+  celery-worker:
+    build: .
+    container_name: portfolio-celery-worker
+    restart: unless-stopped
+    env_file: .env
+    command: celery -A app.worker.celery_app:celery_app worker --loglevel=INFO --concurrency=2
+    environment:
+      PYTHONPATH: /app
+      DATABASE_HOST_OVERRIDE: db
+      CELERY_BROKER_URL: redis://redis:6379/0
+      CELERY_RESULT_BACKEND: redis://redis:6379/1
+      WORKER_STATUS_REDIS_URL: redis://redis:6379/2
+      UPLOAD_ROOT: /app/uploads
+      PIPELINE_QUERY_SOURCE: ${PIPELINE_QUERY_SOURCE:-csv}
+    volumes:
+      - uploaded_data:/app/uploads
+    depends_on:
+      redis:
+        condition: service_healthy
+      db:
+        condition: service_healthy
+
+  worker-status-subscriber:
+    build: .
+    container_name: portfolio-worker-status-subscriber
+    restart: unless-stopped
+    env_file: .env
+    command: python -m app.worker.status_subscriber
+    environment:
+      PYTHONPATH: /app
+      DATABASE_HOST_OVERRIDE: db
+      WORKER_STATUS_REDIS_URL: redis://redis:6379/2
+    depends_on:
+      redis:
+        condition: service_healthy
+      db:
+        condition: service_healthy
+
 volumes:
-  postgres_data:
+  postgres17_data:
+  uploaded_data:

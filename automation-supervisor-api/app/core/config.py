@@ -15,6 +15,10 @@ class Settings(BaseSettings):
     requirement_analysis_model: str = "sonnet-4.6"
     data_selection_model: str = "aws-nova"
     data_processing_model: str = "chatgpt-5.5"
+    pipeline_query_source: str = "provided"
+    portfolio_agent_database_url: str = (
+        "postgresql+psycopg://agent_svc:change_me@127.0.0.1:5432/portfolio"
+    )
 
 
 settings = Settings()
