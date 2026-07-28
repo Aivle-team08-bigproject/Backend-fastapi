@@ -22,7 +22,10 @@ import sys
 sys.path.insert(0, os.getcwd())  # app 패키지를 import할 수 있게 경로 추가
 
 from app.core.config import settings
-config.set_main_option("sqlalchemy.url", settings.hanacard_migration_database_url)
+config.set_main_option(
+    "sqlalchemy.url",
+    settings.runtime_database_url(settings.hanacard_migration_database_url),
+)
 
 
 # Interpret the config file for Python logging.

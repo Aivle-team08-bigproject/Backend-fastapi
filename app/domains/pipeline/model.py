@@ -199,6 +199,7 @@ class PipelineRun(Base):
     status: Mapped[str] = mapped_column(String(40), nullable=False, default=PipelineRunStatus.QUEUED.value, index=True)
     current_stage: Mapped[str | None] = mapped_column(String(80), index=True)
     progress_percent: Mapped[int] = mapped_column(SmallInteger, nullable=False, default=0)
+    celery_task_id: Mapped[str | None] = mapped_column(String(255), unique=True, index=True)
     cancel_requested_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))

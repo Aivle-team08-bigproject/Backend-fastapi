@@ -22,6 +22,7 @@ class CreateDataRequestResponse(BaseModel):
     request_status: DataRequestStatus
     run_status: PipelineRunStatus
     current_stage: str
+    celery_task_id: str
     created_at: datetime
 
 
@@ -50,7 +51,17 @@ class PipelineRunResponse(BaseModel):
     run_status: PipelineRunStatus
     current_stage: str | None
     progress_percent: int
+    celery_task_id: str | None
     created_at: datetime
     updated_at: datetime
     stages: list[RunStageResponse]
     events: list[RunEventResponse]
+
+
+class CsvUploadResponse(BaseModel):
+    run_id: int
+    celery_task_id: str
+    filename: str
+    size_bytes: int
+    checksum: str
+    run_status: PipelineRunStatus

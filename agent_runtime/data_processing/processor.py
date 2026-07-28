@@ -88,7 +88,7 @@ def process_payload(payload: dict[str, Any]) -> dict[str, Any]:
             {"column": column, "strategy": strategy, "affected_rows": len(missing_indexes)}
         )
 
-    anonymization_key = os.getenv("DATA_ANONYMIZATION_KEY", "")
+    anonymization_key = os.getenv("DATA_ANONYMIZATION_KEY") or os.getenv("ANON_HASH_SALT", "")
     anonymization_audit: list[dict[str, Any]] = []
     for column in columns:
         policy = policies.get(column, {})
@@ -245,6 +245,8 @@ def _missing_counts(rows: list[dict[str, Any]], columns: list[str]) -> dict[str,
 
 def _output_formats(analysis: dict[str, Any]) -> set[str]:
     raw = analysis.get("output_formats") or analysis.get("output_format") or ["csv"]
+    if isinstance(raw, str):
+        raw = [raw]
     return {str(item).lower() for item in raw}
 
 

@@ -6,6 +6,7 @@ from pathlib import Path
 from app.adapters.model.stub_agent_client import StubAgentClient
 from app.agents.strands_agent_factory import build_strands_agent, parse_agent_json_response
 from app.application.ports.agent_client import AgentClient
+from app.core.config import settings
 
 # agent_runtime/은 이 서비스(automation-supervisor-api/)와 별개로 저장소 루트에 있는 독립
 # 모듈이다 — 이 서비스의 기본 실행 방식(cwd=automation-supervisor-api/, 자체 venv)에서는
@@ -105,6 +106,29 @@ class StrandsAgentClient(AgentClient):
         The query layer must attach actual rows to ``selected_rows`` (or
         ``selection.selected_rows``) before this stage runs.
         """
+        if not payload.get("selected_rows") and settings.pipeline_query_source.lower() == "database":
+            try:
+                from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine
+
+                from agent_runtime.query import DatabaseQueryExecutor
+
+                engine = create_async_engine(settings.hanacard_agent_database_url, pool_pre_ping=True)
+                try:
+                    async with AsyncSession(engine) as session:
+                        payload = {
+                            **payload,
+                            "selected_rows": await DatabaseQueryExecutor(session).execute(
+                                payload.get("selection") or {}
+                            ),
+                        }
+                finally:
+                    await engine.dispose()
+            except Exception as exc:
+                return {
+                    "_agent_error": f"query layer failed: {exc}",
+                    "_failure_code": "INSUFFICIENT_DATA",
+                }
+
         from agent_runtime.data_processing.agent import run as run_data_processing
 
         result = await asyncio.to_thread(run_data_processing, payload)
