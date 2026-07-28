@@ -4,15 +4,18 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.common.security_deps import CurrentAuth, get_current_auth
 from app.db.session import get_db
 from app.domains.dashboard.schema import (
+    DashboardResponse,
+    DashboardTaskListResponse,
+    DashboardTaskQuery,
     DeveloperDashboardResponse,
     DeveloperDashboardPeriod,
     MemberManagementResponse,
     MyTaskStatusResponse,
-    PractitionerDashboardResponse,
     TaskLookupResponse,
     TaskViewResponse,
 )
 from app.domains.dashboard.service import (
+    get_dashboard_tasks,
     get_developer_dashboard,
     get_member_management,
     get_my_task_status,
@@ -25,9 +28,21 @@ from app.domains.dashboard.service import (
 router = APIRouter(prefix="/api/v1", tags=["dashboard"])
 
 
-@router.get("/dashboard", response_model=PractitionerDashboardResponse)
-async def practitioner_dashboard(db: AsyncSession = Depends(get_db)) -> PractitionerDashboardResponse:
+@router.get("/dashboard", response_model=DashboardResponse)
+async def practitioner_dashboard(
+    auth: CurrentAuth = Depends(get_current_auth),
+    db: AsyncSession = Depends(get_db),
+) -> DashboardResponse:
     return await get_practitioner_dashboard(db)
+
+
+@router.get("/dashboard/tasks", response_model=DashboardTaskListResponse)
+async def dashboard_tasks(
+    query: DashboardTaskQuery = Depends(),
+    auth: CurrentAuth = Depends(get_current_auth),
+    db: AsyncSession = Depends(get_db),
+) -> DashboardTaskListResponse:
+    return await get_dashboard_tasks(db, query)
 
 
 @router.get("/dashboard/my-tasks", response_model=MyTaskStatusResponse)
@@ -39,7 +54,10 @@ async def my_task_status(
 
 
 @router.get("/dashboard/task-lookup", response_model=TaskLookupResponse)
-async def task_lookup(db: AsyncSession = Depends(get_db)) -> TaskLookupResponse:
+async def task_lookup(
+    auth: CurrentAuth = Depends(get_current_auth),
+    db: AsyncSession = Depends(get_db),
+) -> TaskLookupResponse:
     return await get_task_lookup(db)
 
 
@@ -57,5 +75,10 @@ async def member_management(db: AsyncSession = Depends(get_db)) -> MemberManagem
 
 
 @router.get("/tasks/{request_no}/views/{view_code}", response_model=TaskViewResponse)
-async def task_view(request_no: str, view_code: str, db: AsyncSession = Depends(get_db)) -> TaskViewResponse:
+async def task_view(
+    request_no: str,
+    view_code: str,
+    auth: CurrentAuth = Depends(get_current_auth),
+    db: AsyncSession = Depends(get_db),
+) -> TaskViewResponse:
     return await get_task_view(db, request_no, view_code)
