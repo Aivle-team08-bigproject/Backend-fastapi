@@ -1,4 +1,4 @@
-from datetime import datetime
+from datetime import datetime, timezone
 
 from sqlalchemy import DateTime, ForeignKey, Integer, String, Text
 from sqlalchemy.dialects.postgresql import JSONB
@@ -9,7 +9,9 @@ from app.domain.enums import JobStatus, StageStatus
 
 
 def utcnow() -> datetime:
-    return datetime.utcnow()
+    # datetime.utcnow()는 시간대 정보가 없는 naive 값이라 TIMESTAMPTZ 컬럼과
+    # 어긋난다. mart/anon/service 전 계층이 UTC 기준 timestamptz다.
+    return datetime.now(timezone.utc)
 
 
 class AutomationJob(Base):
@@ -26,10 +28,10 @@ class AutomationJob(Base):
     rollback_to_stage: Mapped[str | None] = mapped_column(String(80))
     error_message: Mapped[str | None] = mapped_column(Text)
     final_result: Mapped[dict] = mapped_column(JSONB, default=dict)
-    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
-    started_at: Mapped[datetime | None] = mapped_column(DateTime)
-    completed_at: Mapped[datetime | None] = mapped_column(DateTime)
-    updated_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow, onupdate=utcnow)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), default=utcnow)
+    completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), default=utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
 
     stages = relationship("AutomationStageRun", back_populates="job", cascade="all, delete-orphan")
 
@@ -47,10 +49,10 @@ class AutomationStageRun(Base):
     validation_result: Mapped[dict] = mapped_column(JSONB, default=dict)
     error_message: Mapped[str | None] = mapped_column(Text)
     run_order: Mapped[int] = mapped_column(Integer, default=0)
-    started_at: Mapped[datetime | None] = mapped_column(DateTime)
-    completed_at: Mapped[datetime | None] = mapped_column(DateTime)
-    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
-    updated_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow, onupdate=utcnow)
+    started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), default=utcnow)
+    completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), default=utcnow)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
 
     job = relationship("AutomationJob", back_populates="stages")
     caches = relationship("StageArtifactCache", back_populates="stage", cascade="all, delete-orphan")
@@ -63,6 +65,6 @@ class StageArtifactCache(Base):
     stage_id: Mapped[int] = mapped_column(ForeignKey("automation_stage_runs.id", ondelete="CASCADE"), index=True)
     cache_key: Mapped[str] = mapped_column(String(128), index=True)
     artifact: Mapped[dict] = mapped_column(JSONB, default=dict)
-    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
 
     stage = relationship("AutomationStageRun", back_populates="caches")

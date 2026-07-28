@@ -10,7 +10,8 @@ class Settings(BaseSettings):
     )
 
     api_prefix: str = "/api/v1"
-    database_url: str = "postgresql+psycopg://appuser:change_me_strong_password@127.0.0.1:5432/appdb"
+    # Supervisor 전용 계정. automation 스키마만 접근한다(V009).
+    database_url: str = "postgresql+psycopg://supervisor_svc:change_me@127.0.0.1:5432/portfolio"
     redis_url: str = "redis://127.0.0.1:6379/0"
     max_qa_iterations: int = 3
     requirement_analysis_model: str = "sonnet-4.6"
