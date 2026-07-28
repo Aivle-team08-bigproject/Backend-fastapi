@@ -112,8 +112,8 @@ class DashboardFixtureFactory:
 
         marker = self._marker()
         now = (created_at or datetime.now(timezone.utc)).replace(microsecond=0)
-        request_no = request_no or f"REQ/{marker}"
-        view_code = view_code or f"VIEW/{marker}"
+        request_no = f"{request_no}-{marker}" if request_no else f"REQ/{marker}"
+        view_code = f"{view_code}-{marker}" if view_code else f"VIEW/{marker}"
         password = f"Dashboard!{marker}"
 
         customer = Client(

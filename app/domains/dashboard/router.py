@@ -11,6 +11,8 @@ from app.domains.dashboard.schema import (
     DeveloperDashboardPeriod,
     MemberManagementResponse,
     MyTaskStatusResponse,
+    PriorityCode,
+    StageGroupCode,
     TaskLookupResponse,
     TaskViewResponse,
 )
@@ -38,10 +40,26 @@ async def practitioner_dashboard(
 
 @router.get("/dashboard/tasks", response_model=DashboardTaskListResponse)
 async def dashboard_tasks(
-    query: DashboardTaskQuery = Depends(),
+    priority: PriorityCode | None = Query(default=None),
+    stage: StageGroupCode | None = Query(default=None),
+    page: int = Query(default=1, ge=1),
+    page_size: int = Query(default=30),
     auth: CurrentAuth = Depends(get_current_auth),
     db: AsyncSession = Depends(get_db),
 ) -> DashboardTaskListResponse:
+    if page_size not in (30, 50, 100):
+        from fastapi import HTTPException
+
+        raise HTTPException(
+            status_code=422,
+            detail="page_size must be one of 30, 50, or 100",
+        )
+    query = DashboardTaskQuery(
+        priority=priority,
+        stage=stage,
+        page=page,
+        page_size=page_size,
+    )
     return await get_dashboard_tasks(db, query)
 
 
@@ -74,7 +92,7 @@ async def member_management(db: AsyncSession = Depends(get_db)) -> MemberManagem
     return await get_member_management(db)
 
 
-@router.get("/tasks/{request_no}/views/{view_code}", response_model=TaskViewResponse)
+@router.get("/tasks/{request_no:path}/views/{view_code:path}", response_model=TaskViewResponse)
 async def task_view(
     request_no: str,
     view_code: str,
