@@ -1,4 +1,4 @@
-from datetime import datetime
+from datetime import datetime, timezone
 
 from app.domains.dashboard.schema import DeveloperDashboardPeriod
 from app.domains.dashboard.service import _agent_status, _chart_buckets
@@ -22,7 +22,7 @@ def test_daily_chart_uses_four_hour_buckets() -> None:
         datetime(2026, 7, 23, 5, 30),
     )
 
-    assert start == datetime(2026, 7, 22, 15)
+    assert start == datetime(2026, 7, 22, 15, tzinfo=timezone.utc)
     assert [label for _, label in buckets] == ["00:00", "04:00", "08:00", "12:00", "16:00", "20:00"]
     assert size.total_seconds() == 4 * 60 * 60
 

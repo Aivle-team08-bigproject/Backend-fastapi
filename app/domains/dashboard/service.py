@@ -1,4 +1,4 @@
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timedelta
 from decimal import Decimal
 from zoneinfo import ZoneInfo
 
@@ -6,7 +6,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.common.errors import not_found
-from app.common.time_utils import utcnow
+from app.common.time_utils import as_utc, utcnow
 from app.core.config import settings
 from app.domains.dashboard.model import DashboardAlert, DashboardInsight, TaskViewSnapshot
 from app.domains.dashboard.schema import (
@@ -51,11 +51,12 @@ DELAY_THRESHOLD_MS = 2_000
 
 
 def _to_dashboard_time(value: datetime) -> datetime:
-    return value.replace(tzinfo=timezone.utc).astimezone(ZoneInfo(settings.dashboard_timezone))
+    return as_utc(value).astimezone(ZoneInfo(settings.dashboard_timezone))
 
 
-def _to_utc_naive(value: datetime) -> datetime:
-    return value.astimezone(timezone.utc).replace(tzinfo=None)
+def _to_utc(value: datetime) -> datetime:
+    """대시보드의 모든 시간 비교를 UTC aware datetime으로 통일한다."""
+    return as_utc(value)
 
 
 def _task_row(data_request: DataRequest, client: Client) -> TaskRowResponse:
@@ -217,7 +218,7 @@ def _chart_buckets(
     if period == DeveloperDashboardPeriod.DAILY:
         size = timedelta(hours=4)
         buckets = [
-            (_to_utc_naive(local_today + size * index), f"{index * 4:02d}:00")
+            (_to_utc(local_today + size * index), f"{index * 4:02d}:00")
             for index in range(6)
         ]
         return buckets[0][0], buckets, size
@@ -225,7 +226,7 @@ def _chart_buckets(
         start = local_today - timedelta(days=6)
         size = timedelta(days=1)
         buckets = [
-            (_to_utc_naive(start + size * index), (start + size * index).strftime("%m.%d"))
+            (_to_utc(start + size * index), (start + size * index).strftime("%m.%d"))
             for index in range(7)
         ]
         return buckets[0][0], buckets, size
@@ -233,7 +234,7 @@ def _chart_buckets(
     start = local_today.replace(day=1)
     size = timedelta(days=1)
     buckets = [
-        (_to_utc_naive(start + size * index), f"{index + 1}일")
+        (_to_utc(start + size * index), f"{index + 1}일")
         for index in range(local_now.day)
     ]
     return buckets[0][0], buckets, size
@@ -255,8 +256,8 @@ async def get_developer_dashboard(
 ) -> DeveloperDashboardResponse:
     now = utcnow()
     local_now = _to_dashboard_time(now)
-    today = _to_utc_naive(local_now.replace(hour=0, minute=0, second=0, microsecond=0))
-    month_start = _to_utc_naive(local_now.replace(day=1, hour=0, minute=0, second=0, microsecond=0))
+    today = _to_utc(local_now.replace(hour=0, minute=0, second=0, microsecond=0))
+    month_start = _to_utc(local_now.replace(day=1, hour=0, minute=0, second=0, microsecond=0))
     chart_start, bucket_specs, bucket_size = _chart_buckets(period, now)
     metrics_start = min(month_start, chart_start, now - timedelta(hours=24))
 
@@ -270,8 +271,8 @@ async def get_developer_dashboard(
         ).all()
     )
 
-    month_metrics = [metric for metric in metrics if metric.created_at >= month_start]
-    today_metrics = [metric for metric in metrics if metric.created_at >= today]
+    month_metrics = [metric for metric in metrics if as_utc(metric.created_at) >= month_start]
+    today_metrics = [metric for metric in metrics if as_utc(metric.created_at) >= today]
     month_tokens = sum(metric.input_tokens + metric.output_tokens for metric in month_metrics)
     today_tokens = sum(metric.input_tokens + metric.output_tokens for metric in today_metrics)
     month_cost = sum((metric.cost_usd or Decimal("0")) for metric in month_metrics)
@@ -281,9 +282,10 @@ async def get_developer_dashboard(
         for _ in bucket_specs
     ]
     for metric in metrics:
-        if metric.created_at < chart_start:
+        metric_created_at = as_utc(metric.created_at)
+        if metric_created_at < chart_start:
             continue
-        bucket_index = int((metric.created_at - chart_start) // bucket_size)
+        bucket_index = int((metric_created_at - chart_start) // bucket_size)
         if 0 <= bucket_index < len(bucket_values):
             bucket_values[bucket_index]["input_tokens"] += metric.input_tokens
             bucket_values[bucket_index]["output_tokens"] += metric.output_tokens
@@ -309,9 +311,9 @@ async def get_developer_dashboard(
                 agent_key=agent_key,
                 name=AGENT_LABELS[agent_key],
                 status=_agent_status(latest),
-                last_response_at=latest.created_at if latest else None,
+                last_response_at=as_utc(latest.created_at) if latest else None,
                 latency_ms=latest.latency_ms if latest else None,
-                today_throughput=sum(metric.created_at >= today for metric in agent_metrics),
+                today_throughput=sum(as_utc(metric.created_at) >= today for metric in agent_metrics),
             )
         )
 
@@ -321,7 +323,7 @@ async def get_developer_dashboard(
         recent = [
             metric
             for metric in metrics
-            if metric.agent_name == agent_key and metric.created_at >= last_24_hours
+            if metric.agent_name == agent_key and as_utc(metric.created_at) >= last_24_hours
         ]
         failed = sum(metric.outcome.upper() != "SUCCEEDED" for metric in recent)
         percent = round(failed / len(recent) * 100, 1) if recent else 0.0
