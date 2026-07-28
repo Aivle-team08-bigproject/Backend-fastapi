@@ -49,6 +49,21 @@ AGENT_CARD_ORDER = (
 FAILURE_RATE_ORDER = (*AGENT_CARD_ORDER, "delivery-pipeline")
 DELAY_THRESHOLD_MS = 2_000
 
+TASK_STATUS_GROUPS = {
+    "요구사항 분석": "요구사항 분석",
+    "요구사항 분석 진행": "요구사항 분석",
+    "요구사항 완료 피드백": "요구사항 분석",
+    "데이터 선별 진행": "진행중",
+    "샘플데이터 및 피드백": "진행중",
+    "데이터 가공 진행": "가공중",
+    "최종 산출물 및 피드백": "가공중",
+    "작업완료": "완료",
+}
+
+
+def _task_status_group(status: str) -> str:
+    return TASK_STATUS_GROUPS.get(status, status)
+
 
 def _to_dashboard_time(value: datetime) -> datetime:
     return as_utc(value).astimezone(ZoneInfo(settings.dashboard_timezone))
@@ -89,7 +104,8 @@ async def get_practitioner_dashboard(db: AsyncSession) -> PractitionerDashboardR
     task_rows = [_task_row(request, client) for request, client in task_pairs]
     counts = {"요구사항 분석": 0, "진행중": 0, "가공중": 0, "완료": 0}
     for row in task_rows:
-        counts[row.status] = counts.get(row.status, 0) + 1
+        group = _task_status_group(row.status)
+        counts[group] = counts.get(group, 0) + 1
 
     alerts = list((await db.scalars(select(DashboardAlert).order_by(DashboardAlert.display_order))).all())
     insights = list(
@@ -162,15 +178,15 @@ async def get_my_task_status(db: AsyncSession, employee: Employee) -> MyTaskStat
         if is_assigned:
             assigned_tasks.append(_task_row(request, client))
 
-    active_tasks = [task for task in assigned_tasks if task.status != "완료"]
-    completed_count = sum(task.status == "완료" for task in assigned_tasks)
+    active_tasks = [task for task in assigned_tasks if _task_status_group(task.status) != "완료"]
+    completed_count = sum(_task_status_group(task.status) == "완료" for task in assigned_tasks)
     completion_rate = round(completed_count / len(assigned_tasks) * 100, 1) if assigned_tasks else 0.0
     return MyTaskStatusResponse(
         employee_code=employee.employee_code,
         user_name=employee.name,
         department=employee.department,
         active_count=len(active_tasks),
-        urgent_count=sum(task.status == "요구사항 분석" for task in active_tasks),
+        urgent_count=sum(_task_status_group(task.status) == "요구사항 분석" for task in active_tasks),
         completed_count=completed_count,
         completion_rate=completion_rate,
         tasks=assigned_tasks,
