@@ -11,6 +11,7 @@ class Settings(BaseSettings):
 
     api_prefix: str = "/api/v1"
     database_url: str = "postgresql+psycopg://appuser:change_me_strong_password@127.0.0.1:5432/appdb"
+    redis_url: str = "redis://127.0.0.1:6379/0"
     max_qa_iterations: int = 3
     requirement_analysis_model: str = "sonnet-4.6"
     data_selection_model: str = "aws-nova"

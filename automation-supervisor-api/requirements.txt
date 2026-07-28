@@ -5,3 +5,4 @@ psycopg[binary]==3.2.9
 pydantic==2.11.7
 pydantic-settings==2.5.2
 strands-agents[openai]==1.48.0
+celery[redis]==5.4.0

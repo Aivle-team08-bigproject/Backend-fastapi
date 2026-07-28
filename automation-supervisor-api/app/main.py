@@ -1,3 +1,12 @@
+import asyncio
+import sys
+
+if sys.platform == "win32":
+    # psycopg의 async 모드는 Windows 기본 ProactorEventLoop를 못 쓴다. 아래
+    # app.api.router import가 끌고 오는 의존성(strands-agents 등) 중 하나가 이
+    # 정책을 다시 Proactor로 덮어쓰므로, 다른 모든 import보다 먼저 설정해야 한다.
+    asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
+
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
