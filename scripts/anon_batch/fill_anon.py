@@ -1,17 +1,17 @@
-"""anon 스키마 값 채우기 배치 (mart → anon).
+"""anonymized 스키마 값 채우기 배치 (mart → anonymized).
 
-portfolio DB의 mart(가명정보)를 읽어 익명처리한 뒤 anon 테이블에 적재한다.
-멱등(재실행 가능): 매 실행마다 anon을 TRUNCATE 후 다시 채운다. 주/일 배치로 운영.
+portfolio DB의 mart(가명정보)를 읽어 익명처리한 뒤 anonymized 테이블에 적재한다.
+멱등(재실행 가능): 매 실행마다 anonymized을 TRUNCATE 후 다시 채운다. 주/일 배치로 운영.
 
 계층 구분(금융분야 가명·익명처리 안내서 2022.01 기준):
   mart = 가명정보 — 추가정보 없이는 개인을 알아볼 수 없는 상태. 내부망에서만 취급.
-  anon = 익명정보 — 더 이상 개인을 알아볼 수 없는 상태. LLM/AgentCore가 보는 유일한 계층.
-  anon 데이터는 내부망 경계를 넘어 AgentCore로 전달되므로, 그 경계를 넘어도 되는
+  anonymized = 익명정보 — 더 이상 개인을 알아볼 수 없는 상태. LLM/AgentCore가 보는 유일한 계층.
+  anonymized 데이터는 내부망 경계를 넘어 AgentCore로 전달되므로, 그 경계를 넘어도 되는
   수준까지 처리해야 한다.
 
 실행 계정: portfolio_admin (= settings.portfolio_migration_database_url).
-  mart SELECT + anon INSERT/TRUNCATE/TRIGGER 를 모두 하려면 세 스키마 소유자 권한이 필요하다.
-  (agent_svc=anon 읽기전용, app_svc=mart 접근불가 이므로 둘 다 부적합)
+  mart SELECT + anonymized INSERT/TRUNCATE/TRIGGER 를 모두 하려면 세 스키마 소유자 권한이 필요하다.
+  (agent_svc=anonymized 읽기전용, app_svc=mart 접근불가 이므로 둘 다 부적합)
 
 실행:
     python scripts/anon_batch/fill_anon.py
@@ -187,16 +187,25 @@ TX_COLS = ["transaction_id", "card_number_masked", "merchant_id", "mcc_code", "t
 TX_INSERT_COLS = TX_COLS[:-2] + ["device_frequency_band", "terminal_frequency_band"]
 
 
-def insert_many(cur, table: str, cols: list[str], rows: list[tuple]):
-    placeholders = ", ".join(["%s"] * len(cols))
-    cur.executemany(f"INSERT INTO {table} ({', '.join(cols)}) VALUES ({placeholders})", rows)
+# 원격 DB(SSL·고지연)에서는 executemany가 전체 행을 한 번에 파이프라인으로 밀어넣다
+# 연결이 끊긴다. 로컬 유닉스 소켓에서는 드러나지 않던 문제라 청크로 나눈다.
+INSERT_BATCH_SIZE = 500
 
+
+def insert_many(cur, table: str, cols: list[str], rows: list[tuple],
+                batch_size: int = INSERT_BATCH_SIZE):
+    if not rows:
+        return
+    placeholders = ", ".join(["%s"] * len(cols))
+    sql = f"INSERT INTO {table} ({', '.join(cols)}) VALUES ({placeholders})"
+    for start in range(0, len(rows), batch_size):
+        cur.executemany(sql, rows[start:start + batch_size])
 
 def run(cur) -> dict:
-    """mart를 읽어 anon에 적재하고 처리 통계를 반환한다."""
+    """mart를 읽어 anonymized에 적재하고 처리 통계를 반환한다."""
     # ---- mcc_codes: 그대로 복제 (개인정보 아님) ----
     mcc = fetch_all(cur, "mart.mcc_codes", MCC_COLS)
-    insert_many(cur, "anon.mcc_codes", MCC_COLS, [(m["mcc_code"], m["mcc_name"]) for m in mcc])
+    insert_many(cur, "anonymized.mcc_codes", MCC_COLS, [(m["mcc_code"], m["mcc_name"]) for m in mcc])
 
     # ---- customers: 식별자 재토큰화 + 로컬 억제 ----
     cust = fetch_all(cur, "mart.customers", CUST_COLS)
@@ -216,7 +225,7 @@ def run(cur) -> dict:
 
     cust_rows = [(id_map[c["customer_id"]], c["gender"], c["w_age"], c["w_region"], c["w_postal"],
                   c["occupation"], c["annual_income_band"], c["marital_status"]) for c in cust]
-    insert_many(cur, "anon.customers", CUST_COLS, cust_rows)
+    insert_many(cur, "anonymized.customers", CUST_COLS, cust_rows)
 
     # ---- cards: customer_id만 재토큰화, 나머지는 복제 ----
     cards = fetch_all(cur, "mart.cards", CARD_COLS)
@@ -225,7 +234,7 @@ def run(cur) -> dict:
         row = dict(c)
         row["customer_id"] = id_map[c["customer_id"]]  # FK 정합 유지
         card_rows.append(tuple(row[k] for k in CARD_COLS))
-    insert_many(cur, "anon.cards", CARD_COLS, card_rows)
+    insert_many(cur, "anonymized.cards", CARD_COLS, card_rows)
 
     # ---- merchants: 상호명·사업자번호 가명화 ----
     # 개인사업자의 상호에는 대표자명이 포함될 수 있고, 사업자등록번호는 개인 식별로
@@ -237,7 +246,7 @@ def run(cur) -> dict:
         row["merchant_name"] = pseudonym("MERCH", m["merchant_name"])
         row["business_registration_number"] = pseudonym("BRN", m["business_registration_number"])
         merch_rows.append(tuple(row[k] for k in MERCH_COLS))
-    insert_many(cur, "anon.merchants", MERCH_COLS, merch_rows)
+    insert_many(cur, "anonymized.merchants", MERCH_COLS, merch_rows)
 
     # ---- transactions: 금액·시각 정밀도 축소 + 기기/단말 빈도 구간화 ----
     tx = fetch_all(cur, "mart.transactions", TX_COLS)
@@ -260,7 +269,7 @@ def run(cur) -> dict:
             t["approval_channel"], t["pos_entry_mode"], t["auth_method"], t["ip_address"],
             dband, tband,
         ))
-    insert_many(cur, "anon.transactions", TX_INSERT_COLS, tx_rows)
+    insert_many(cur, "anonymized.transactions", TX_INSERT_COLS, tx_rows)
 
     return {
         "row_counts": {"mcc_codes": len(mcc), "customers": len(cust), "cards": len(cards),
@@ -274,29 +283,29 @@ def run(cur) -> dict:
 # 검증 (적재 후, 트리거 재활성 상태에서 세트 기반)
 # =====================================================================
 VALIDATIONS = [
-    ("행수 1:1 mcc", "SELECT (SELECT count(*) FROM anon.mcc_codes)<>(SELECT count(*) FROM mart.mcc_codes)"),
-    ("행수 1:1 customers", "SELECT (SELECT count(*) FROM anon.customers)<>(SELECT count(*) FROM mart.customers)"),
-    ("행수 1:1 cards", "SELECT (SELECT count(*) FROM anon.cards)<>(SELECT count(*) FROM mart.cards)"),
-    ("행수 1:1 merchants", "SELECT (SELECT count(*) FROM anon.merchants)<>(SELECT count(*) FROM mart.merchants)"),
-    ("행수 1:1 transactions", "SELECT (SELECT count(*) FROM anon.transactions)<>(SELECT count(*) FROM mart.transactions)"),
+    ("행수 1:1 mcc", "SELECT (SELECT count(*) FROM anonymized.mcc_codes)<>(SELECT count(*) FROM mart.mcc_codes)"),
+    ("행수 1:1 customers", "SELECT (SELECT count(*) FROM anonymized.customers)<>(SELECT count(*) FROM mart.customers)"),
+    ("행수 1:1 cards", "SELECT (SELECT count(*) FROM anonymized.cards)<>(SELECT count(*) FROM mart.cards)"),
+    ("행수 1:1 merchants", "SELECT (SELECT count(*) FROM anonymized.merchants)<>(SELECT count(*) FROM mart.merchants)"),
+    ("행수 1:1 transactions", "SELECT (SELECT count(*) FROM anonymized.transactions)<>(SELECT count(*) FROM mart.transactions)"),
     ("k 미달 그룹",
-     "SELECT count(*) FROM (SELECT 1 FROM anon.customers "
+     "SELECT count(*) FROM (SELECT 1 FROM anonymized.customers "
      "GROUP BY gender, age_band, resident_region HAVING count(*) < %d) q" % K),
     ("고객 식별자 미변환(mart와 동일)",
-     "SELECT count(*) FROM anon.customers a JOIN mart.customers m USING (customer_id)"),
-    ("시각 범주화 위반", "SELECT count(*) FROM anon.transactions WHERE "
+     "SELECT count(*) FROM anonymized.customers a JOIN mart.customers m USING (customer_id)"),
+    ("시각 범주화 위반", "SELECT count(*) FROM anonymized.transactions WHERE "
      "extract(minute FROM transaction_datetime)<>0 OR extract(second FROM transaction_datetime)<>0 "
      "OR (extract(hour FROM transaction_datetime)::int %% %d)<>0" % TIME_BUCKET_HOURS),
-    ("krw 파생오차>1", "SELECT count(*) FROM anon.transactions "
+    ("krw 파생오차>1", "SELECT count(*) FROM anonymized.transactions "
      "WHERE abs(krw_converted_amount - transaction_amount*applied_exchange_rate) > 1"),
-    ("amount<=0", "SELECT count(*) FROM anon.transactions WHERE transaction_amount<=0 OR krw_converted_amount<=0"),
-    ("ip/device 짝 위반", "SELECT count(*) FROM anon.transactions "
+    ("amount<=0", "SELECT count(*) FROM anonymized.transactions WHERE transaction_amount<=0 OR krw_converted_amount<=0"),
+    ("ip/device 짝 위반", "SELECT count(*) FROM anonymized.transactions "
      "WHERE (ip_address IS NULL) <> (device_frequency_band IS NULL)"),
     ("가맹점 BRN 미가명화",
-     "SELECT count(*) FROM anon.merchants a JOIN mart.merchants m USING (merchant_id) "
+     "SELECT count(*) FROM anonymized.merchants a JOIN mart.merchants m USING (merchant_id) "
      "WHERE a.business_registration_number = m.business_registration_number"),
     ("카드-고객 FK 고아",
-     "SELECT count(*) FROM anon.cards c LEFT JOIN anon.customers u USING (customer_id) "
+     "SELECT count(*) FROM anonymized.cards c LEFT JOIN anonymized.customers u USING (customer_id) "
      "WHERE u.customer_id IS NULL"),
 ]
 
@@ -372,18 +381,18 @@ def main():
         with psycopg.connect(dsn) as conn:
             with conn.cursor() as cur:
                 # 대량 적재 동안 행 단위 정합성 트리거를 끄고, 적재 후 세트 기반으로 검증한다.
-                cur.execute("ALTER TABLE anon.transactions DISABLE TRIGGER USER")
-                cur.execute("TRUNCATE anon.transactions, anon.merchants, anon.cards, "
-                            "anon.customers, anon.mcc_codes")
+                cur.execute("ALTER TABLE anonymized.transactions DISABLE TRIGGER USER")
+                cur.execute("TRUNCATE anonymized.transactions, anonymized.merchants, anonymized.cards, "
+                            "anonymized.customers, anonymized.mcc_codes")
                 stats = run(cur)
-                cur.execute("ALTER TABLE anon.transactions ENABLE TRIGGER USER")
+                cur.execute("ALTER TABLE anonymized.transactions ENABLE TRIGGER USER")
                 ok, failures = validate(cur)
             if ok:
                 conn.commit()
             else:
                 conn.rollback()
                 write_log(dsn, stats, False, "; ".join(failures))
-                raise SystemExit("\n❌ 검증 실패 → 롤백. anon은 변경되지 않았습니다.")
+                raise SystemExit("\n❌ 검증 실패 → 롤백. anonymized은 변경되지 않았습니다.")
     except SystemExit:
         raise
     except Exception as exc:  # noqa: BLE001 — 실패도 이력에 남겨야 한다

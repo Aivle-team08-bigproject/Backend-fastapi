@@ -5,7 +5,7 @@
 -- 실행: psql -v ON_ERROR_STOP=1 -U portfolio_admin -d portfolio \
 --             -f migrations/V009__automation_schema.sql
 --   ※ 반드시 portfolio_admin으로 실행 — 소유자만 이후 ALTER/TRUNCATE가 가능하다.
--- 이전: V008 (anon 컬럼 코멘트)
+-- 이전: V008 (anonymized 컬럼 코멘트)
 --
 -- 전제: supervisor_svc 롤이 미리 있어야 한다(비밀번호는 저장소에 두지 않는다).
 --   psql -d portfolio -c "CREATE ROLE supervisor_svc LOGIN PASSWORD '<직접입력>';"
@@ -49,7 +49,7 @@
 -- ---------------------------------------------------------------------
 -- 이 스키마는 "로그성 테이블"이 아니다. 실제 데이터가 쌓인다.
 --   automation_jobs.raw_requirement          사용자가 입력한 원문
---   automation_stage_runs.input_payload      단계 입력 (anon 조회 결과 행 포함)
+--   automation_stage_runs.input_payload      단계 입력 (anonymized 조회 결과 행 포함)
 --   automation_stage_runs.output_payload     단계 출력
 --   stage_artifact_caches.artifact           단계 결과 캐시
 -- 따라서 보존기간·정리 정책이 필요하다(9절 참고). agent_svc에는 권한을 주지 않는다.
@@ -189,7 +189,7 @@ COMMENT ON TABLE automation.automation_stage_runs IS
 Celery 태스크 하나가 이 행 하나를 처리하고, 다음 행을 만든 뒤 종료한다.';
 
 COMMENT ON COLUMN automation.automation_stage_runs.input_payload IS
-'단계에 들어간 입력. 데이터 선별 이후 단계에는 anon 조회 결과 행이 그대로 담긴다.
+'단계에 들어간 입력. 데이터 선별 이후 단계에는 anonymized 조회 결과 행이 그대로 담긴다.
 익명 데이터이므로 개인 식별은 불가하나, 보존기간 정책 대상이다.';
 
 COMMENT ON COLUMN automation.automation_stage_runs.output_payload IS
@@ -249,7 +249,7 @@ REVOKE ALL ON SCHEMA automation FROM PUBLIC;
 -- 의도적으로 권한을 주지 않는 대상 (원칙을 GRANT로 강제)
 --   app_svc   : FastAPI는 automation을 직접 읽지 않는다.
 --               실무자 화면 상태는 service.pipeline_* 를 본다(이벤트로 동기화됨).
---   agent_svc : 에이전트 경로는 anon만 본다. 이 스키마에는 다른 작업의
+--   agent_svc : 에이전트 경로는 anonymized만 본다. 이 스키마에는 다른 작업의
 --               입력·출력이 모여 있으므로 접근시키지 않는다.
 
 

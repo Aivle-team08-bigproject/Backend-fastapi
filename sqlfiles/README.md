@@ -12,7 +12,7 @@
 | 스키마 | 내용 | 관리 도구 | 이유 |
 |---|---|---|---|
 | `mart` | 원본 가명데이터 (사람만 접근, LLM 차단) | **이 번들의 SQL** | 앱이 ORM으로 다루지 않음. 프라이버시 계층은 사람이 신중히 수동 실행하는 게 안전 |
-| `anon` | mart의 k=3 익명화본 (LLM이 보는 유일한 계층) | **이 번들의 SQL** | 위와 같음 |
+| `anonymized` | mart의 k=3 익명화본 (LLM이 보는 유일한 계층) | **이 번들의 SQL** | 위와 같음 |
 | `service` | 비즈니스·실행·산출 21개 테이블 | **Alembic** (레포 `alembic/`) | FastAPI가 ORM으로 다루므로 모델과 함께 버전관리 |
 
 두 도구는 **서로 다른 스키마를 관리하므로 충돌하지 않는다**
@@ -27,7 +27,7 @@
 
 | 역할 | 용도 | 권한 경계 |
 |---|---|---|
-| `agent_svc` | LLM/에이전트 실행 | `anon` 전체 SELECT + `service` 실행계층 최소권한. **`mart` 접근 불가** |
+| `agent_svc` | LLM/에이전트 실행 | `anonymized` 전체 SELECT + `service` 실행계층 최소권한. **`mart` 접근 불가** |
 | `app_svc` | 담당자 대면 서비스(FastAPI) | `service` CRUD. **`mart` 접근 불가** |
 | `portfolio_admin` | 마이그레이션·배치 전용 | 세 스키마 소유자. 앱 런타임엔 사용 안 함 |
 
@@ -45,7 +45,7 @@ Alembic·익명화 배치가 실패한다.
 cp .env.example .env                         # 비밀번호는 로컬 값으로 변경
 docker compose up -d db
 
-# 역할·mart·anon·service·권한을 순서대로 구성
+# 역할·mart·anonymized·service·권한을 순서대로 구성
 ./sqlfiles/bootstrap.sh --with-v001 --create-roles
 
 # 별도 전달받은 CSV가 seed/에 있을 때만 데이터 적재·검증
@@ -67,7 +67,7 @@ cd seed && psql -U portfolio_admin -d portfolio -f load_csv.sql && cd ..
 # 검증 리포트 (언제든 재실행 가능, DB를 변경하지 않음)
 psql -U portfolio_admin -d portfolio -f verify/validation_report.sql
 
-# `anon`은 이 번들에서 구조와 권한만 만든다. 현재 브랜치에는 별도 익명화 배치가
+# `anonymized`은 이 번들에서 구조와 권한만 만든다. 현재 브랜치에는 별도 익명화 배치가
 # 포함되어 있지 않으므로, 익명 데이터 적재가 필요하면 후속 배치 작업으로 추가한다.
 ```
 
@@ -89,7 +89,7 @@ psql -v ON_ERROR_STOP=1 -U postgres -d portfolio -f patch/P001__align_existing_d
 | 대상 | 방법 |
 |---|---|
 | `service` | 모델 수정 → `alembic revision --autogenerate -m "..."` → **생성 파일 검토** → `alembic upgrade head` |
-| `mart` / `anon` | 이 번들에 `V007__...sql` 추가 (기존 파일 수정 금지 — 이미 적용한 사람과 어긋남) |
+| `mart` / `anonymized` | 이 번들에 `V007__...sql` 추가 (기존 파일 수정 금지 — 이미 적용한 사람과 어긋남) |
 
 > ⚠️ Alembic autogenerate는 **CHECK 제약·트리거·GRANT를 감지하지 못한다.**
 > 생성된 마이그레이션 파일을 반드시 눈으로 검토하고 필요하면 수동 추가할 것.
@@ -99,7 +99,7 @@ psql -v ON_ERROR_STOP=1 -U postgres -d portfolio -f patch/P001__align_existing_d
 ## 5. 파일 구성
 
 ```
-migrations/   순서대로 실행하는 스키마 파일 (mart/anon + service GRANT)
+migrations/   순서대로 실행하는 스키마 파일 (mart/anonymized + service GRANT)
 seed/         데이터 적재 SQL — 마이그레이션이 아님, CSV는 별도 전달
 verify/       검증 리포트 — DB를 바꾸지 않음, 언제든 재실행
 patch/        기존 환경 보정 — 신규 환경에는 불필요

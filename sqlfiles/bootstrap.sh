@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # =====================================================================
-# portfolio DB 부트스트랩 — mart/anon(SQL) + service(Alembic)를 순서대로 구축
+# portfolio DB 부트스트랩 — mart/anonymized(SQL) + service(Alembic)를 순서대로 구축
 #
 # 전제:
 #   1) portfolio 데이터베이스가 이미 생성돼 있을 것 (docker compose가 생성)
@@ -127,7 +127,7 @@ if [[ "$WITH_V001" -eq 1 ]]; then
     echo "  ※ timezone 변경은 새 세션부터 적용된다"
 fi
 
-# --- 2. mart / anon (portfolio_admin) ----------------------------------
+# --- 2. mart / anonymized (portfolio_admin) ----------------------------------
 # 반드시 portfolio_admin으로 실행한다 — 실행 계정이 곧 테이블 소유자가 되고,
 # 소유자만 ALTER/TRUNCATE/DISABLE TRIGGER를 할 수 있기 때문.
 for f in \
@@ -161,14 +161,16 @@ run_sql "$ADMIN_USER" "$HERE/migrations/V006__service_grants.sql"
 
 # --- 4-b. 추가 마이그레이션 -------------------------------------------
 # V007  mart.anonymization_log  익명처리 이력(법정 3년 보존)
-# V008  anon 컬럼 코멘트        LLM이 읽는 스키마 설명
+# V008  anonymized 컬럼 코멘트        LLM이 읽는 스키마 설명
 # V009  automation 스키마       Supervisor 실행 계층 (supervisor_svc 롤 필요)
 # V010  agent_svc 권한 축소     테이블 -> 컬럼 단위. V006 다음이어야 함
 for f in \
     "$HERE/migrations/V007__anonymization_log.sql" \
     "$HERE/migrations/V008__anon_column_comments.sql" \
     "$HERE/migrations/V009__automation_schema.sql" \
-    "$HERE/migrations/V010__agent_svc_column_grants.sql"
+    "$HERE/migrations/V010__agent_svc_column_grants.sql" \
+    "$HERE/migrations/V011__automation_relax_status_checks.sql"\
+    "$HERE/migrations/V012__rename_anon_schema.sql"
 do
     run_sql "$ADMIN_USER" "$f"
 done
@@ -194,5 +196,5 @@ cat <<'EOF'
 남은 선택 단계:
   데이터 적재 : ./sqlfiles/bootstrap.sh --with-seed
   검증 리포트 : ./sqlfiles/bootstrap.sh --with-verify
-  anon 채우기 : 현재 번들에는 구조·권한만 포함되어 있음 (별도 배치 필요)
+  anonymized 채우기 : 현재 번들에는 구조·권한만 포함되어 있음 (별도 배치 필요)
 EOF

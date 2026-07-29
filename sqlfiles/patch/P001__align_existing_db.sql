@@ -6,15 +6,15 @@
 --       올바른 소유자로 만들기 때문). 신규 팀원은 실행하지 말 것.
 --
 -- 배경: PostgreSQL은 CREATE TABLE을 실행한 계정을 소유자로 삼는다. 초기 구축을
---   개인 OS 계정으로 진행해서 mart/anon/service의 오브젝트 소유자가 개인 계정이
+--   개인 OS 계정으로 진행해서 mart/anonymized/service의 오브젝트 소유자가 개인 계정이
 --   되었고, 그 결과 portfolio_admin(마이그레이션·배치 전용 계정)이
 --     - ALTER TABLE (Alembic 마이그레이션)
 --     - TRUNCATE / DISABLE TRIGGER (익명화 배치)
 --   를 수행할 수 없다. 이 둘은 GRANT로 줄 수 없고 "소유자"만 가능하다.
 --
--- 이 파일이 하는 일: mart/anon/service의 모든 테이블·함수 소유권을
+-- 이 파일이 하는 일: mart/anonymized/service의 모든 테이블·함수 소유권을
 --   portfolio_admin으로 이전한다. (V14__ownership_transfer.sql을 흡수·확장한 것 —
---   V14는 mart/anon만 다뤄서 service 21개 테이블이 남아 있었다.)
+--   V14는 mart/anonymized만 다뤄서 service 21개 테이블이 남아 있었다.)
 --
 -- 안전성:
 --   - 소유권 변경은 기존 GRANT를 지우지 않는다(agent_svc/app_svc 권한 유지).
@@ -28,7 +28,7 @@
 BEGIN;
 
 -- ---------------------------------------------------------------------
--- 1. 테이블 소유권 이전 (mart / anon / service 전부)
+-- 1. 테이블 소유권 이전 (mart / anonymized / service 전부)
 --
 -- 이름을 일일이 나열하지 않고 동적으로 처리한다 — 테이블이 추가·변경돼도
 -- 이 파일을 고칠 필요가 없고, 이미 portfolio_admin 소유인 것은 건너뛴다.
@@ -41,7 +41,7 @@ BEGIN
     FOR r IN
         SELECT schemaname, tablename
           FROM pg_tables
-         WHERE schemaname IN ('mart', 'anon', 'service')
+         WHERE schemaname IN ('mart', 'anonymized', 'service')
            AND tableowner <> 'portfolio_admin'
     LOOP
         EXECUTE format('ALTER TABLE %I.%I OWNER TO portfolio_admin',
@@ -67,7 +67,7 @@ BEGIN
                p.oid::regprocedure AS func_sig
           FROM pg_proc p
           JOIN pg_namespace n ON n.oid = p.pronamespace
-         WHERE n.nspname IN ('mart', 'anon', 'service')
+         WHERE n.nspname IN ('mart', 'anonymized', 'service')
            AND pg_get_userbyid(p.proowner) <> 'portfolio_admin'
     LOOP
         EXECUTE format('ALTER FUNCTION %s OWNER TO portfolio_admin', r.func_sig);
@@ -80,7 +80,7 @@ END $$;
 -- 3. 스키마 소유권 (이미 되어 있으면 무해하게 재적용)
 -- ---------------------------------------------------------------------
 ALTER SCHEMA mart    OWNER TO portfolio_admin;
-ALTER SCHEMA anon    OWNER TO portfolio_admin;
+ALTER SCHEMA anonymized    OWNER TO portfolio_admin;
 ALTER SCHEMA service OWNER TO portfolio_admin;
 
 -- ---------------------------------------------------------------------
@@ -92,7 +92,7 @@ ALTER DEFAULT PRIVILEGES FOR ROLE portfolio_admin IN SCHEMA service
     GRANT SELECT, INSERT, UPDATE, DELETE ON TABLES TO app_svc;
 ALTER DEFAULT PRIVILEGES FOR ROLE portfolio_admin IN SCHEMA service
     GRANT USAGE, SELECT ON SEQUENCES TO app_svc;
-ALTER DEFAULT PRIVILEGES FOR ROLE portfolio_admin IN SCHEMA anon
+ALTER DEFAULT PRIVILEGES FOR ROLE portfolio_admin IN SCHEMA anonymized
     GRANT SELECT ON TABLES TO agent_svc;
 
 COMMIT;
@@ -102,15 +102,15 @@ COMMIT;
 -- =====================================================================
 -- 1) 소유자가 portfolio_admin이 아닌 테이블
 -- SELECT schemaname, tablename, tableowner FROM pg_tables
---  WHERE schemaname IN ('mart','anon','service') AND tableowner <> 'portfolio_admin';
+--  WHERE schemaname IN ('mart','anonymized','service') AND tableowner <> 'portfolio_admin';
 --
 -- 2) 소유자가 portfolio_admin이 아닌 함수
 -- SELECT n.nspname, p.proname, pg_get_userbyid(p.proowner)
 --   FROM pg_proc p JOIN pg_namespace n ON n.oid = p.pronamespace
---  WHERE n.nspname IN ('mart','anon','service')
+--  WHERE n.nspname IN ('mart','anonymized','service')
 --    AND pg_get_userbyid(p.proowner) <> 'portfolio_admin';
 --
--- 3) 기존 GRANT 유지 확인 — app_svc는 service 21개, agent_svc는 anon 5개 + service 일부
+-- 3) 기존 GRANT 유지 확인 — app_svc는 service 21개, agent_svc는 anonymized 5개 + service 일부
 -- SELECT grantee, table_schema, count(DISTINCT table_name)
 --   FROM information_schema.role_table_grants
 --  WHERE grantee IN ('agent_svc','app_svc') GROUP BY 1,2 ORDER BY 1,2;

@@ -4,7 +4,7 @@
 -- 이 파일이 하는 일:
 --   1) 타임존 UTC 고정
 --   2) portfolio_admin에게 스키마 생성 권한 부여 (V002~ 실행에 필요)
---   3) 스키마 3개(mart/anon/service)를 portfolio_admin 소유로 생성
+--   3) 스키마 3개(mart/anonymized/service)를 portfolio_admin 소유로 생성
 --   4) 앞으로 생성될 테이블의 기본 권한(DEFAULT PRIVILEGES) 설정
 --
 -- 사전 작업 (셸에서):
@@ -15,7 +15,7 @@
 --   psql -d portfolio -c "CREATE ROLE app_svc        LOGIN PASSWORD '<직접입력>';"
 --   psql -d portfolio -c "CREATE ROLE portfolio_admin LOGIN PASSWORD '<직접입력>';"
 --
---   agent_svc      : LLM/AI 에이전트용. anon 전체 SELECT + service 실행계층 최소권한.
+--   agent_svc      : LLM/AI 에이전트용. anonymized 전체 SELECT + service 실행계층 최소권한.
 --   app_svc        : 담당자 대면 서비스용. service 스키마 CRUD. mart 접근 불가.
 --   portfolio_admin : 스키마 소유자. 마이그레이션(psql·Alembic)·배치 전용,
 --                    앱 런타임에는 사용하지 않음. 개인 OS 계정을 대체한다.
@@ -44,7 +44,7 @@ ALTER DATABASE :"DB_NAME" SET timezone TO 'UTC';
 -- ---------------------------------------------------------------------
 -- 2. portfolio_admin에게 스키마 생성 권한
 --
--- 왜 필요한가: V002~V005가 CREATE SCHEMA mart/anon 을 수행하는데, PostgreSQL에서
+-- 왜 필요한가: V002~V005가 CREATE SCHEMA mart/anonymized 을 수행하는데, PostgreSQL에서
 -- 스키마 생성은 데이터베이스에 대한 CREATE 권한을 요구한다. 기본적으로 이 권한은
 -- DB 소유자에게만 있으므로, portfolio_admin으로 마이그레이션을 실행하려면 명시적
 -- 부여가 필요하다.
@@ -64,7 +64,7 @@ GRANT CREATE, CONNECT ON DATABASE :"DB_NAME" TO portfolio_admin;
 --     op.create_table()만 수행하고 CREATE SCHEMA를 하지 않으며, env.py도
 --     스키마를 만들지 않는다. 그 결과 신규 환경에서 `alembic upgrade head`가
 --     "schema service does not exist"로 실패한다 — 여기서 미리 만들어 해결한다.
---   - mart/anon은 V002/V005에도 CREATE SCHEMA IF NOT EXISTS가 있지만,
+--   - mart/anonymized은 V002/V005에도 CREATE SCHEMA IF NOT EXISTS가 있지만,
 --     소유자를 한곳에서 명시적으로 고정하기 위해 여기서 함께 만든다
 --     (V002/V005의 구문은 이미 존재하므로 무해하게 건너뛴다).
 --
@@ -73,7 +73,7 @@ GRANT CREATE, CONNECT ON DATABASE :"DB_NAME" TO portfolio_admin;
 --   이후 마이그레이션·배치가 개인/슈퍼 계정 없이 동작한다.
 -- ---------------------------------------------------------------------
 CREATE SCHEMA IF NOT EXISTS mart    AUTHORIZATION portfolio_admin;
-CREATE SCHEMA IF NOT EXISTS anon    AUTHORIZATION portfolio_admin;
+CREATE SCHEMA IF NOT EXISTS anonymized    AUTHORIZATION portfolio_admin;
 CREATE SCHEMA IF NOT EXISTS service AUTHORIZATION portfolio_admin;
 
 -- ---------------------------------------------------------------------
@@ -92,8 +92,8 @@ ALTER DEFAULT PRIVILEGES FOR ROLE portfolio_admin IN SCHEMA service
 ALTER DEFAULT PRIVILEGES FOR ROLE portfolio_admin IN SCHEMA service
     GRANT USAGE, SELECT ON SEQUENCES TO app_svc;
 
--- anon 계층은 agent_svc가 읽기만 한다(LLM이 보는 유일한 데이터 계층).
-ALTER DEFAULT PRIVILEGES FOR ROLE portfolio_admin IN SCHEMA anon
+-- anonymized 계층은 agent_svc가 읽기만 한다(LLM이 보는 유일한 데이터 계층).
+ALTER DEFAULT PRIVILEGES FOR ROLE portfolio_admin IN SCHEMA anonymized
     GRANT SELECT ON TABLES TO agent_svc;
 
 COMMIT;
@@ -107,7 +107,7 @@ COMMIT;
 --
 -- -- 스키마 3개가 portfolio_admin 소유로 존재하는가 (3행이어야 정상)
 -- SELECT nspname, pg_get_userbyid(nspowner) FROM pg_namespace
---  WHERE nspname IN ('mart','anon','service');
+--  WHERE nspname IN ('mart','anonymized','service');
 --
 -- SELECT pg_get_userbyid(defaclrole) AS 역할, n.nspname AS 스키마,
 --        defaclobjtype::text AS 종류, defaclacl::text AS 권한

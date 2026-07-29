@@ -9,7 +9,7 @@
 -- 실행: psql -v ON_ERROR_STOP=1 -U portfolio_admin -d portfolio \
 --             -f migrations/V006__service_grants.sql
 --
--- 전제: anon GRANT(V005)는 이미 적용됨. mart는 앱 계정에 부여하지 않음(배치/DBA만).
+-- 전제: anonymized GRANT(V005)는 이미 적용됨. mart는 앱 계정에 부여하지 않음(배치/DBA만).
 -- 참고: PK가 GENERATED ... AS IDENTITY라 시퀀스 별도 GRANT 불필요
 --       (IDENTITY 시퀀스는 테이블 권한에 포함되어 처리됨).
 -- 참고: 앞으로 Alembic이 추가하는 테이블은 V001의 DEFAULT PRIVILEGES로 app_svc에
@@ -26,7 +26,7 @@ ALTER DEFAULT PRIVILEGES IN SCHEMA service
     GRANT SELECT, INSERT, UPDATE, DELETE ON TABLES TO app_svc;
 
 -- ---------------------------------------------------------------------
--- agent_svc — 워커/에이전트 실행. anon 읽기(V6) + service 최소 권한.
+-- agent_svc — 워커/에이전트 실행. anonymized 읽기(V6) + service 최소 권한.
 --   읽기: 처리 컨텍스트 / 쓰기: 실행상태·로그·산출물
 --   못 하는 것(의도): employees·login_sessions·admin_audit_logs·contracts·
 --                     contract_api_keys·reviews·deliveries·api_usage_logs·mart 접근 불가

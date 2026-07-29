@@ -7,10 +7,10 @@
 --     ② 익명처리한 정보의 항목
 --     ③ 익명처리한 사유와 근거
 --
--- 왜 mart 스키마에 두는가 (anon이 아니라):
+-- 왜 mart 스키마에 두는가 (anonymized이 아니라):
 --   이 로그에는 "어떤 기법으로 어느 수준까지 익명처리했는지"가 담긴다. 그 자체가
 --   재식별 공격의 단서(어떤 컬럼이 얼마나 뭉개졌는지)가 되므로, LLM이 조회하는
---   anon 계층에 두면 안 된다. agent_svc가 접근할 수 없는 mart에 둔다.
+--   anonymized 계층에 두면 안 된다. agent_svc가 접근할 수 없는 mart에 둔다.
 --   ("가명처리 방법은 적지 않고 결과만 적는다"는 mart 코멘트 원칙과 같은 이유)
 --
 -- 실행: psql -v ON_ERROR_STOP=1 -U portfolio_admin -d portfolio \
@@ -66,7 +66,7 @@ COMMENT ON COLUMN mart.anonymization_log.legal_basis IS
 
 COMMENT ON COLUMN mart.anonymization_log.techniques IS
 '적용한 익명처리 기법과 수준. 적정성 평가 시 기초자료로 사용된다.
-재식별 단서가 될 수 있으므로 이 테이블은 anon이 아닌 mart에 둔다(agent_svc 접근 불가).';
+재식별 단서가 될 수 있으므로 이 테이블은 anonymized이 아닌 mart에 둔다(agent_svc 접근 불가).';
 
 COMMENT ON COLUMN mart.anonymization_log.k_value IS
 '적용한 k-익명성 수준. 데이터 규모가 커지면 상향을 재검토한다.';
