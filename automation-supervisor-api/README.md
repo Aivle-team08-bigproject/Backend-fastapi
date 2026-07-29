@@ -7,11 +7,12 @@ Strands Agents SDK의 `Agent` 형태로 하위 agent를 호출하도록 구성�
 
 ## 역할
 
-- 요구사항 분석, 데이터 선별, 데이터 가공 agent를 순서대로 호출
+- 요구사항 분석, 데이터 선별, CSV 조회, 데이터 가공 worker를 순서대로 호출
 - 각 단계 완료 시 PostgreSQL에 상태와 산출물 저장
 - 각 단계 산출물 검증
 - 각 단계 산출물 캐싱
-- 데이터 가공 완료 후 `WAITING_HITL` 상태로 사람 승인 대기
+- CSV 원본 행은 DB나 LLM에 넣지 않고 경로·행 수·컬럼·SHA-256만 저장
+- 각 worker 완료 후 `WAITING_HITL` 상태로 사람 승인 대기
 - 사람이 승인하면 `COMPLETED`
 - 사람이 반려하면 자연어 피드백을 `failure_code`로 분류
 - `failure_code -> rollback_stage` 고정 정책으로 롤백 대상 결정
@@ -76,18 +77,79 @@ run-dry-run.bat --sample subscription --feedback "가공 컬럼과 보고서 형
 POST /api/v1/supervisor/jobs
 ```
 
-자동 오케스트레이션 실행:
+```json
+{
+  "raw_requirement": "해외 여행 결제 데이터를 CSV와 보고서로 제공해줘.",
+  "source_csv_path": "/data/02_selected_transactions.csv"
+}
+```
+
+`source_csv_path`는 Supervisor와 worker 컨테이너에 동일하게 마운트된 경로여야 하며,
+기본적으로 `DATA_RETRIEVAL_ALLOWED_ROOT=/data` 아래의 `.csv`만 허용됩니다.
+
+`DATA_RETRIEVAL` worker는 데이터 선별 Agent의 `selection_query.filters`를 실제 CSV에
+적용하고 `DATA_RETRIEVAL_OUTPUT_ROOT`(기본 `/data/jobs`) 아래에 job별 `selected.csv`를
+생성합니다. 가공 worker에는 이 선별 파일만 전달됩니다.
+
+기본 필터 매핑:
+
+```text
+성별       -> gender
+연령대     -> age_band
+지역       -> resident_region
+국가/목적지 -> destination_country_name
+업종       -> spend_category, mcc_name
+결제 채널  -> approval_channel
+인증 방식  -> auth_method
+소득 구간  -> annual_income_band
+```
+
+`여성 -> F`, `숙박 -> lodging/호텔·숙박` 같은 값 매핑도 결정론적 규칙으로
+처리합니다. 매핑할 수 없는 필터가 있거나 필터 결과가 0행이면 worker가 실패하고
+데이터 가공 단계로 진행하지 않습니다.
+
+Supervisor Worker enqueue:
 
 ```http
 POST /api/v1/supervisor/jobs/{job_id}/run
 ```
 
-이 호출은 `DATA_PROCESSING`까지 실행한 뒤 `WAITING_HITL` 상태로 멈춥니다.
+FastAPI는 Supervisor 로직을 직접 실행하지 않고 Redis Queue에 `run_supervisor_worker`
+작업을 등록합니다. Worker Consumer가 Supervisor Worker를 실행하고, Supervisor Worker가
+다음 단계 Worker를 DB에 `PENDING`으로 생성한 뒤 Redis에 `run_stage_worker`를 등록합니다.
+단계 Worker는 결과를 DB에 저장하고 job을 `WAITING_HITL`로 바꾼 뒤 종료됩니다.
+
+Lambda 호출에서는 `run_job` 또는 `submit_hitl_review` 응답의 `worker_id`를 다음
+`run_worker` 이벤트의 `stage_id`로 전달하면 됩니다.
+
+```json
+{
+  "action": "run_worker",
+  "stage_id": 1
+}
+```
 
 사람 승인/반려:
 
 ```http
 POST /api/v1/supervisor/jobs/{job_id}/hitl-review
+```
+
+중간 단계가 승인되면 FastAPI가 Supervisor 로직을 다시 호출하여 다음 worker 하나를
+`PENDING`으로 생성합니다. 반려되면 피드백을 `failure_code`로 분류하고 롤백 대상
+worker 하나를 새로 생성합니다. 마지막 `DATA_PROCESSING` 단계가 승인된 경우에만 job이
+`COMPLETED`가 됩니다.
+
+상태 흐름:
+
+```text
+QUEUED
+  -> (Supervisor) WORKER_CREATED
+  -> (Worker) RUNNING
+  -> (Worker 저장/종료) WAITING_HITL
+  -> 승인: (Supervisor) 다음 WORKER_CREATED
+  -> 반려: (Supervisor) 롤백 WORKER_CREATED
+  -> 최종 가공 승인: COMPLETED
 ```
 
 승인 예:

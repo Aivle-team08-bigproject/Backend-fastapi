@@ -27,6 +27,8 @@ class StrandsAgentClient(AgentClient):
             return await self._run_requirement_analysis(payload)
         if agent_name == "data-selection-agent":
             return await self._run_data_selection(payload)
+        if agent_name == "data-retrieval-agent":
+            return await self._run_data_retrieval(payload)
         if agent_name == "data-processing-agent":
             return await self._run_data_processing(payload)
 
@@ -98,6 +100,18 @@ class StrandsAgentClient(AgentClient):
         if not result["ok"]:
             return {"_agent_error": result["error_message"] or "data selection agent failed"}
 
+        return result["data"]
+
+    async def _run_data_retrieval(self, payload: dict) -> dict:
+        """Validate the selected CSV and return metadata, never raw rows."""
+        from agent_runtime.data_retrieval.agent import run as run_data_retrieval
+
+        result = await asyncio.to_thread(run_data_retrieval, payload)
+        if not result["ok"]:
+            return {
+                "_agent_error": result["error_message"] or "data retrieval worker failed",
+                "_failure_code": result.get("failure_code", "INSUFFICIENT_DATA"),
+            }
         return result["data"]
 
     async def _run_data_processing(self, payload: dict) -> dict:

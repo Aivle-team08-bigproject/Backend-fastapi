@@ -86,6 +86,23 @@ class StubAgentClient(AgentClient):
                 },
             }
 
+        if agent_name == "data-retrieval-agent":
+            return {
+                "source_type": "preselected_csv",
+                "input_csv_path": payload.get("source_csv_path"),
+                "input_sha256": "stub",
+                "input_row_count": 1,
+                "source_csv_path": payload.get("source_csv_path"),
+                "source_sha256": "stub",
+                "encoding": "utf-8-sig",
+                "row_count": 1,
+                "columns": ["stub_column"],
+                "applied_filters": [],
+                "unmapped_filters": [],
+                "selection_snapshot": payload.get("selection", {}),
+                "raw_rows_stored_in_database": False,
+            }
+
         return {"model": model_name, "agent_name": agent_name}
 
     def _categories_for(self, raw_requirement: str) -> dict:

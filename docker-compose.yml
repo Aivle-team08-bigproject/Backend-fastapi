@@ -14,8 +14,12 @@ services:
       retries: 10
 
   db:
+<<<<<<< HEAD
     image: postgres:17-alpine
     container_name: hanacard-postgres
+=======
+    image: postgres:16-alpine
+>>>>>>> feea239 (feat: implement redis-based supervisor worker pipeline)
     restart: unless-stopped
     environment:
       POSTGRES_USER: ${POSTGRES_USER:-postgres}
@@ -96,6 +100,72 @@ services:
       db:
         condition: service_healthy
 
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    command: ["redis-server", "--appendonly", "yes"]
+    ports:
+      - "${REDIS_PORT:-6379}:6379"
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  fastapi:
+    build: .
+    restart: unless-stopped
+    working_dir: /app/automation-supervisor-api
+    command: ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]
+    env_file:
+      - .env
+    environment:
+      DATABASE_URL: "postgresql+psycopg://${POSTGRES_USER}:${POSTGRES_PASSWORD}@db:5432/${POSTGRES_DB}"
+      REDIS_URL: "redis://redis:6379/0"
+      DATA_RETRIEVAL_ALLOWED_ROOT: "/data"
+      DATA_RETRIEVAL_OUTPUT_ROOT: "/data/jobs"
+      PYTHONDONTWRITEBYTECODE: "1"
+      PYTHONPATH: "/app/automation-supervisor-api:/app"
+    ports:
+      - "${SUPERVISOR_API_PORT:-8001}:8000"
+    volumes:
+      - ./data:/data
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+
+  worker:
+    build: .
+    restart: unless-stopped
+    working_dir: /app/automation-supervisor-api
+    command: ["arq", "app.workers.settings.WorkerSettings"]
+    env_file:
+      - .env
+    environment:
+      DATABASE_URL: "postgresql+psycopg://${POSTGRES_USER}:${POSTGRES_PASSWORD}@db:5432/${POSTGRES_DB}"
+      REDIS_URL: "redis://redis:6379/0"
+      DATA_ANONYMIZATION_KEY: "${DATA_ANONYMIZATION_KEY:-}"
+      DATA_RETRIEVAL_ALLOWED_ROOT: "/data"
+      DATA_RETRIEVAL_OUTPUT_ROOT: "/data/jobs"
+      PYTHONDONTWRITEBYTECODE: "1"
+      PYTHONPATH: "/app/automation-supervisor-api:/app"
+    volumes:
+      - ./data:/data
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+
 volumes:
+<<<<<<< HEAD
   postgres17_data:
   uploaded_data:
+=======
+  postgres_data:
+  redis_data:
+>>>>>>> feea239 (feat: implement redis-based supervisor worker pipeline)

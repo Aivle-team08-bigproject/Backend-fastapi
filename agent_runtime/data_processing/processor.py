@@ -11,6 +11,7 @@ import os
 import statistics
 from collections import Counter
 from datetime import date, datetime
+from pathlib import Path
 from typing import Any
 
 
@@ -169,10 +170,34 @@ def _extract_rows(payload: dict[str, Any]) -> list[dict[str, Any]]:
     ]
     rows = next((item for item in candidates if isinstance(item, list)), None)
     if rows is None:
+        retrieval = payload.get("retrieval") or {}
+        source_path = retrieval.get("source_csv_path")
+        if source_path:
+            rows = _read_retrieved_csv(source_path, retrieval)
+    if rows is None:
         return []
     if not all(isinstance(row, dict) for row in rows):
         raise ProcessingError("every selected row must be a JSON object")
     return [dict(row) for row in rows]
+
+
+def _read_retrieved_csv(raw_path: str, retrieval: dict[str, Any]) -> list[dict[str, Any]]:
+    source = Path(raw_path).resolve()
+    allowed_root = Path(os.getenv("DATA_RETRIEVAL_ALLOWED_ROOT", "/data")).resolve()
+    if not source.is_relative_to(allowed_root):
+        raise ProcessingError(f"retrieved CSV must be inside {allowed_root}")
+    if not source.is_file():
+        raise ProcessingError("retrieved CSV does not exist")
+
+    expected_sha256 = retrieval.get("source_sha256")
+    if expected_sha256:
+        digest = hashlib.sha256(source.read_bytes()).hexdigest()
+        if not hmac.compare_digest(digest, str(expected_sha256)):
+            raise ProcessingError("retrieved CSV checksum mismatch")
+
+    encoding = str(retrieval.get("encoding") or "utf-8-sig")
+    with source.open("r", encoding=encoding, newline="") as csv_file:
+        return list(csv.DictReader(csv_file))
 
 
 def _normalize_null(value: Any) -> Any:
