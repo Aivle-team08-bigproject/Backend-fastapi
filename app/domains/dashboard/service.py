@@ -1,3 +1,4 @@
+from collections import Counter
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 from decimal import Decimal
@@ -18,6 +19,7 @@ from app.domains.dashboard.schema import (
     DashboardTaskListResponse,
     DashboardTaskQuery,
     DashboardPriorityCardResponse,
+    PopularProductResponse,
     DeveloperDashboardPayload,
     DeveloperDashboardPeriod,
     DeveloperDashboardResponse,
@@ -353,6 +355,26 @@ def _task_filters(projection, query: DashboardTaskQuery) -> list:
     return predicates
 
 
+def _popular_products(tasks: list[_ProjectedTask]) -> list[PopularProductResponse]:
+    product_counts: Counter[str] = Counter()
+    for task in tasks:
+        product_name = task.analysis_condition.get("product_name")
+        if isinstance(product_name, str) and product_name.strip():
+            product_counts[product_name.strip()] += 1
+
+    return [
+        PopularProductResponse(
+            product_code=f"PRODUCT-{index:03d}",
+            product_name=product_name,
+            request_count=request_count,
+        )
+        for index, (product_name, request_count) in enumerate(
+            sorted(product_counts.items(), key=lambda item: (-item[1], item[0]))[:5],
+            start=1,
+        )
+    ]
+
+
 async def get_dashboard_tasks(
     db: AsyncSession,
     query: DashboardTaskQuery,
@@ -380,6 +402,7 @@ async def get_dashboard_tasks(
 
 async def get_practitioner_dashboard(db: AsyncSession) -> DashboardResponse:
     projected_tasks = await _load_projected_tasks(db)
+    popular_products = _popular_products(projected_tasks)
     action_items = [
         task for task in projected_tasks if task.requires_action and not _is_completed(task)
     ]
@@ -399,8 +422,10 @@ async def get_practitioner_dashboard(db: AsyncSession) -> DashboardResponse:
         generated_at=utcnow(),
         priority_cards=priority_cards,
         priority_actions=[_dashboard_task_item(task) for task in action_items[:5]],
-        popular_products=[],
-        popular_products_unavailable_message=POPULAR_PRODUCTS_UNAVAILABLE_MESSAGE,
+        popular_products=popular_products,
+        popular_products_unavailable_message=(
+            POPULAR_PRODUCTS_UNAVAILABLE_MESSAGE if not popular_products else ""
+        ),
         approval_tasks=[_dashboard_task_item(task) for task in approval_items[:5]],
         active_task_count=sum(not _is_completed(task) for task in projected_tasks),
     )

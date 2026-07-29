@@ -104,6 +104,31 @@ def test_authenticated_dashboard_and_task_list_contract(
         assert item["stage_group_code"] in STAGE_GROUP_CODES
 
 
+def test_dashboard_popular_products_are_counted_from_request_metadata(
+    client: TestClient,
+    dashboard_factory: DashboardFixtureFactory,
+):
+    dashboard_factory.create(analysis_condition={"product_name": "카드 승인 데이터"})
+    dashboard_factory.create(analysis_condition={"product_name": "카드 승인 데이터"})
+    dashboard_factory.create(analysis_condition={"product_name": "가맹점 매출 데이터"})
+
+    response = client.get("/api/v1/dashboard", headers=_login_as_admin(client))
+
+    assert response.status_code == 200, response.text
+    products = response.json()["popular_products"]
+    assert products[0] == {
+        "product_code": "PRODUCT-001",
+        "product_name": "카드 승인 데이터",
+        "request_count": 2,
+    }
+    assert products[1] == {
+        "product_code": "PRODUCT-002",
+        "product_name": "가맹점 매출 데이터",
+        "request_count": 1,
+    }
+    assert response.json()["popular_products_unavailable_message"] == ""
+
+
 @pytest.mark.parametrize(
     "params",
     [
