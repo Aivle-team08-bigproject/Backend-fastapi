@@ -5,15 +5,16 @@ services:
     image: redis:7.4-alpine
     container_name: portfolio-redis
     restart: unless-stopped
+    command: ["redis-server", "--appendonly", "yes"]
     ports:
       - "${REDIS_PORT:-6379}:6379"
+    volumes:
+      - redis_data:/data
     healthcheck:
       test: ["CMD", "redis-cli", "ping"]
       interval: 5s
       timeout: 3s
       retries: 10
-      volumes:
-      - redis_data:/data
 
   db:
     image: postgres:17-alpine
@@ -96,6 +97,53 @@ services:
       redis:
         condition: service_healthy
       db:
+        condition: service_healthy
+
+  fastapi:
+    build: .
+    restart: unless-stopped
+    working_dir: /app/automation-supervisor-api
+    command: ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]
+    env_file:
+      - .env
+    environment:
+      DATABASE_URL: "${DATABASE_URL}"
+      REDIS_URL: "redis://redis:6379/3"
+      DATA_RETRIEVAL_ALLOWED_ROOT: "/data"
+      DATA_RETRIEVAL_OUTPUT_ROOT: "/data/jobs"
+      PYTHONDONTWRITEBYTECODE: "1"
+      PYTHONPATH: "/app/automation-supervisor-api:/app"
+    ports:
+      - "${SUPERVISOR_API_PORT:-8001}:8000"
+    volumes:
+      - ./data:/data
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+
+  worker:
+    build: .
+    restart: unless-stopped
+    working_dir: /app/automation-supervisor-api
+    command: ["arq", "app.workers.settings.WorkerSettings"]
+    env_file:
+      - .env
+    environment:
+      DATABASE_URL: "${DATABASE_URL}"
+      REDIS_URL: "redis://redis:6379/3"
+      DATA_ANONYMIZATION_KEY: "${DATA_ANONYMIZATION_KEY:-}"
+      DATA_RETRIEVAL_ALLOWED_ROOT: "/data"
+      DATA_RETRIEVAL_OUTPUT_ROOT: "/data/jobs"
+      PYTHONDONTWRITEBYTECODE: "1"
+      PYTHONPATH: "/app/automation-supervisor-api:/app"
+    volumes:
+      - ./data:/data
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
         condition: service_healthy
 
 volumes:
