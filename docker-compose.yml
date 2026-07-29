@@ -5,8 +5,11 @@ services:
     image: redis:7.4-alpine
     container_name: hanacard-redis
     restart: unless-stopped
+    command: ["redis-server", "--appendonly", "yes"]
     ports:
       - "${REDIS_PORT:-6379}:6379"
+    volumes:
+      - redis_data:/data
     healthcheck:
       test: ["CMD", "redis-cli", "ping"]
       interval: 5s
@@ -14,12 +17,8 @@ services:
       retries: 10
 
   db:
-<<<<<<< HEAD
     image: postgres:17-alpine
     container_name: hanacard-postgres
-=======
-    image: postgres:16-alpine
->>>>>>> feea239 (feat: implement redis-based supervisor worker pipeline)
     restart: unless-stopped
     environment:
       POSTGRES_USER: ${POSTGRES_USER:-postgres}
@@ -100,20 +99,6 @@ services:
       db:
         condition: service_healthy
 
-  redis:
-    image: redis:7-alpine
-    restart: unless-stopped
-    command: ["redis-server", "--appendonly", "yes"]
-    ports:
-      - "${REDIS_PORT:-6379}:6379"
-    volumes:
-      - redis_data:/data
-    healthcheck:
-      test: ["CMD", "redis-cli", "ping"]
-      interval: 5s
-      timeout: 3s
-      retries: 10
-
   fastapi:
     build: .
     restart: unless-stopped
@@ -162,10 +147,6 @@ services:
         condition: service_healthy
 
 volumes:
-<<<<<<< HEAD
   postgres17_data:
   uploaded_data:
-=======
-  postgres_data:
   redis_data:
->>>>>>> feea239 (feat: implement redis-based supervisor worker pipeline)
