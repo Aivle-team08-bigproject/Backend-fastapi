@@ -42,3 +42,11 @@ def settings():
     from app.core.config import settings as app_settings
 
     return app_settings
+
+
+@pytest.fixture()
+def dashboard_factory():
+    """Unique workflow fixture factory for dashboard contract tests."""
+    from tests.dashboard_fixtures import DashboardFixtureFactory
+
+    return DashboardFixtureFactory()
