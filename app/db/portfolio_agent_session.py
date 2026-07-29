@@ -1,6 +1,6 @@
 """portfolio DB, agent_svc 계정 전용 비동기 SQLAlchemy 세션.
 
-anon 스키마 읽기 + service 스키마 중 파이프라인 로그성 테이블(읽기/쓰기)에 사용한다.
+anonymized 스키마 읽기 + service 스키마 중 파이프라인 로그성 테이블(읽기/쓰기)에 사용한다.
 app_svc 세션(app/db/portfolio_app_session.py)과 엔진을 공유하지 않는다 —
 계정 경계가 코드 버그와 무관하게 유지되도록 커넥션 자체를 분리한다.
 """

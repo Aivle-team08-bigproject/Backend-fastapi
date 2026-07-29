@@ -58,7 +58,7 @@ python -m scripts.migrate_remove_executor_columns --apply
 
 ### DB 구축
 
-`sqlfiles`는 PostgreSQL의 `mart`·`anon`·`service` 스키마를 초기화한다. `mart`와 `anon`의
+`sqlfiles`는 PostgreSQL의 `mart`·`anonymized`·`service` 스키마를 초기화한다. `mart`와 `anonymized`의
 구조·권한은 SQL migration이 만들고, FastAPI가 사용하는 `service` 21개 테이블은 Alembic이
 생성한다. 새 환경에서는 애플리케이션 실행 전에 아래 명령을 한 번 실행한다.
 
@@ -244,10 +244,10 @@ API와 Worker는 `uploaded_data:/app/uploads` named volume을 공유합니다.
 허용 컬럼, 필터 연산자와 최대 조회 건수만 SQLAlchemy 표현식으로 변환합니다.
 
 - `CsvQueryExecutor`: 업로드 CSV에 같은 컬럼·필터·건수 계획 적용
-- `DatabaseQueryExecutor`: `agent_svc` 계정으로 `anon` 스키마만 조회
+- `DatabaseQueryExecutor`: `agent_svc` 계정으로 `anonymized` 스키마만 조회
 - 민감 원본 컬럼(`card_number_masked`, `ip_address`, 사업자번호 등)은 DB 조회 차단
 - 다중 데이터셋은 등록된 FK 조인 경로만 허용
 
 기본 `PIPELINE_QUERY_SOURCE=csv`에서는 기존처럼 CSV 업로드를 기다립니다.
 `PIPELINE_QUERY_SOURCE=database`로 실행하면 CSV가 없는 요청도 데이터 선별 직후
-`anon` 데이터베이스를 조회하여 가공 단계로 전달합니다.
+`anonymized` 데이터베이스를 조회하여 가공 단계로 전달합니다.

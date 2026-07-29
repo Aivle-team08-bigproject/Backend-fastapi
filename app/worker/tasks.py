@@ -4,6 +4,7 @@ import base64
 from sqlalchemy import select
 
 from agent_runtime.query import CsvQueryExecutor, DatabaseQueryExecutor
+from agent_runtime.query.registry import DATASETS
 from app.core.config import settings
 from app.db.session import AsyncSessionLocal
 from app.domains.pipeline.model import DataRequest, PipelineRun, PipelineRunStatus, StageRunStatus
@@ -88,7 +89,7 @@ def process_pipeline_run(self, run_id: int, input_storage_key: str | None = None
                 "delivery_channel": analysis.get("delivery_channel"),
                 "output_formats": analysis.get("output_format", []),
             },
-            ["merchant", "member_pseudonymized", "transaction_pseudonymized"],
+            sorted(DATASETS),
         )
         if not selection_result.get("ok"):
             raise RuntimeError(selection_result.get("error_message") or "데이터 선별에 실패했습니다.")

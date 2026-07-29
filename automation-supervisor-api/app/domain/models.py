@@ -10,7 +10,7 @@ from app.domain.enums import JobStatus, StageStatus
 
 def utcnow() -> datetime:
     # datetime.utcnow()는 시간대 정보가 없는 naive 값이라 TIMESTAMPTZ 컬럼과
-    # 어긋난다. mart/anon/service 전 계층이 UTC 기준 timestamptz다.
+    # 어긋난다. mart/anonymized/service 전 계층이 UTC 기준 timestamptz다.
     return datetime.now(timezone.utc)
 
 

@@ -3,6 +3,7 @@ import json
 import sys
 from pathlib import Path
 
+from agent_runtime.query.plan import QueryPolicyError
 from app.adapters.model.stub_agent_client import StubAgentClient
 from app.agents.strands_agent_factory import build_strands_agent, parse_agent_json_response
 from app.application.ports.agent_client import AgentClient
@@ -123,7 +124,15 @@ class StrandsAgentClient(AgentClient):
                         }
                 finally:
                     await engine.dispose()
+            except QueryPolicyError as exc:
+                # 정책 차단은 "데이터가 없는 것"이 아니라 "요청이 규칙을 어긴 것"이다.
+                # 같은 코드로 뭉개면 화이트리스트가 막았다는 사실이 기록에 남지 않는다.
+                return {
+                    "_agent_error": f"query policy violation: {exc}",
+                    "_failure_code": "POLICY_VIOLATION",
+                }
             except Exception as exc:
+
                 return {
                     "_agent_error": f"query layer failed: {exc}",
                     "_failure_code": "INSUFFICIENT_DATA",

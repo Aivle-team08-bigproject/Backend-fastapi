@@ -83,7 +83,7 @@ class Settings(BaseSettings):
     # "호출"만 하고 그 내부 설정(API 키 등)을 알 필요가 없어야 한다는 원칙 때문.
 
     # --- portfolio DB (agent_svc / app_svc / portfolio_admin 3계정) ---
-    # agent_svc: anon 스키마 전체 + service 실행계층 테이블 (읽기/쓰기)
+    # agent_svc: anonymized 스키마 전체 + service 실행계층 테이블 (읽기/쓰기)
     portfolio_agent_database_url: str = "postgresql+psycopg://agent_svc:change_me@127.0.0.1:5432/portfolio"
     # app_svc: service 스키마 전체 (mart 접근권한 없음 — 화면설계상 불필요함이 확인되어 철회됨)
     portfolio_app_database_url: str = "postgresql+psycopg://app_svc:change_me@127.0.0.1:5432/portfolio"
