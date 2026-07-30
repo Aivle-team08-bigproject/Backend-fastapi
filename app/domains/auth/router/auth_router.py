@@ -20,14 +20,22 @@ from app.domains.employees.model import Employee
 router = APIRouter(prefix="/api/auth", tags=["auth"])
 
 
-def _to_summary(employee: Employee) -> EmployeeSummary:
+def _to_summary(
+    employee: Employee,
+    permissions: set | None = None,
+) -> EmployeeSummary:
     return EmployeeSummary(
         employee_code=employee.employee_code,
         name=employee.name,
         department=employee.department,
         status=employee.status.value,
         must_change_password=employee.must_change_password,
-        permissions=[p.permission_code.value for p in employee.permissions],
+        permissions=sorted(
+            permission.value
+            for permission in (
+                permissions if permissions is not None else {p.permission_code for p in employee.permissions}
+            )
+        ),
     )
 
 
@@ -131,4 +139,4 @@ async def change_password(
 
 @router.get("/me", response_model=EmployeeSummary)
 async def me(auth: CurrentAuth = Depends(get_current_auth)) -> EmployeeSummary:
-    return _to_summary(auth.employee)
+    return _to_summary(auth.employee, auth.permissions)
