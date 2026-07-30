@@ -1,6 +1,6 @@
 """Wave 0 HTTP contract tracer for authenticated dashboard reads."""
 
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from urllib.parse import quote
 from uuid import uuid4
 
@@ -51,6 +51,7 @@ def test_authenticated_dashboard_and_task_list_contract(
         "popular_products",
         "popular_products_unavailable_message",
         "approval_tasks",
+        "deadline_tasks",
         "active_task_count",
     } <= dashboard.keys()
     assert not LEGACY_DASHBOARD_KEYS & dashboard.keys()
@@ -127,6 +128,35 @@ def test_dashboard_popular_products_are_counted_from_request_metadata(
         "request_count": 1,
     }
     assert response.json()["popular_products_unavailable_message"] == ""
+
+
+def test_dashboard_deadline_tasks_exclude_completed_work_and_sort_by_due_at(
+    client: TestClient,
+    dashboard_factory: DashboardFixtureFactory,
+):
+    now = datetime.now(timezone.utc).replace(microsecond=0)
+    overdue = dashboard_factory.create(
+        analysis_condition={"due_at": (now - timedelta(hours=1)).isoformat()},
+    )
+    imminent = dashboard_factory.create(
+        analysis_condition={"due_at": (now + timedelta(hours=3)).isoformat()},
+    )
+    completed = dashboard_factory.create(
+        pipeline_status="COMPLETED",
+        current_stage="COMPLETED",
+        stage_code="COMPLETED",
+        stage_status="COMPLETED",
+        analysis_condition={"due_at": (now - timedelta(days=1)).isoformat()},
+    )
+
+    response = client.get("/api/v1/dashboard", headers=_login_as_admin(client))
+
+    assert response.status_code == 200, response.text
+    deadline_tasks = response.json()["deadline_tasks"]
+    request_nos = [item["request_no"] for item in deadline_tasks]
+    assert request_nos[:2] == [overdue.request_no, imminent.request_no]
+    assert completed.request_no not in request_nos
+    assert all(item["due_at"] for item in deadline_tasks)
 
 
 @pytest.mark.parametrize(

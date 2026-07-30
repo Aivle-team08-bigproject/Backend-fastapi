@@ -14,6 +14,7 @@ from app.domains.dashboard.model import TaskViewSnapshot
 from app.domains.dashboard.schema import (
     AgentFailureRateResponse,
     AgentStatusResponse,
+    DashboardDeadlineTaskResponse,
     DashboardResponse,
     DashboardTaskItemResponse,
     DashboardTaskListResponse,
@@ -375,6 +376,38 @@ def _popular_products(tasks: list[_ProjectedTask]) -> list[PopularProductRespons
     ]
 
 
+def _due_at_from_metadata(metadata: dict) -> datetime | None:
+    due_at = metadata.get("due_at")
+    if not isinstance(due_at, str):
+        return None
+    try:
+        return as_utc(datetime.fromisoformat(due_at.replace("Z", "+00:00")))
+    except ValueError:
+        return None
+
+
+def _deadline_tasks(tasks: list[_ProjectedTask]) -> list[DashboardDeadlineTaskResponse]:
+    due_tasks = [
+        (task, due_at)
+        for task in tasks
+        if not _is_completed(task)
+        if (due_at := _due_at_from_metadata(task.analysis_condition)) is not None
+    ]
+    due_tasks.sort(key=lambda item: item[1])
+    return [
+        DashboardDeadlineTaskResponse(
+            request_no=task.request_no,
+            client=task.client,
+            title=task.title,
+            assignee_name=task.assignee_name,
+            stage_label=task.stage_label,
+            due_at=due_at,
+            detail_route=task.detail_route,
+        )
+        for task, due_at in due_tasks[:5]
+    ]
+
+
 async def get_dashboard_tasks(
     db: AsyncSession,
     query: DashboardTaskQuery,
@@ -427,6 +460,7 @@ async def get_practitioner_dashboard(db: AsyncSession) -> DashboardResponse:
             POPULAR_PRODUCTS_UNAVAILABLE_MESSAGE if not popular_products else ""
         ),
         approval_tasks=[_dashboard_task_item(task) for task in approval_items[:5]],
+        deadline_tasks=_deadline_tasks(projected_tasks),
         active_task_count=sum(not _is_completed(task) for task in projected_tasks),
     )
 

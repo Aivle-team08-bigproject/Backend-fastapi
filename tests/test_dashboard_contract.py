@@ -73,6 +73,7 @@ def test_dashboard_and_task_list_have_exact_new_envelopes_and_empty_success(
         "popular_products",
         "popular_products_unavailable_message",
         "approval_tasks",
+        "deadline_tasks",
         "active_task_count",
     }
     assert not LEGACY_DASHBOARD_KEYS & set(dashboard)
@@ -80,6 +81,7 @@ def test_dashboard_and_task_list_have_exact_new_envelopes_and_empty_success(
     assert dashboard["popular_products_unavailable_message"] == "인기 상품 데이터는 제공되지 않습니다."
     assert len(dashboard["priority_actions"]) <= 5
     assert len(dashboard["approval_tasks"]) <= 5
+    assert len(dashboard["deadline_tasks"]) <= 5
 
     task_response = client.get(
         "/api/v1/dashboard/tasks",
