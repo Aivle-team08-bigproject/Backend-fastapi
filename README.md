@@ -90,37 +90,26 @@ docker compose up -d db
 
 ## 테스트 방법
 
-현재 구현 기준 검증 방법은 아래 두 가지다.
-
-### 1. Dry-run
-
-DB 없이 `stub agent`로 전체 흐름과 롤백 정책을 확인한다.
+### 1. 자동 테스트
 
 ```bash
-cd /Users/joupark/bigproject/Backend-fastapi/automation-supervisor-api
-python scripts/dry_run_supervisor.py
+python -m pytest -q
 ```
 
-예시:
-
-```bash
-python scripts/dry_run_supervisor.py --sample travel
-python scripts/dry_run_supervisor.py --sample cafe
-python scripts/dry_run_supervisor.py --requirement "30대 남성의 헬스 업종 월별 결제 변화를 차트와 CSV로 제공해줘."
-python scripts/dry_run_supervisor.py --sample travel --csv /absolute/path/to/selected.csv
-python scripts/dry_run_supervisor.py --sample subscription --feedback "가공 컬럼과 보고서 형식이 맞지 않습니다."
-```
+Supervisor 흐름은 `tests/test_supervisor_flow.py`가 스텁 에이전트로 검증한다 — 외부 API
+호출 없이 요청 생성부터 단계 진행, 승인 게이트, 반려 롤백까지 실제 DB와 API를 거친다.
+단계 선택·검증 로직 단위 테스트는 `tests/test_supervisor_stages.py`에 있다.
 
 ### 2. API 수동 검증
 
 서버를 띄운 뒤 아래 순서로 호출한다.
 
-1. `POST /api/v1/supervisor/jobs`
-2. `POST /api/v1/supervisor/jobs/{job_id}/run`
-3. `POST /api/v1/supervisor/jobs/{job_id}/hitl-review`
-4. `GET /api/v1/supervisor/jobs/{job_id}`
+1. `POST /api/v1/data-requests` — 요청 생성. Supervisor가 첫 단계를 실행하고 승인 대기로 멈춘다
+2. `GET /api/v1/runs/{run_id}` — 실행 상태와 단계별 산출물 확인
+3. `POST /api/v1/runs/{run_id}/review` — 단계 산출물 승인/반려
+4. `GET /api/v1/runs/{run_id}/events` — 진행 상황 SSE 구독
 
-요청 예시는 `automation-supervisor-api/examples.http`를 보면 된다.
+요청 예시는 `examples.http`를 보면 된다.
 
 ## 프로젝트 목표
 
@@ -142,55 +131,63 @@ python scripts/dry_run_supervisor.py --sample subscription --feedback "가공 �
 ```text
 Backend-fastapi/
 ├── agent_runtime/               # 독립 배포를 염두에 둔 에이전트 런타임 모듈
-├── app/                         # 인증·직원·파이프라인·대시보드 API
+├── app/
+│   ├── domains/pipeline/        # 파이프라인 API + 감시 Supervisor·산출물 검증
+│   ├── worker/                  # Celery task, 상태 기록(DB)·화면 갱신 발행
+│   └── ...                      # 인증·직원·대시보드 API
 ├── alembic/                     # service 스키마 마이그레이션
 ├── scripts/                     # 테스트·데모 데이터 적재
 ├── tests/                       # API·모델 테스트
-└── docker-compose.yml           # 루트 PostgreSQL 실행용
+└── docker-compose.yml           # db / redis / api / celery-worker
 ```
 
 ## 에이전트 구현 현황
 
-### 1. Supervisor API
+### 1. 감시 Supervisor
 
-`automation-supervisor-api/app/application/supervisor_service.py`가 전체 흐름을 제어한다.
+`app/domains/pipeline/supervisor.py`가 단계 진행을 결정하고 산출물을 검증한다.
 
-- 작업 생성
-- 단계별 실행
-- 산출물 검증
-- 동일 입력 재실행 시 캐시 재사용
-- HITL 승인/반려 처리
-- 반려 시 `failure_code -> rollback_stage` 고정 정책 적용
+- 다음에 실행할 단계 선택 (`stage_runs`의 PENDING 행을 claim)
+- 앞 단계 산출물로 다음 단계 payload 조립
+- 단계 에이전트 호출과 산출물 검증 (`app/domains/pipeline/validation.py`)
+- 반려 시 `failure_code -> 되돌아갈 단계` 정책 적용
 
-상태 흐름은 대략 아래와 같다.
+상태 쓰기는 Worker가 한다 — `app/worker/status_recorder.py`가 DB에 쓰고, 그 다음 프론트
+화면 갱신용으로 Redis에 발행한다(FastAPI SSE가 구독). 발행이 실패해도 상태는 DB에 남는다.
+
+각 단계는 끝날 때마다 사람 승인에서 멈춘다.
 
 ```text
 QUEUED
--> RUNNING
--> REQUIREMENT_ANALYSIS
--> DATA_SELECTION
--> DATA_PROCESSING
--> WAITING_HITL
--> COMPLETED | WAITING_RETRY | FAILED
+-> RUNNING (REQUIREMENT_ANALYSIS) -> WAITING_REQUIREMENT_REVIEW
+-> RUNNING (DATA_SELECTION)       -> WAITING_SAMPLE_REVIEW
+-> RUNNING (DATA_PROCESSING)      -> WAITING_FINAL_REVIEW
+-> COMPLETED | FAILED
 ```
+
+반려하면 해당 단계부터 새 attempt의 `stage_runs` 행이 만들어지고(이전 행은 `ROLLED_BACK`),
+그 단계부터 다시 진행한다.
 
 ### 2. 현재 연결된 에이전트
 
-`automation-supervisor-api` 기준으로 아래 3개 agent 이름을 사용한다.
+Supervisor가 아래 3개 에이전트를 순서대로 호출한다. 구현체는 모두 `agent_runtime/`에 있고
+`app/domains/pipeline/agent_client.py`가 어댑터 역할을 한다.
 
 - `requirement-analysis-agent`
 - `data-selection-agent`
 - `data-processing-agent`
 
-모델명은 `.env`에서 단계별로 분리한다.
+데이터 조회는 별도 단계가 아니라 가공 단계 안에서 `agent_runtime/query`가 담당한다
+(업로드된 CSV 또는 익명화 DB, `PIPELINE_QUERY_SOURCE`로 선택).
+
+모델 설정은 각 에이전트가 자체 `config.py`에서 `.env`를 읽는다 — FastAPI 앱 설정과
+분리돼 있다.
 
 ```text
-REQUIREMENT_ANALYSIS_MODEL=sonnet-4.6
-DATA_SELECTION_MODEL=aws-nova
-DATA_PROCESSING_MODEL=chatgpt-5.5
+REQUIREMENTS_ANALYSIS_MODEL_PROVIDER=deepseek
+REQUIREMENTS_ANALYSIS_MODEL_ID=deepseek-v4-flash
+DEEPSEEK_API_KEY=...
 ```
-
-로컬에서 Strands 환경이 준비되지 않았으면 `stub agent`로 fallback 되도록 구성돼 있다. 그래서 API 구조와 상태 전이는 실제로 먼저 검증할 수 있다.
 
 ### 3. 독립 런타임 모듈
 
@@ -199,9 +196,18 @@ DATA_PROCESSING_MODEL=chatgpt-5.5
 현재 확인되는 구현:
 
 - `agent_runtime/requirements_analysis/agent.py`
-  요구사항 자연어를 구조화된 JSON으로 변환하는 독립 실행형 Strands 에이전트
+  요구사항 자연어를 구조화된 JSON으로 변환한다
+- `agent_runtime/data_selection/agent.py`
+  어떤 테이블을 어떤 기준으로 선별할지와 검토용 합성 샘플을 만든다
+- `agent_runtime/data_processing/`
+  결측 보정·형식 변환·익명화를 수행하는 결정론적 가공기
+- `agent_runtime/data_retrieval/agent.py`
+  선별된 CSV를 검증하고 메타데이터만 반환한다(원본 행은 반환하지 않음)
+- `agent_runtime/query/`
+  CSV·익명화 DB에서 실제 행을 읽어오는 조회 레이어
 
-이 모듈은 FastAPI 앱에 직접 의존하지 않도록 분리돼 있다.
+이 모듈은 FastAPI 앱에 직접 의존하지 않도록 분리돼 있다. 각 에이전트는 자기 산출물이
+다음 단계로 넘길 만한지 스스로 판단하지 않는다 — 그 판단은 Supervisor가 한다.
 
 ## 미구현 항목
 
