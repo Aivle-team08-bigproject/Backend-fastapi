@@ -28,7 +28,7 @@ class Settings(BaseSettings):
     celery_result_backend: str = "redis://127.0.0.1:6379/1"
     celery_task_always_eager: bool = False
     worker_status_redis_url: str = "redis://127.0.0.1:6379/2"
-    worker_status_channel: str = "pipeline:run-status"
+    # Worker가 DB에 상태를 쓴 뒤 프론트 화면 갱신용으로 발행하는 채널(FastAPI SSE가 구독)
     worker_status_sse_channel: str = "pipeline:run-status:persisted"
     worker_status_key_prefix: str = "pipeline:run-status:latest"
     worker_status_ttl_seconds: int = 86400

@@ -6,6 +6,7 @@ from redis.asyncio import Redis
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.common.errors import DomainException, bad_request, not_found
+from app.common.security_deps import CurrentAuth, get_current_auth
 from app.core.config import settings
 from app.db.session import get_db
 from app.domains.pipeline.model import PipelineRun
@@ -14,12 +15,15 @@ from app.domains.pipeline.schema import (
     CreateDataRequestResponse,
     CsvUploadResponse,
     PipelineRunResponse,
+    StageReviewRequest,
+    StageReviewResponse,
 )
 from app.domains.pipeline.service import (
     create_data_request,
     dispatch_uploaded_csv,
     get_pipeline_run,
     get_result_artifact,
+    submit_stage_review,
 )
 from app.worker.file_storage import resolve_storage_key, save_upload
 from app.worker.status_event import PipelineStatusEvent
@@ -82,6 +86,17 @@ async def upload_run_csv(
         checksum=metadata["checksum"],
         run_status="QUEUED",
     )
+
+
+@router.post("/runs/{run_id}/review", response_model=StageReviewResponse)
+async def review_run_stage(
+    run_id: int,
+    payload: StageReviewRequest,
+    auth: CurrentAuth = Depends(get_current_auth),
+    db: AsyncSession = Depends(get_db),
+) -> StageReviewResponse:
+    """단계 산출물 검토(HITL). 승인 시 다음 단계로, 반려 시 해당 단계로 되돌린다."""
+    return await submit_stage_review(db, run_id, auth.employee, payload)
 
 
 @router.get("/runs/{run_id}/result.csv")
