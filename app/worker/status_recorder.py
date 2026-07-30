@@ -1,13 +1,20 @@
-import asyncio
+"""작업 상태 기록 — Worker가 DB에 직접 쓰고, 그 다음 프론트 화면 갱신용으로 발행한다.
+
+쓰기 주체는 Worker다. Redis pub/sub은 영속화 경로가 아니라 화면 갱신 전용 통로다:
+
+    Worker --(1) DB write--> PostgreSQL
+           --(2) publish---> Redis --> FastAPI SSE --> 프론트 화면
+
+(2)가 실패해도 상태는 이미 (1)에서 남아 있으므로 유실되지 않는다. 반대로 (1)이 실패하면
+발행도 하지 않는다 — 화면에 DB에 없는 상태가 보이는 상황을 안 만든다.
+"""
+
 import logging
 
-from redis.asyncio import Redis
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.common.time_utils import utcnow
-from app.core.config import settings
-from app.db.session import AsyncSessionLocal
 from app.domains.pipeline.model import (
     Artifact,
     ArtifactType,
@@ -17,11 +24,12 @@ from app.domains.pipeline.model import (
     PipelineEvent,
     PipelineRun,
     PipelineRunStatus,
+    PiiScanStatus,
     StageRun,
     StageRunStatus,
-    PiiScanStatus,
 )
 from app.worker.status_event import PipelineStatusEvent
+from app.worker.status_publisher import publish_to_screen
 
 
 logger = logging.getLogger(__name__)
@@ -42,6 +50,10 @@ async def persist_status_event(db: AsyncSession, event: PipelineStatusEvent) -> 
         run.started_at = now
     if event.run_status in {PipelineRunStatus.COMPLETED, PipelineRunStatus.FAILED}:
         run.completed_at = now
+    # Supervisor가 다음 dispatch에서 읽는 값들. 성공 이벤트에서는 지워서 이전 실패 흔적이
+    # 남지 않게 한다.
+    run.error_message = event.error_message
+    run.rollback_to_stage = event.rollback_to_stage
 
     data_request = await db.get(DataRequest, run.data_request_id)
     if data_request is not None:
@@ -57,21 +69,28 @@ async def persist_status_event(db: AsyncSession, event: PipelineStatusEvent) -> 
 
     stage = None
     if event.current_stage and event.stage_status is not None:
+        # 롤백 재시도로 같은 stage_code가 여러 attempt 존재할 수 있으므로 최신 시도를 잡는다.
         stage = await db.scalar(
-            select(StageRun).where(
+            select(StageRun)
+            .where(
                 StageRun.pipeline_run_id == run.id,
                 StageRun.stage_code == event.current_stage,
             )
+            .order_by(StageRun.attempt_no.desc(), StageRun.id.desc())
+            .limit(1)
         )
         if stage is not None:
             stage.status = event.stage_status.value
             stage.executor_reference = event.celery_task_id
+            if event.validation_result is not None:
+                stage.validation_result = event.validation_result
             if event.stage_status == StageRunStatus.RUNNING:
                 stage.started_at = stage.started_at or now
             elif event.stage_status == StageRunStatus.COMPLETED:
                 stage.output_payload = event.result or {}
                 stage.completed_at = now
             elif event.stage_status == StageRunStatus.FAILED:
+                stage.output_payload = event.result or {}
                 stage.error_message = event.error_message
                 stage.completed_at = now
 
@@ -94,8 +113,11 @@ async def persist_status_event(db: AsyncSession, event: PipelineStatusEvent) -> 
             occurred_at=now,
         )
     )
+    # HITL 도입 후 가공 단계가 끝나면 run은 COMPLETED가 아니라 WAITING_FINAL_REVIEW로
+    # 멈춘다. 그래도 결과 파일은 이미 저장돼 있으므로 상태와 무관하게 Artifact를 남긴다
+    # (storage_key 중복 검사로 멱등).
     artifact_payload = (event.result or {}).get("artifact")
-    if event.run_status == PipelineRunStatus.COMPLETED and artifact_payload:
+    if artifact_payload:
         existing = await db.scalar(
             select(Artifact).where(Artifact.storage_key == artifact_payload["storage_key"])
         )
@@ -117,31 +139,40 @@ async def persist_status_event(db: AsyncSession, event: PipelineStatusEvent) -> 
     return True
 
 
-async def run() -> None:
-    logging.basicConfig(level=logging.INFO)
-    redis_client = Redis.from_url(settings.worker_status_redis_url, decode_responses=True)
-    pubsub = redis_client.pubsub(ignore_subscribe_messages=True)
-    await pubsub.subscribe(settings.worker_status_channel)
-    logger.info("Subscribed to Redis channel %s", settings.worker_status_channel)
-    try:
-        async for message in pubsub.listen():
-            try:
-                event = PipelineStatusEvent.model_validate_json(message["data"])
-                async with AsyncSessionLocal() as db:
-                    if await persist_status_event(db, event):
-                        payload = event.model_dump_json()
-                        latest_key = f"{settings.worker_status_key_prefix}:{event.run_id}"
-                        async with redis_client.pipeline(transaction=True) as pipe:
-                            pipe.set(latest_key, payload, ex=settings.worker_status_ttl_seconds)
-                            pipe.publish(settings.worker_status_sse_channel, payload)
-                            await pipe.execute()
-            except Exception:
-                logger.exception("Failed to persist pipeline status event")
-    finally:
-        await pubsub.unsubscribe(settings.worker_status_channel)
-        await pubsub.aclose()
-        await redis_client.aclose()
+async def record_status(
+    db: AsyncSession,
+    *,
+    run_id: int,
+    celery_task_id: str,
+    run_status: PipelineRunStatus,
+    progress_percent: int,
+    message: str,
+    current_stage: str | None = None,
+    stage_status: StageRunStatus | None = None,
+    result: dict | None = None,
+    error_message: str | None = None,
+    validation_result: dict | None = None,
+    rollback_to_stage: str | None = None,
+) -> PipelineStatusEvent | None:
+    """상태를 DB에 쓰고, 성공하면 화면 갱신용으로 발행한다.
 
-
-if __name__ == "__main__":
-    asyncio.run(run())
+    run을 못 찾거나 celery_task_id가 안 맞으면 아무것도 발행하지 않고 None을 돌려준다.
+    """
+    event = PipelineStatusEvent(
+        run_id=run_id,
+        celery_task_id=celery_task_id,
+        run_status=run_status,
+        current_stage=current_stage,
+        stage_status=stage_status,
+        progress_percent=progress_percent,
+        message=message,
+        result=result,
+        error_message=error_message,
+        validation_result=validation_result,
+        rollback_to_stage=rollback_to_stage,
+        occurred_at=utcnow(),
+    )
+    if not await persist_status_event(db, event):
+        return None
+    publish_to_screen(event)
+    return event

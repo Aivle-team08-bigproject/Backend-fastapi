@@ -1,4 +1,10 @@
-from app.domain.enums import FailureCode, StageName
+"""단계 산출물 검증 — Supervisor가 다음 단계로 넘길지 판단하는 근거.
+
+agent_runtime/의 각 에이전트는 자기 산출물이 쓸만한지 스스로 판단하지 않는다(그쪽 모듈
+주석에 명시). 그 판단을 여기서 한다.
+"""
+
+from app.domains.pipeline.model import FailureCode, StageName
 
 
 def validate_stage_output(stage_name: StageName, output: dict) -> dict:
