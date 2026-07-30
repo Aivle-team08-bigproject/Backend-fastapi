@@ -96,6 +96,16 @@ class PopularProductResponse(BaseModel):
     request_count: int = Field(ge=0)
 
 
+class DashboardDeadlineTaskResponse(BaseModel):
+    request_no: str
+    client: str
+    title: str
+    assignee_name: str
+    stage_label: str
+    due_at: datetime
+    detail_route: str
+
+
 class DashboardResponse(BaseModel):
     generated_at: datetime
     priority_cards: list[DashboardPriorityCardResponse]
@@ -103,6 +113,7 @@ class DashboardResponse(BaseModel):
     popular_products: list[PopularProductResponse]
     popular_products_unavailable_message: str
     approval_tasks: list[DashboardTaskItemResponse]
+    deadline_tasks: list[DashboardDeadlineTaskResponse]
     active_task_count: int = Field(ge=0)
 
 
