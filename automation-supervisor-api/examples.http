@@ -1,0 +1,36 @@
+### Create automation job
+POST http://127.0.0.1:8000/api/v1/supervisor/jobs
+Content-Type: application/json
+
+{
+  "requirement_id": 1,
+  "raw_requirement": "수도권과 비수도권의 여행 취미 회원 결제 성향을 분석해서 API, CSV, 시각화, 보고서로 제공해줘.",
+  "source_csv_path": "/data/02_selected_transactions.csv"
+}
+
+### Run supervisor orchestration
+### Expected result: job status becomes WAITING_HITL
+POST http://127.0.0.1:8000/api/v1/supervisor/jobs/1/run
+
+### Approve final HITL review
+POST http://127.0.0.1:8000/api/v1/supervisor/jobs/1/hitl-review
+Content-Type: application/json
+
+{
+  "approved": true,
+  "reviewer": "manager01",
+  "natural_feedback": "최종 산출물이 요구사항과 일치합니다."
+}
+
+### Reject final HITL review
+POST http://127.0.0.1:8000/api/v1/supervisor/jobs/1/hitl-review
+Content-Type: application/json
+
+{
+  "approved": false,
+  "reviewer": "manager01",
+  "natural_feedback": "선별된 데이터가 부족하고 테이블 선택이 요구사항과 맞지 않습니다."
+}
+
+### Get job status
+GET http://127.0.0.1:8000/api/v1/supervisor/jobs/1

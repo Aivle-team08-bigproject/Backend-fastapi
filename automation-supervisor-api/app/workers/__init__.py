@@ -1,0 +1,1 @@
+"""Redis-dispatched automation workers."""
