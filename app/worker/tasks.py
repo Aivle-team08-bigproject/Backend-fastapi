@@ -12,6 +12,7 @@ process_pipeline_run의 이름과 인자(run_id, input_storage_key)는 기존 �
 """
 
 import asyncio
+from concurrent.futures import ThreadPoolExecutor
 
 from app.db.session import AsyncSessionLocal
 from app.domains.pipeline.model import (
@@ -30,6 +31,23 @@ from app.domains.pipeline.supervisor import (
 )
 from app.worker.celery_app import celery_app
 from app.worker.status_recorder import record_status
+
+
+def _run_async(coro):
+    """task 본문의 async 코드를 실행한다.
+
+    Celery worker 프로세스에는 돌고 있는 이벤트 루프가 없어 asyncio.run으로 충분하다.
+    하지만 CELERY_TASK_ALWAYS_EAGER=true(브로커 없이 로컬에서 돌리는 모드)로 쓰면 task가
+    FastAPI 요청 스레드 안에서 인라인 실행되는데, 그 스레드에는 이미 루프가 돌고 있어서
+    asyncio.run이 RuntimeError로 터진다. 그 경우에만 별도 스레드에서 새 루프로 돌린다.
+    """
+    try:
+        asyncio.get_running_loop()
+    except RuntimeError:
+        return asyncio.run(coro)
+
+    with ThreadPoolExecutor(max_workers=1) as pool:
+        return pool.submit(asyncio.run, coro).result()
 
 
 async def _dispatch(run_id: int) -> dict:
@@ -144,7 +162,7 @@ def process_pipeline_run(self, run_id: int, input_storage_key: str | None = None
     업로드 메타데이터는 이미 DATA_PROCESSING 단계의 input_payload["csv"]에 저장돼 있고
     Supervisor가 payload를 조립할 때 그걸 읽는다. 인자는 기존 호출 계약 유지용이다.
     """
-    dispatched = asyncio.run(_dispatch(run_id))
+    dispatched = _run_async(_dispatch(run_id))
     run_pipeline_stage.apply_async(
         args=[dispatched["stage_id"], dispatched["celery_task_id"]]
     )
@@ -158,4 +176,4 @@ def run_pipeline_stage(stage_id: int, celery_task_id: str) -> dict:
     celery_task_id는 run의 dispatch id(run.celery_task_id)를 그대로 받는다 — 이 task 자신의
     id가 아니다. status_recorder의 stale 이벤트 판별 기준이라 dispatch와 같은 값이어야 한다.
     """
-    return asyncio.run(_run_stage(stage_id, celery_task_id))
+    return _run_async(_run_stage(stage_id, celery_task_id))
