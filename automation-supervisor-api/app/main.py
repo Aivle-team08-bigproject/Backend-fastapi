@@ -5,13 +5,18 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from app.api.router import api_router
 from app.core.config import settings
+from app.core.queue import create_redis_pool
 from app.db.session import init_db
 
 
 @asynccontextmanager
-async def lifespan(_: FastAPI):
+async def lifespan(app: FastAPI):
     await init_db()
-    yield
+    app.state.redis = await create_redis_pool()
+    try:
+        yield
+    finally:
+        await app.state.redis.aclose()
 
 
 app = FastAPI(

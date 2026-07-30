@@ -2,7 +2,8 @@
 
 요구사항 분석 결과(analysis)와 지금 조회 가능한 가명화 데이터 소스 목록(available_data)을 읽어,
 이 요청에 어떤 테이블이 필요하고 어떤 기준(임베딩 벡터 유사도 조회 조건)으로 데이터를 걸러낼지,
-그리고 사람이 검토할 샘플 데이터에 어떤 컬럼이 나올지를 구조화한다. 이 에이전트 자신은 실제
+그리고 사람이 검토할 샘플 데이터에 어떤 컬럼이 나올지와 그 형식에 맞는 합성 더미 데이터 5건을
+구조화한다. 이 에이전트 자신은 실제
 DB나 임베딩을 조회하지 않는다(툴 없음) — "무엇을 어떻게 선별할지" 계획만 다음 단계(실제 조회/
 가공)가 바로 실행할 수 있는 형태로 만들어 돌려준다.
 
@@ -43,7 +44,7 @@ SYSTEM_PROMPT = """당신은 '하나 데이터 마켓'의 데이터 선별 에�
   "available_data": ["지금 조회 가능한 가명화 테이블 이름 목록"]
 }
 
-당신의 임무는 이 입력을 읽고 아래 3개 항목으로 구조화하는 것이다. 실제로 DB나 임베딩을 조회할
+당신의 임무는 이 입력을 읽고 아래 항목으로 구조화하는 것이다. 실제로 DB나 임베딩을 조회할
 필요는 없다 — 그건 다음 단계가 한다. 임베딩 기반 벡터 유사도 조회가 가능하다고 가정한다.
 
 반드시 아래 JSON 형식으로만 응답한다. 다른 설명, 코드블록 마크다운(```), 서두 문구를 절대
@@ -59,10 +60,19 @@ SYSTEM_PROMPT = """당신은 '하나 데이터 마켓'의 데이터 선별 에�
   "sample_columns": [
     {
       "name": "<사람이 검토할 샘플 데이터에 표시할 컬럼명>",
+      "data_type": "<string|integer|number|boolean|date|datetime 중 하나>",
       "is_predicted": <원본 데이터에 그대로 있는 값이면 false, 계산/추정해야 하는 지표면 true>,
       "description": "<이 컬럼을 어떤 기준으로 선정했고 어떻게 산출하는지 한 줄 설명>"
     }
-  ]
+  ],
+  "sample_rows": [
+    {"<sample_columns의 컬럼명>": "<실제 원본과 무관하게 생성한 합성 값>"}
+  ],
+  "sample_metadata": {
+    "is_synthetic": true,
+    "sample_count": 5,
+    "notice": "실제 고객 데이터가 아닌 형식 확인용 예시 데이터입니다."
+  }
 }
 
 규칙:
@@ -92,6 +102,13 @@ SYSTEM_PROMPT = """당신은 '하나 데이터 마켓'의 데이터 선별 에�
   아니라 description에서 설명한다.
 - 핵심 지표 컬럼명에 이미 다른 컬럼(업종 등)에 담긴 정보를 반복해서 넣지 않는다(예: 업종 컬럼이
   이미 있는데 "여행결제건수"처럼 업종명을 지표 이름 앞에 다시 붙이지 않는다 — "결제건수"로 충분).
+- sample_rows는 반드시 정확히 5건을 생성한다.
+- sample_rows의 각 객체는 sample_columns에 선언된 모든 컬럼을 정확히 한 번씩 포함하며, 그 외
+  컬럼은 포함하지 않는다.
+- sample_rows는 원본 CSV나 DB에서 가져온 값이 아니라 컬럼 형식과 필터 조건을 설명하기 위한 완전한
+  합성 더미 데이터다. 실제 고객ID, 카드번호, 전화번호, 이메일처럼 보이는 값을 만들지 않는다.
+- 필터 컬럼이 sample_columns에 포함돼 있다면 더미 값은 selection_query.filters와 모순되지 않아야 한다.
+- sample_metadata.is_synthetic는 반드시 true, sample_count는 반드시 5로 쓴다.
 - JSON 외의 텍스트를 절대 출력하지 않는다."""
 
 _JSON_BLOCK_RE = re.compile(r"\{.*\}", re.DOTALL)
@@ -130,6 +147,32 @@ def _extract_json(raw_text: str) -> dict:
     return json.loads(match.group(0))
 
 
+def _validate_sample_contract(data: dict) -> None:
+    columns = data.get("sample_columns")
+    rows = data.get("sample_rows")
+    metadata = data.get("sample_metadata")
+    if not isinstance(columns, list) or not columns:
+        raise ValueError("sample_columns는 비어 있지 않은 배열이어야 함")
+
+    names = [column.get("name") for column in columns if isinstance(column, dict)]
+    if len(names) != len(columns) or any(not isinstance(name, str) or not name for name in names):
+        raise ValueError("모든 sample_columns 항목에는 name이 필요함")
+    if len(set(names)) != len(names):
+        raise ValueError("sample_columns의 name은 중복될 수 없음")
+
+    if not isinstance(rows, list) or len(rows) != 5:
+        raise ValueError("sample_rows는 정확히 5건이어야 함")
+    expected_keys = set(names)
+    for index, row in enumerate(rows):
+        if not isinstance(row, dict) or set(row) != expected_keys:
+            raise ValueError(f"sample_rows[{index}]의 컬럼이 sample_columns와 일치하지 않음")
+
+    if not isinstance(metadata, dict):
+        raise ValueError("sample_metadata는 객체여야 함")
+    if metadata.get("is_synthetic") is not True or metadata.get("sample_count") != 5:
+        raise ValueError("sample_metadata는 합성 샘플 5건임을 표시해야 함")
+
+
 @tool
 def run(raw_requirement: str, analysis: dict, available_data: list[str]) -> dict:
     """데이터 선별 에이전트를 실행한다.
@@ -158,6 +201,7 @@ def run(raw_requirement: str, analysis: dict, available_data: list[str]) -> dict
             agent = build_agent()
             result = agent(message)
             parsed = _extract_json(str(result))
+            _validate_sample_contract(parsed)
         except Exception as exc:  # noqa: BLE001 — 호출/파싱 실패를 규격화해서 반환
             last_error = str(exc)
             continue

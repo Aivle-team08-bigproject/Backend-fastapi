@@ -28,6 +28,29 @@ class StubAgentClient(AgentClient):
                     "top_k": 20,
                     "filters": payload.get("analysis", {}).get("categories", {}),
                 },
+                "sample_columns": [
+                    {
+                        "name": "지역",
+                        "data_type": "string",
+                        "is_predicted": False,
+                        "description": "요구 조건의 지역",
+                    },
+                    {
+                        "name": "결제건수",
+                        "data_type": "integer",
+                        "is_predicted": True,
+                        "description": "형식 확인용 합성 결제 건수",
+                    },
+                ],
+                "sample_rows": [
+                    {"지역": "서울", "결제건수": index}
+                    for index in range(1, 6)
+                ],
+                "sample_metadata": {
+                    "is_synthetic": True,
+                    "sample_count": 5,
+                    "notice": "실제 고객 데이터가 아닌 형식 확인용 예시 데이터입니다.",
+                },
             }
 
         if agent_name == "data-processing-agent":
@@ -84,6 +107,23 @@ class StubAgentClient(AgentClient):
                     "imputation_count": 0,
                     "contains_raw_identifiers_in_audit": False,
                 },
+            }
+
+        if agent_name == "data-retrieval-agent":
+            return {
+                "source_type": "preselected_csv",
+                "input_csv_path": payload.get("source_csv_path"),
+                "input_sha256": "stub",
+                "input_row_count": 1,
+                "source_csv_path": payload.get("source_csv_path"),
+                "source_sha256": "stub",
+                "encoding": "utf-8-sig",
+                "row_count": 1,
+                "columns": ["stub_column"],
+                "applied_filters": [],
+                "unmapped_filters": [],
+                "selection_snapshot": payload.get("selection", {}),
+                "raw_rows_stored_in_database": False,
             }
 
         return {"model": model_name, "agent_name": agent_name}

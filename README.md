@@ -211,3 +211,43 @@ DATA_PROCESSING_MODEL=chatgpt-5.5
 
 루트 `app/`은 인증, 세션, 직원 관리, 데이터 요청·파이프라인, 대시보드 API를 제공한다.
 기존 `/requirements`·`/tasks` 레거시 API는 제거되었으며, 현재 작업 흐름은 `/api/v1` API를 사용한다.
+## Celery · Redis 비동기 파이프라인
+
+`POST /api/v1/data-requests`는 `service.pipeline_runs`에 실행을 먼저 등록하고,
+동일한 `celery_task_id`로 Redis broker에 `pipeline.process_run` 작업을 발행합니다.
+Worker는 요구사항 분석과 데이터 선별 상태를 Redis Pub/Sub으로 전달합니다.
+`worker-status-subscriber`는 이벤트를 DB의 `pipeline_runs`, `stage_runs`,
+`pipeline_events`에 저장한 뒤 SSE 전용 채널로 재발행합니다.
+각 실행의 최신 이벤트는 `pipeline:run-status:latest:{run_id}` 키에도 TTL과 함께
+저장되므로 SSE 재연결 시 가장 최근 상태부터 받을 수 있습니다.
+
+실시간 상태는 `GET /api/v1/runs/{run_id}/events`로 구독합니다. 프론트 구독
+예제는 `docs/frontend/pipelineEvents.ts`에 있습니다.
+
+DB migration 적용 후 서비스를 실행합니다.
+
+```bash
+alembic upgrade head
+docker compose up -d --build db redis api celery-worker worker-status-subscriber
+```
+
+API와 Worker는 `uploaded_data:/app/uploads` named volume을 공유합니다.
+`POST /api/v1/runs/{run_id}/input-csv`에 multipart `file`로 CSV를 업로드하면
+원본을 실행별 경로에 저장하고 Celery가 실제 행을 가공합니다. 완료 결과는
+`service.artifacts`에 기록되며 `GET /api/v1/runs/{run_id}/result.csv`로
+다운로드할 수 있습니다.
+
+## Query Layer
+
+`agent_runtime/query`는 데이터 선별 Agent의 결과를 검증된 `SelectionPlan`으로
+변환합니다. Agent가 만든 SQL 문자열은 실행하지 않으며, 등록된 논리 데이터셋,
+허용 컬럼, 필터 연산자와 최대 조회 건수만 SQLAlchemy 표현식으로 변환합니다.
+
+- `CsvQueryExecutor`: 업로드 CSV에 같은 컬럼·필터·건수 계획 적용
+- `DatabaseQueryExecutor`: `agent_svc` 계정으로 `anon` 스키마만 조회
+- 민감 원본 컬럼(`card_number_masked`, `ip_address`, 사업자번호 등)은 DB 조회 차단
+- 다중 데이터셋은 등록된 FK 조인 경로만 허용
+
+기본 `PIPELINE_QUERY_SOURCE=csv`에서는 기존처럼 CSV 업로드를 기다립니다.
+`PIPELINE_QUERY_SOURCE=database`로 실행하면 CSV가 없는 요청도 데이터 선별 직후
+`anon` 데이터베이스를 조회하여 가공 단계로 전달합니다.

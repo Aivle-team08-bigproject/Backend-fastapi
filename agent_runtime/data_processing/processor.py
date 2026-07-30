@@ -11,6 +11,7 @@ import os
 import statistics
 from collections import Counter
 from datetime import date, datetime
+from pathlib import Path
 from typing import Any
 
 
@@ -88,7 +89,7 @@ def process_payload(payload: dict[str, Any]) -> dict[str, Any]:
             {"column": column, "strategy": strategy, "affected_rows": len(missing_indexes)}
         )
 
-    anonymization_key = os.getenv("DATA_ANONYMIZATION_KEY", "")
+    anonymization_key = os.getenv("DATA_ANONYMIZATION_KEY") or os.getenv("ANON_HASH_SALT", "")
     anonymization_audit: list[dict[str, Any]] = []
     for column in columns:
         policy = policies.get(column, {})
@@ -169,10 +170,34 @@ def _extract_rows(payload: dict[str, Any]) -> list[dict[str, Any]]:
     ]
     rows = next((item for item in candidates if isinstance(item, list)), None)
     if rows is None:
+        retrieval = payload.get("retrieval") or {}
+        source_path = retrieval.get("source_csv_path")
+        if source_path:
+            rows = _read_retrieved_csv(source_path, retrieval)
+    if rows is None:
         return []
     if not all(isinstance(row, dict) for row in rows):
         raise ProcessingError("every selected row must be a JSON object")
     return [dict(row) for row in rows]
+
+
+def _read_retrieved_csv(raw_path: str, retrieval: dict[str, Any]) -> list[dict[str, Any]]:
+    source = Path(raw_path).resolve()
+    allowed_root = Path(os.getenv("DATA_RETRIEVAL_ALLOWED_ROOT", "/data")).resolve()
+    if not source.is_relative_to(allowed_root):
+        raise ProcessingError(f"retrieved CSV must be inside {allowed_root}")
+    if not source.is_file():
+        raise ProcessingError("retrieved CSV does not exist")
+
+    expected_sha256 = retrieval.get("source_sha256")
+    if expected_sha256:
+        digest = hashlib.sha256(source.read_bytes()).hexdigest()
+        if not hmac.compare_digest(digest, str(expected_sha256)):
+            raise ProcessingError("retrieved CSV checksum mismatch")
+
+    encoding = str(retrieval.get("encoding") or "utf-8-sig")
+    with source.open("r", encoding=encoding, newline="") as csv_file:
+        return list(csv.DictReader(csv_file))
 
 
 def _normalize_null(value: Any) -> Any:
@@ -245,6 +270,8 @@ def _missing_counts(rows: list[dict[str, Any]], columns: list[str]) -> dict[str,
 
 def _output_formats(analysis: dict[str, Any]) -> set[str]:
     raw = analysis.get("output_formats") or analysis.get("output_format") or ["csv"]
+    if isinstance(raw, str):
+        raw = [raw]
     return {str(item).lower() for item in raw}
 
 

@@ -36,3 +36,5 @@ def test_pipeline_run_has_unique_attempt_per_request():
         constraint.name == "uq_pipeline_run_attempt"
         for constraint in table.constraints
     )
+    assert "celery_task_id" in table.c
+    assert table.c.celery_task_id.unique is True

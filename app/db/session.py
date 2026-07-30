@@ -10,7 +10,12 @@ from app.domains.automation.model import requirements_analysis_model  # noqa: F4
 from app.domains.pipeline import model as pipeline_model  # noqa: F401
 from app.domains.dashboard import model as dashboard_model  # noqa: F401
 
-engine = create_async_engine(settings.hanacard_app_database_url, echo=False, future=True, pool_pre_ping=True)
+engine = create_async_engine(
+    settings.runtime_database_url(settings.hanacard_app_database_url),
+    echo=False,
+    future=True,
+    pool_pre_ping=True,
+)
 AsyncSessionLocal = async_sessionmaker(engine, expire_on_commit=False, class_=AsyncSession)
 
 

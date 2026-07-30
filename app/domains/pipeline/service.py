@@ -1,11 +1,13 @@
 from uuid import uuid4
 
+from fastapi import status
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.common.errors import not_found
+from app.common.errors import DomainException, not_found
 from app.common.time_utils import utcnow
 from app.domains.pipeline.model import (
+    Artifact,
     Client,
     DataRequest,
     DataRequestStatus,
@@ -24,6 +26,7 @@ from app.domains.pipeline.schema import (
     RunEventResponse,
     RunStageResponse,
 )
+from app.worker.tasks import process_pipeline_run
 
 
 def _make_request_no() -> str:
@@ -122,6 +125,7 @@ async def create_data_request(
         await db.flush()
 
     title = payload.title or payload.raw_requirement.strip().splitlines()[0][:200]
+    celery_task_id = str(uuid4())
     data_request = DataRequest(
         request_no=_make_request_no(),
         client_id=client.id,
@@ -130,8 +134,8 @@ async def create_data_request(
         raw_requirement=payload.raw_requirement.strip(),
         output_formats=["CSV", "XLSX"],
         delivery_channels=["FILE_DOWNLOAD"],
-        analysis_condition={"hardcoded_pipeline": True},
-        status=DataRequestStatus.COMPLETED,
+        analysis_condition={"async_pipeline": True},
+        status=DataRequestStatus.QUEUED,
         created_at=now,
         updated_at=now,
     )
@@ -141,11 +145,10 @@ async def create_data_request(
     run = PipelineRun(
         data_request_id=data_request.id,
         attempt_no=1,
-        status=PipelineRunStatus.COMPLETED,
-        current_stage="COMPLETED",
-        progress_percent=100,
-        started_at=now,
-        completed_at=now,
+        status=PipelineRunStatus.QUEUED,
+        current_stage=HARDCODED_STAGES[0],
+        progress_percent=0,
+        celery_task_id=celery_task_id,
         created_at=now,
         updated_at=now,
     )
@@ -157,26 +160,13 @@ async def create_data_request(
             pipeline_run_id=run.id,
             stage_code=stage_code,
             attempt_no=1,
-            status=StageRunStatus.COMPLETED,
-            executor="HARDCODED",
+            status=StageRunStatus.PENDING,
+            executor="CELERY",
             input_payload={"request_no": data_request.request_no},
-            output_payload={"status": "COMPLETED"},
-            started_at=now,
-            completed_at=now,
+            output_payload={},
             created_at=now,
         )
         db.add(stage)
-        await db.flush()
-        db.add(
-            PipelineEvent(
-                pipeline_run_id=run.id,
-                stage_run_id=stage.id,
-                event_type=EventType.PROGRESS,
-                message=f"{stage_code} 하드코딩 실행이 완료되었습니다.",
-                payload={"stage": stage_code, "progress_percent": 100, "executor": "HARDCODED"},
-                occurred_at=now,
-            )
-        )
 
     for view_code, view_payload in HARDCODED_VIEW_PAYLOADS.items():
         db.add(
@@ -190,12 +180,38 @@ async def create_data_request(
         )
     await db.commit()
 
+    try:
+        process_pipeline_run.apply_async(args=[run.id], task_id=celery_task_id)
+    except Exception as exc:
+        data_request.status = DataRequestStatus.FAILED.value
+        run.status = PipelineRunStatus.FAILED.value
+        run.current_stage = "DISPATCH"
+        run.completed_at = utcnow()
+        run.updated_at = run.completed_at
+        db.add(
+            PipelineEvent(
+                pipeline_run_id=run.id,
+                event_type=EventType.FAILED.value,
+                severity="ERROR",
+                message="Celery 작업 발행에 실패했습니다.",
+                payload={"error_message": str(exc)},
+                occurred_at=run.completed_at,
+            )
+        )
+        await db.commit()
+        raise DomainException(
+            status.HTTP_503_SERVICE_UNAVAILABLE,
+            "PIPELINE_DISPATCH_FAILED",
+            "작업 큐에 요청을 발행하지 못했습니다.",
+        ) from exc
+
     return CreateDataRequestResponse(
         request_no=data_request.request_no,
         run_id=run.id,
-        request_status=data_request.status,
-        run_status=run.status,
-        current_stage=run.current_stage or "COMPLETED",
+        request_status=DataRequestStatus.QUEUED,
+        run_status=PipelineRunStatus.QUEUED,
+        current_stage=run.current_stage or HARDCODED_STAGES[0],
+        celery_task_id=celery_task_id,
         created_at=run.created_at,
     )
 
@@ -238,6 +254,7 @@ async def get_pipeline_run(db: AsyncSession, run_id: int) -> PipelineRunResponse
         run_status=run.status,
         current_stage=run.current_stage,
         progress_percent=run.progress_percent,
+        celery_task_id=run.celery_task_id,
         created_at=run.created_at,
         updated_at=run.updated_at,
         stages=[
@@ -261,3 +278,78 @@ async def get_pipeline_run(db: AsyncSession, run_id: int) -> PipelineRunResponse
             for event in events
         ],
     )
+
+
+async def dispatch_uploaded_csv(
+    db: AsyncSession,
+    run_id: int,
+    upload_metadata: dict,
+) -> str:
+    run = await db.get(PipelineRun, run_id)
+    if run is None:
+        raise not_found("PIPELINE_RUN_NOT_FOUND", "파이프라인 실행을 찾을 수 없습니다.")
+    if run.status in {
+        PipelineRunStatus.RUNNING.value,
+        PipelineRunStatus.COMPLETED.value,
+        PipelineRunStatus.CANCELLED.value,
+    }:
+        raise DomainException(
+            status.HTTP_409_CONFLICT,
+            "PIPELINE_RUN_NOT_UPLOADABLE",
+            "현재 실행 상태에서는 CSV를 업로드할 수 없습니다.",
+        )
+
+    celery_task_id = str(uuid4())
+    now = utcnow()
+    run.celery_task_id = celery_task_id
+    run.status = PipelineRunStatus.QUEUED.value
+    run.current_stage = HARDCODED_STAGES[0]
+    run.progress_percent = 0
+    run.started_at = None
+    run.completed_at = None
+    run.updated_at = now
+
+    stages = list(
+        (await db.scalars(select(StageRun).where(StageRun.pipeline_run_id == run.id))).all()
+    )
+    for stage in stages:
+        stage.status = StageRunStatus.PENDING.value
+        stage.executor_reference = celery_task_id
+        stage.started_at = None
+        stage.completed_at = None
+        stage.error_message = None
+        if stage.stage_code == "DATA_PROCESSING":
+            stage.input_payload = {**(stage.input_payload or {}), "csv": upload_metadata}
+    await db.commit()
+
+    try:
+        process_pipeline_run.apply_async(
+            args=[run.id, upload_metadata["storage_key"]],
+            task_id=celery_task_id,
+        )
+    except Exception as exc:
+        run.status = PipelineRunStatus.FAILED.value
+        run.current_stage = "DISPATCH"
+        run.completed_at = utcnow()
+        run.updated_at = run.completed_at
+        await db.commit()
+        raise DomainException(
+            status.HTTP_503_SERVICE_UNAVAILABLE,
+            "PIPELINE_DISPATCH_FAILED",
+            "CSV 처리 작업을 발행하지 못했습니다.",
+        ) from exc
+    return celery_task_id
+
+
+async def get_result_artifact(db: AsyncSession, run_id: int) -> Artifact:
+    run = await db.get(PipelineRun, run_id)
+    if run is None:
+        raise not_found("PIPELINE_RUN_NOT_FOUND", "파이프라인 실행을 찾을 수 없습니다.")
+    artifact = await db.scalar(
+        select(Artifact)
+        .where(Artifact.pipeline_run_id == run_id, Artifact.artifact_type == "FINAL")
+        .order_by(Artifact.created_at.desc(), Artifact.id.desc())
+    )
+    if artifact is None:
+        raise not_found("PIPELINE_RESULT_NOT_READY", "결과 CSV가 아직 준비되지 않았습니다.")
+    return artifact
