@@ -1,5 +1,6 @@
+from collections import Counter
 from dataclasses import dataclass
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timedelta
 from decimal import Decimal
 from zoneinfo import ZoneInfo
 
@@ -7,17 +8,19 @@ from sqlalchemy import case, func, literal, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.common.errors import not_found
-from app.common.time_utils import utcnow
+from app.common.time_utils import as_utc, utcnow
 from app.core.config import settings
 from app.domains.dashboard.model import TaskViewSnapshot
 from app.domains.dashboard.schema import (
     AgentFailureRateResponse,
     AgentStatusResponse,
+    DashboardDeadlineTaskResponse,
     DashboardResponse,
     DashboardTaskItemResponse,
     DashboardTaskListResponse,
     DashboardTaskQuery,
     DashboardPriorityCardResponse,
+    PopularProductResponse,
     DeveloperDashboardPayload,
     DeveloperDashboardPeriod,
     DeveloperDashboardResponse,
@@ -353,6 +356,58 @@ def _task_filters(projection, query: DashboardTaskQuery) -> list:
     return predicates
 
 
+def _popular_products(tasks: list[_ProjectedTask]) -> list[PopularProductResponse]:
+    product_counts: Counter[str] = Counter()
+    for task in tasks:
+        product_name = task.analysis_condition.get("product_name")
+        if isinstance(product_name, str) and product_name.strip():
+            product_counts[product_name.strip()] += 1
+
+    return [
+        PopularProductResponse(
+            product_code=f"PRODUCT-{index:03d}",
+            product_name=product_name,
+            request_count=request_count,
+        )
+        for index, (product_name, request_count) in enumerate(
+            sorted(product_counts.items(), key=lambda item: (-item[1], item[0]))[:5],
+            start=1,
+        )
+    ]
+
+
+def _due_at_from_metadata(metadata: dict) -> datetime | None:
+    due_at = metadata.get("due_at")
+    if not isinstance(due_at, str):
+        return None
+    try:
+        return as_utc(datetime.fromisoformat(due_at.replace("Z", "+00:00")))
+    except ValueError:
+        return None
+
+
+def _deadline_tasks(tasks: list[_ProjectedTask]) -> list[DashboardDeadlineTaskResponse]:
+    due_tasks = [
+        (task, due_at)
+        for task in tasks
+        if not _is_completed(task)
+        if (due_at := _due_at_from_metadata(task.analysis_condition)) is not None
+    ]
+    due_tasks.sort(key=lambda item: item[1])
+    return [
+        DashboardDeadlineTaskResponse(
+            request_no=task.request_no,
+            client=task.client,
+            title=task.title,
+            assignee_name=task.assignee_name,
+            stage_label=task.stage_label,
+            due_at=due_at,
+            detail_route=task.detail_route,
+        )
+        for task, due_at in due_tasks[:5]
+    ]
+
+
 async def get_dashboard_tasks(
     db: AsyncSession,
     query: DashboardTaskQuery,
@@ -380,6 +435,7 @@ async def get_dashboard_tasks(
 
 async def get_practitioner_dashboard(db: AsyncSession) -> DashboardResponse:
     projected_tasks = await _load_projected_tasks(db)
+    popular_products = _popular_products(projected_tasks)
     action_items = [
         task for task in projected_tasks if task.requires_action and not _is_completed(task)
     ]
@@ -399,9 +455,12 @@ async def get_practitioner_dashboard(db: AsyncSession) -> DashboardResponse:
         generated_at=utcnow(),
         priority_cards=priority_cards,
         priority_actions=[_dashboard_task_item(task) for task in action_items[:5]],
-        popular_products=[],
-        popular_products_unavailable_message=POPULAR_PRODUCTS_UNAVAILABLE_MESSAGE,
+        popular_products=popular_products,
+        popular_products_unavailable_message=(
+            POPULAR_PRODUCTS_UNAVAILABLE_MESSAGE if not popular_products else ""
+        ),
         approval_tasks=[_dashboard_task_item(task) for task in approval_items[:5]],
+        deadline_tasks=_deadline_tasks(projected_tasks),
         active_task_count=sum(not _is_completed(task) for task in projected_tasks),
     )
 
@@ -459,11 +518,12 @@ async def get_task_view(db: AsyncSession, request_no: str, view_code: str) -> Ta
 
 
 def _to_dashboard_time(value: datetime) -> datetime:
-    return value.replace(tzinfo=timezone.utc).astimezone(ZoneInfo(settings.dashboard_timezone))
+    return as_utc(value).astimezone(ZoneInfo(settings.dashboard_timezone))
 
 
-def _to_utc_naive(value: datetime) -> datetime:
-    return value.astimezone(timezone.utc).replace(tzinfo=None)
+def _to_utc(value: datetime) -> datetime:
+    """대시보드의 모든 시간 비교를 UTC aware datetime으로 통일한다."""
+    return as_utc(value)
 
 
 def _chart_buckets(
@@ -475,7 +535,7 @@ def _chart_buckets(
     if period == DeveloperDashboardPeriod.DAILY:
         size = timedelta(hours=4)
         buckets = [
-            (_to_utc_naive(local_today + size * index), f"{index * 4:02d}:00")
+            (_to_utc(local_today + size * index), f"{index * 4:02d}:00")
             for index in range(6)
         ]
         return buckets[0][0], buckets, size
@@ -483,7 +543,7 @@ def _chart_buckets(
         start = local_today - timedelta(days=6)
         size = timedelta(days=1)
         buckets = [
-            (_to_utc_naive(start + size * index), (start + size * index).strftime("%m.%d"))
+            (_to_utc(start + size * index), (start + size * index).strftime("%m.%d"))
             for index in range(7)
         ]
         return buckets[0][0], buckets, size
@@ -491,7 +551,7 @@ def _chart_buckets(
     start = local_today.replace(day=1)
     size = timedelta(days=1)
     buckets = [
-        (_to_utc_naive(start + size * index), f"{index + 1}일")
+        (_to_utc(start + size * index), f"{index + 1}일")
         for index in range(local_now.day)
     ]
     return buckets[0][0], buckets, size
@@ -513,8 +573,8 @@ async def get_developer_dashboard(
 ) -> DeveloperDashboardResponse:
     now = utcnow()
     local_now = _to_dashboard_time(now)
-    today = _to_utc_naive(local_now.replace(hour=0, minute=0, second=0, microsecond=0))
-    month_start = _to_utc_naive(local_now.replace(day=1, hour=0, minute=0, second=0, microsecond=0))
+    today = _to_utc(local_now.replace(hour=0, minute=0, second=0, microsecond=0))
+    month_start = _to_utc(local_now.replace(day=1, hour=0, minute=0, second=0, microsecond=0))
     chart_start, bucket_specs, bucket_size = _chart_buckets(period, now)
     metrics_start = min(month_start, chart_start, now - timedelta(hours=24))
 
@@ -528,8 +588,8 @@ async def get_developer_dashboard(
         ).all()
     )
 
-    month_metrics = [metric for metric in metrics if metric.created_at >= month_start]
-    today_metrics = [metric for metric in metrics if metric.created_at >= today]
+    month_metrics = [metric for metric in metrics if as_utc(metric.created_at) >= month_start]
+    today_metrics = [metric for metric in metrics if as_utc(metric.created_at) >= today]
     month_tokens = sum(metric.input_tokens + metric.output_tokens for metric in month_metrics)
     today_tokens = sum(metric.input_tokens + metric.output_tokens for metric in today_metrics)
     month_cost = sum((metric.cost_usd or Decimal("0")) for metric in month_metrics)
@@ -539,9 +599,10 @@ async def get_developer_dashboard(
         for _ in bucket_specs
     ]
     for metric in metrics:
-        if metric.created_at < chart_start:
+        metric_created_at = as_utc(metric.created_at)
+        if metric_created_at < chart_start:
             continue
-        bucket_index = int((metric.created_at - chart_start) // bucket_size)
+        bucket_index = int((metric_created_at - chart_start) // bucket_size)
         if 0 <= bucket_index < len(bucket_values):
             bucket_values[bucket_index]["input_tokens"] += metric.input_tokens
             bucket_values[bucket_index]["output_tokens"] += metric.output_tokens
@@ -567,9 +628,9 @@ async def get_developer_dashboard(
                 agent_key=agent_key,
                 name=AGENT_LABELS[agent_key],
                 status=_agent_status(latest),
-                last_response_at=latest.created_at if latest else None,
+                last_response_at=as_utc(latest.created_at) if latest else None,
                 latency_ms=latest.latency_ms if latest else None,
-                today_throughput=sum(metric.created_at >= today for metric in agent_metrics),
+                today_throughput=sum(as_utc(metric.created_at) >= today for metric in agent_metrics),
             )
         )
 
@@ -579,7 +640,7 @@ async def get_developer_dashboard(
         recent = [
             metric
             for metric in metrics
-            if metric.agent_name == agent_key and metric.created_at >= last_24_hours
+            if metric.agent_name == agent_key and as_utc(metric.created_at) >= last_24_hours
         ]
         failed = sum(metric.outcome.upper() != "SUCCEEDED" for metric in recent)
         percent = round(failed / len(recent) * 100, 1) if recent else 0.0
