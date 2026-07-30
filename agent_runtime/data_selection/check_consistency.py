@@ -109,6 +109,17 @@ def main() -> None:
     for v in distinct_column_sets:
         print(f"  - {v} ({column_sets.count(v)}회)")
 
+    sample_contracts = [
+        (
+            len(data.get("sample_rows", [])),
+            (data.get("sample_metadata") or {}).get("is_synthetic"),
+            (data.get("sample_metadata") or {}).get("sample_count"),
+        )
+        for data in ok_data
+    ]
+    valid_samples = sum(contract == (5, True, 5) for contract in sample_contracts)
+    print(f"\n[합성 sample_rows 계약] {valid_samples}/{len(ok_data)}회 통과")
+
 
 if __name__ == "__main__":
     main()

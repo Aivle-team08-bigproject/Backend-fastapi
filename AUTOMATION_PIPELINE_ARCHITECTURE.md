@@ -200,8 +200,10 @@ REQUIREMENT_ANALYSIS
 - 데이터 필터 조건
 - 조회 계획
 - 검토 및 가공에 필요한 컬럼
+- 선택한 컬럼 형식에 맞춘 합성 더미 샘플 5건
 
-이 Agent는 조회 계획을 생성하는 역할이며, 실제 CSV 행을 직접 읽거나 추출하지 않는다.
+이 Agent는 조회 계획과 고객 확인용 합성 샘플을 생성한다. 실제 CSV 행을 직접 읽거나
+샘플에 복사하지 않는다.
 
 ### 6.2 출력 예
 
@@ -225,13 +227,27 @@ REQUIREMENT_ANALYSIS
   "sample_columns": [
     {
       "name": "국가",
+      "data_type": "string",
       "is_predicted": false
     },
     {
       "name": "결제건수",
+      "data_type": "integer",
       "is_predicted": true
     }
-  ]
+  ],
+  "sample_rows": [
+    {"국가": "일본", "결제건수": 12},
+    {"국가": "일본", "결제건수": 18},
+    {"국가": "일본", "결제건수": 9},
+    {"국가": "일본", "결제건수": 21},
+    {"국가": "일본", "결제건수": 15}
+  ],
+  "sample_metadata": {
+    "is_synthetic": true,
+    "sample_count": 5,
+    "notice": "실제 고객 데이터가 아닌 형식 확인용 예시 데이터입니다."
+  }
 }
 ```
 
@@ -239,7 +255,7 @@ REQUIREMENT_ANALYSIS
 
 ```text
 데이터 선별 Agent
-→ 무엇을 골라야 하는지 설계
+→ 무엇을 골라야 하는지 설계하고 더미 샘플 5건 생성
 
 DATA_RETRIEVAL Worker
 → 설계된 조건을 실제 데이터에 적용
