@@ -1,6 +1,7 @@
 from decimal import Decimal
 
 from pydantic_settings import BaseSettings, SettingsConfigDict
+from sqlalchemy.engine import make_url
 
 
 class Settings(BaseSettings):
@@ -21,6 +22,20 @@ class Settings(BaseSettings):
 
     # --- DB ---
     database_url: str = "postgresql+psycopg://appuser:change_me_strong_password@127.0.0.1:5432/appdb"
+
+    # --- Celery / Redis 비동기 파이프라인 ---
+    celery_broker_url: str = "redis://127.0.0.1:6379/0"
+    celery_result_backend: str = "redis://127.0.0.1:6379/1"
+    celery_task_always_eager: bool = False
+    worker_status_redis_url: str = "redis://127.0.0.1:6379/2"
+    worker_status_channel: str = "pipeline:run-status"
+    worker_status_sse_channel: str = "pipeline:run-status:persisted"
+    worker_status_key_prefix: str = "pipeline:run-status:latest"
+    worker_status_ttl_seconds: int = 86400
+    upload_root: str = "/app/uploads"
+    csv_upload_max_bytes: int = 50 * 1024 * 1024
+    pipeline_query_source: str = "csv"
+    database_host_override: str | None = None
 
     # --- 개발자 대시보드 ---
     dashboard_usd_to_krw_rate: Decimal = Decimal("1330")
@@ -77,4 +92,11 @@ class Settings(BaseSettings):
 
     # 익명화 배치에서 사용하는 가맹점 가명화 salt. 저장소에는 두지 않는다.
     anon_hash_salt: str = ""
+
+    def runtime_database_url(self, url: str) -> str:
+        """Docker에서는 자격증명을 유지한 채 DB 호스트만 service name으로 치환한다."""
+        if not self.database_host_override:
+            return url
+        return make_url(url).set(host=self.database_host_override).render_as_string(hide_password=False)
+
 settings = Settings()

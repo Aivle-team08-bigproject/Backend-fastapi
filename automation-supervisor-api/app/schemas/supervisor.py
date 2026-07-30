@@ -7,6 +7,7 @@ from pydantic import BaseModel, Field
 class JobCreate(BaseModel):
     raw_requirement: str = Field(min_length=1)
     requirement_id: int | None = None
+    source_csv_path: str = Field(min_length=1)
 
 
 class HitlReviewCreate(BaseModel):

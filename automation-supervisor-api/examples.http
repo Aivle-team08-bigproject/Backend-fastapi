@@ -4,7 +4,8 @@ Content-Type: application/json
 
 {
   "requirement_id": 1,
-  "raw_requirement": "수도권과 비수도권의 여행 취미 회원 결제 성향을 분석해서 API, CSV, 시각화, 보고서로 제공해줘."
+  "raw_requirement": "수도권과 비수도권의 여행 취미 회원 결제 성향을 분석해서 API, CSV, 시각화, 보고서로 제공해줘.",
+  "source_csv_path": "/data/02_selected_transactions.csv"
 }
 
 ### Run supervisor orchestration

@@ -1,0 +1,15 @@
+.env
+<<<<<<< HEAD
+env
+.git
+.pytest_cache
+**/__pycache__
+Backend-fastapi
+=======
+.env.*
+!.env.example
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.git/
+>>>>>>> feea239 (feat: implement redis-based supervisor worker pipeline)

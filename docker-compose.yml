@@ -1,6 +1,21 @@
 # portfolio 로컬 개발용 PostgreSQL
 # 스키마와 seed 데이터는 sqlfiles/bootstrap.sh로 구성한다.
 services:
+  redis:
+    image: redis:7.4-alpine
+    container_name: portfolio-redis
+    restart: unless-stopped
+    command: ["redis-server", "--appendonly", "yes"]
+    ports:
+      - "${REDIS_PORT:-6379}:6379"
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
   db:
     image: postgres:17-alpine
     container_name: portfolio-postgres
@@ -15,7 +30,7 @@ services:
     ports:
       - "${POSTGRES_PORT:-5432}:5432"
     volumes:
-      - postgres_data:/var/lib/postgresql/data
+      - postgres17_data:/var/lib/postgresql/data
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-postgres} -d ${POSTGRES_DB:-portfolio}"]
       interval: 10s
@@ -23,5 +38,115 @@ services:
       retries: 5
       start_period: 10s
 
+  api:
+    build: .
+    container_name: portfolio-api
+    restart: unless-stopped
+    env_file: .env
+    ports:
+      - "${API_PORT:-8000}:8000"
+    environment:
+      PYTHONPATH: /app
+      DATABASE_HOST_OVERRIDE: db
+      CELERY_BROKER_URL: redis://redis:6379/0
+      CELERY_RESULT_BACKEND: redis://redis:6379/1
+      WORKER_STATUS_REDIS_URL: redis://redis:6379/2
+      UPLOAD_ROOT: /app/uploads
+      PIPELINE_QUERY_SOURCE: ${PIPELINE_QUERY_SOURCE:-csv}
+    volumes:
+      - uploaded_data:/app/uploads
+    depends_on:
+      redis:
+        condition: service_healthy
+      db:
+        condition: service_healthy
+
+  celery-worker:
+    build: .
+    container_name: portfolio-celery-worker
+    restart: unless-stopped
+    env_file: .env
+    command: celery -A app.worker.celery_app:celery_app worker --loglevel=INFO --concurrency=2
+    environment:
+      PYTHONPATH: /app
+      DATABASE_HOST_OVERRIDE: db
+      CELERY_BROKER_URL: redis://redis:6379/0
+      CELERY_RESULT_BACKEND: redis://redis:6379/1
+      WORKER_STATUS_REDIS_URL: redis://redis:6379/2
+      UPLOAD_ROOT: /app/uploads
+      PIPELINE_QUERY_SOURCE: ${PIPELINE_QUERY_SOURCE:-csv}
+    volumes:
+      - uploaded_data:/app/uploads
+    depends_on:
+      redis:
+        condition: service_healthy
+      db:
+        condition: service_healthy
+
+  worker-status-subscriber:
+    build: .
+    container_name: portfolio-worker-status-subscriber
+    restart: unless-stopped
+    env_file: .env
+    command: python -m app.worker.status_subscriber
+    environment:
+      PYTHONPATH: /app
+      DATABASE_HOST_OVERRIDE: db
+      WORKER_STATUS_REDIS_URL: redis://redis:6379/2
+    depends_on:
+      redis:
+        condition: service_healthy
+      db:
+        condition: service_healthy
+
+  fastapi:
+    build: .
+    restart: unless-stopped
+    working_dir: /app/automation-supervisor-api
+    command: ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]
+    env_file:
+      - .env
+    environment:
+      DATABASE_URL: "postgresql+psycopg://${POSTGRES_USER}:${POSTGRES_PASSWORD}@db:5432/${POSTGRES_DB}"
+      REDIS_URL: "redis://redis:6379/0"
+      DATA_RETRIEVAL_ALLOWED_ROOT: "/data"
+      DATA_RETRIEVAL_OUTPUT_ROOT: "/data/jobs"
+      PYTHONDONTWRITEBYTECODE: "1"
+      PYTHONPATH: "/app/automation-supervisor-api:/app"
+    ports:
+      - "${SUPERVISOR_API_PORT:-8001}:8000"
+    volumes:
+      - ./data:/data
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+
+  worker:
+    build: .
+    restart: unless-stopped
+    working_dir: /app/automation-supervisor-api
+    command: ["arq", "app.workers.settings.WorkerSettings"]
+    env_file:
+      - .env
+    environment:
+      DATABASE_URL: "postgresql+psycopg://${POSTGRES_USER}:${POSTGRES_PASSWORD}@db:5432/${POSTGRES_DB}"
+      REDIS_URL: "redis://redis:6379/0"
+      DATA_ANONYMIZATION_KEY: "${DATA_ANONYMIZATION_KEY:-}"
+      DATA_RETRIEVAL_ALLOWED_ROOT: "/data"
+      DATA_RETRIEVAL_OUTPUT_ROOT: "/data/jobs"
+      PYTHONDONTWRITEBYTECODE: "1"
+      PYTHONPATH: "/app/automation-supervisor-api:/app"
+    volumes:
+      - ./data:/data
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+
 volumes:
-  postgres_data:
+  postgres17_data:
+  uploaded_data:
+  redis_data:

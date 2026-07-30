@@ -1,9 +1,15 @@
 from uuid import uuid4
+from unittest.mock import Mock
 
 from fastapi.testclient import TestClient
 
 
-def test_create_request_then_read_pipeline_run(client: TestClient):
+def test_create_request_then_read_pipeline_run(client: TestClient, monkeypatch):
+    apply_async = Mock()
+    monkeypatch.setattr(
+        "app.domains.pipeline.service.process_pipeline_run.apply_async",
+        apply_async,
+    )
     marker = uuid4().hex[:8]
     created = client.post(
         "/api/v1/data-requests",
@@ -16,9 +22,14 @@ def test_create_request_then_read_pipeline_run(client: TestClient):
 
     assert created.status_code == 202
     created_body = created.json()
-    assert created_body["request_status"] == "COMPLETED"
-    assert created_body["run_status"] == "COMPLETED"
-    assert created_body["current_stage"] == "COMPLETED"
+    assert created_body["request_status"] == "QUEUED"
+    assert created_body["run_status"] == "QUEUED"
+    assert created_body["current_stage"] == "REQUIREMENT_ANALYSIS"
+    assert created_body["celery_task_id"]
+    apply_async.assert_called_once_with(
+        args=[created_body["run_id"]],
+        task_id=created_body["celery_task_id"],
+    )
 
     response = client.get(f"/api/v1/runs/{created_body['run_id']}")
 
@@ -26,9 +37,10 @@ def test_create_request_then_read_pipeline_run(client: TestClient):
     body = response.json()
     assert body["request_no"] == created_body["request_no"]
     assert body["request_title"] == f"프론트 연동 테스트 {marker}"
-    assert [stage["status"] for stage in body["stages"]] == ["COMPLETED"] * 3
-    assert [stage["executor"] for stage in body["stages"]] == ["HARDCODED"] * 3
-    assert body["events"][0]["event_type"] == "progress"
+    assert [stage["status"] for stage in body["stages"]] == ["PENDING"] * 3
+    assert [stage["executor"] for stage in body["stages"]] == ["CELERY"] * 3
+    assert body["celery_task_id"] == created_body["celery_task_id"]
+    assert body["events"] == []
 
     response = client.get("/api/v1/runs/2147483647")
 

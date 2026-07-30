@@ -15,11 +15,18 @@ htmlcov/
 .env
 env
 
+# 로컬 CSV 및 worker 산출물
+data/*
+!data/.gitkeep
+
 # OS가 자동 생성하는 파일
 .DS_Store
+<<<<<<< HEAD
 
 # 작업 문서
 docs/
 
 # 원천 seed 데이터는 저장소에 올리지 않음
 sqlfiles/seed/*.csv
+=======
+>>>>>>> feea239 (feat: implement redis-based supervisor worker pipeline)
