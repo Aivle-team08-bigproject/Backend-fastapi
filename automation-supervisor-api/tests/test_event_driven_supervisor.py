@@ -33,6 +33,29 @@ class FakeAgentClient:
             return {
                 "selected_tables": [{"table": "transaction_pseudonymized", "reason": "결제 분석"}],
                 "selection_query": {"vector_similarity": True, "top_k": 20, "filters": {"지역": "서울"}},
+                "sample_columns": [
+                    {
+                        "name": "지역",
+                        "data_type": "string",
+                        "is_predicted": False,
+                        "description": "조회 지역",
+                    },
+                    {
+                        "name": "결제건수",
+                        "data_type": "integer",
+                        "is_predicted": True,
+                        "description": "합성 결제 건수",
+                    },
+                ],
+                "sample_rows": [
+                    {"지역": "서울", "결제건수": index}
+                    for index in range(1, 6)
+                ],
+                "sample_metadata": {
+                    "is_synthetic": True,
+                    "sample_count": 5,
+                    "notice": "실제 고객 데이터가 아닌 형식 확인용 예시 데이터입니다.",
+                },
             }
         if agent_name == "data-retrieval-agent":
             return {

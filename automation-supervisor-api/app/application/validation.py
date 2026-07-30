@@ -14,11 +14,48 @@ def validate_stage_output(stage_name: StageName, output: dict) -> dict:
             failure_code = FailureCode.REQUIRED_KEY_MISSING
 
     if stage_name == StageName.DATA_SELECTION:
-        required = ["selected_tables", "selection_query"]
+        required = [
+            "selected_tables",
+            "selection_query",
+            "sample_columns",
+            "sample_rows",
+            "sample_metadata",
+        ]
         errors.extend(_missing(required, output))
         if not output.get("selected_tables"):
             errors.append("selected_tables must not be empty")
             failure_code = FailureCode.INSUFFICIENT_DATA
+        sample_columns = output.get("sample_columns")
+        sample_rows = output.get("sample_rows")
+        sample_metadata = output.get("sample_metadata")
+        if not isinstance(sample_columns, list) or not sample_columns:
+            errors.append("sample_columns must be a non-empty list")
+        else:
+            column_names = [
+                column.get("name")
+                for column in sample_columns
+                if isinstance(column, dict)
+            ]
+            if len(column_names) != len(sample_columns) or any(not name for name in column_names):
+                errors.append("every sample column must have a name")
+            elif len(set(column_names)) != len(column_names):
+                errors.append("sample column names must be unique")
+            elif not isinstance(sample_rows, list) or len(sample_rows) != 5:
+                errors.append("sample_rows must contain exactly 5 rows")
+            else:
+                expected_keys = set(column_names)
+                for index, row in enumerate(sample_rows):
+                    if not isinstance(row, dict) or set(row) != expected_keys:
+                        errors.append(
+                            f"sample_rows[{index}] columns must exactly match sample_columns"
+                        )
+        if not isinstance(sample_metadata, dict):
+            errors.append("sample_metadata must be a JSON object")
+        elif (
+            sample_metadata.get("is_synthetic") is not True
+            or sample_metadata.get("sample_count") != 5
+        ):
+            errors.append("sample_metadata must identify exactly 5 synthetic rows")
         if errors and failure_code is None:
             failure_code = FailureCode.SCHEMA_INVALID
 
