@@ -52,6 +52,7 @@ def test_password_change_required_before_business_api(client):
 
     me = client.get("/api/auth/me", headers=headers)
     assert me.status_code == 200
+    assert me.json()["permissions"] == []
 
 
 def test_create_employee_and_login(client):
