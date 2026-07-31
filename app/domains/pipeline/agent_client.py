@@ -59,14 +59,32 @@ class AgentRuntimeClient(AgentClient):
         }
 
     async def _run_data_selection(self, payload: dict) -> dict:
-        """데이터 선별 에이전트 호출. 산출물 필드명이 검증 스키마와 같아서 변환이 없다."""
+        """Neon DB COMMENT 메타데이터를 읽어 컬럼 설계 에이전트에 전달한다."""
         from agent_runtime.data_selection.agent import run as run_data_selection
+        from agent_runtime.query.metadata import load_dataset_metadata
+        from app.db.hanacard_agent_session import AsyncSessionLocal as AgentSessionLocal
+
+        available_data = payload.get("available_data", [])
+        try:
+            async with AgentSessionLocal() as db:
+                schema_metadata = await load_dataset_metadata(db, available_data)
+        except Exception as exc:
+            return {
+                "_agent_error": f"database metadata lookup failed: {exc}",
+                "_failure_code": "INSUFFICIENT_DATA",
+            }
+        if not schema_metadata:
+            return {
+                "_agent_error": "database metadata lookup returned no accessible columns",
+                "_failure_code": "INSUFFICIENT_DATA",
+            }
 
         result = await asyncio.to_thread(
             run_data_selection,
             payload["raw_requirement"],
             payload.get("analysis", {}),
-            payload.get("available_data", []),
+            available_data,
+            schema_metadata,
         )
         if not result["ok"]:
             return {"_agent_error": result["error_message"] or "data selection agent failed"}

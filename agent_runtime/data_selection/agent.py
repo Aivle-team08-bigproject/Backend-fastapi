@@ -1,23 +1,4 @@
-"""데이터 선별 에이전트 — 독립 실행 모듈.
-
-요구사항 분석 결과(analysis)와 지금 조회 가능한 가명화 데이터 소스 목록(available_data)을 읽어,
-이 요청에 어떤 테이블이 필요하고 어떤 기준(임베딩 벡터 유사도 조회 조건)으로 데이터를 걸러낼지,
-그리고 사람이 검토할 샘플 데이터에 어떤 컬럼이 나올지와 그 형식에 맞는 합성 더미 데이터 5건을
-구조화한다. 이 에이전트 자신은 실제
-DB나 임베딩을 조회하지 않는다(툴 없음) — "무엇을 어떻게 선별할지" 계획만 다음 단계(실제 조회/
-가공)가 바로 실행할 수 있는 형태로 만들어 돌려준다.
-
-이 모듈은 산출물이 다음 단계로 넘길만큼 괜찮은지(선택한 테이블이 실제로 존재하는지, top_k가
-적절한지 등) 스스로 판단하지 않는다 — 모델을 호출하고 결과를 구조화해서 돌려주기만 한다.
-그 판단(automation-supervisor-api의 validate_stage_output + 재시도/롤백 정책)은 오케스트레이션의
-몫이다. agent_runtime/requirements_analysis/agent.py와 동일한 설계 원칙을 따른다.
-
-이 모듈은 app/ 패키지(FastAPI)에 의존하지 않는다 — agent_runtime/requirements_analysis와 같은
-이유로, 이 폴더(agent_runtime/data_selection/)만으로 완결되게 짠다.
-
-`run()`은 @tool로 감싸져 있어 오케스트레이션 쪽 strands 에이전트가 표준 툴로 그대로 호출할 수
-있다. `@tool`이 붙어도 그냥 파이썬 함수로 직접 호출 가능하다(콜러블 유지).
-"""
+"""Neon DB COMMENT 기반 컬럼 설계 에이전트."""
 
 import json
 import re
@@ -27,13 +8,14 @@ from strands.models.openai import OpenAIModel
 
 from agent_runtime.data_selection.config import settings
 
-SYSTEM_PROMPT = """당신은 '하나 데이터 마켓'의 데이터 선별 에이전트다.
-이 서비스는 가명처리된 원본 데이터(회원정보/가맹점정보/거래내역 등)를 사용자의 요구사항 분석
-결과에 맞춰 선별한다.
 
-사용자 메시지는 아래 형식의 JSON 문자열로 주어진다:
+SYSTEM_PROMPT = """당신은 '하나 데이터 마켓'의 DB 메타데이터 기반 컬럼 설계 에이전트다.
+고객 요구사항에 필요한 기존 DB 컬럼을 선택하고, 기존 컬럼을 조합한 파생 컬럼을 설계한 뒤,
+검토용 합성 더미 데이터 5건을 만든다. 실제 DB 행을 조회하거나 조회 건수를 결정하지 않는다.
+
+사용자 메시지는 아래 형식의 JSON 문자열이다:
 {
-  "raw_requirement": "사용자의 원본 자연어 요청",
+  "raw_requirement": "고객의 원본 자연어 요청",
   "analysis": {
     "usage_purpose": "...",
     "requested_data_sentence": "...",
@@ -41,32 +23,59 @@ SYSTEM_PROMPT = """당신은 '하나 데이터 마켓'의 데이터 선별 에�
     "delivery_channel": "...",
     "output_formats": ["..."]
   },
-  "available_data": ["지금 조회 가능한 가명화 테이블 이름 목록"]
+  "available_data": ["논리 데이터셋 이름"],
+  "retry_feedback": "<재시도인 경우 직전 결과가 실패한 이유>",
+  "schema_metadata": [
+    {
+      "dataset": "논리 데이터셋 이름",
+      "schema": "anonymized",
+      "table": "실제 테이블명",
+      "comment": "DB 테이블 COMMENT",
+      "columns": [
+        {"name": "실제 컬럼명", "data_type": "DB 타입", "comment": "DB 컬럼 COMMENT"}
+      ]
+    }
+  ]
 }
 
-당신의 임무는 이 입력을 읽고 아래 항목으로 구조화하는 것이다. 실제로 DB나 임베딩을 조회할
-필요는 없다 — 그건 다음 단계가 한다. 임베딩 기반 벡터 유사도 조회가 가능하다고 가정한다.
-
-반드시 아래 JSON 형식으로만 응답한다. 다른 설명, 코드블록 마크다운(```), 서두 문구를 절대
-붙이지 않는다:
-
+반드시 아래 JSON 형식으로만 응답한다:
 {
-  "selected_tables": [{"table": "<available_data 중 하나>", "reason": "<이 테이블이 필요한 이유>"}],
+  "selected_tables": [
+    {"table": "<available_data 중 하나>", "reason": "<DB COMMENT 근거 선택 이유>"}
+  ],
+  "source_columns": [
+    {
+      "dataset": "<selected_tables의 논리 데이터셋>",
+      "column": "<schema_metadata에 실제 존재하는 컬럼명>",
+      "data_type": "<schema_metadata의 DB 타입>",
+      "comment": "<DB COMMENT>",
+      "reason": "<고객 요청에 필요한 이유>"
+    }
+  ],
+  "derived_columns": [
+    {
+      "name": "<새 파생 컬럼명>",
+      "data_type": "<string|integer|number|boolean|date|datetime>",
+      "source_columns": ["<source_columns에 선택된 실제 컬럼명>"],
+      "derivation": "<계산 또는 조합 규칙>",
+      "description": "<고객에게 보여줄 설명>"
+    }
+  ],
   "selection_query": {
-    "vector_similarity": true,
-    "top_k": <조회할 표본 크기(정수, 기본 20)>,
-    "filters": {<analysis.categories를 그대로 반영한 필터 조건 객체>}
+    "columns": ["<source_columns에 선택된 실제 컬럼명>"],
+    "filters": {}
   },
   "sample_columns": [
     {
-      "name": "<사람이 검토할 샘플 데이터에 표시할 컬럼명>",
-      "data_type": "<string|integer|number|boolean|date|datetime 중 하나>",
-      "is_predicted": <원본 데이터에 그대로 있는 값이면 false, 계산/추정해야 하는 지표면 true>,
-      "description": "<이 컬럼을 어떤 기준으로 선정했고 어떻게 산출하는지 한 줄 설명>"
+      "name": "<원본 또는 파생 컬럼의 최종 표시명>",
+      "data_type": "<string|integer|number|boolean|date|datetime>",
+      "is_derived": <DB 원본 컬럼이면 false, 조합해 만든 컬럼이면 true>,
+      "source_columns": ["<근거가 되는 실제 DB 컬럼명>"],
+      "description": "<DB COMMENT 또는 파생 규칙 기반 설명>"
     }
   ],
   "sample_rows": [
-    {"<sample_columns의 컬럼명>": "<실제 원본과 무관하게 생성한 합성 값>"}
+    {"<sample_columns의 컬럼명>": "<실제 DB 행과 무관한 합성 값>"}
   ],
   "sample_metadata": {
     "is_synthetic": true,
@@ -76,50 +85,30 @@ SYSTEM_PROMPT = """당신은 '하나 데이터 마켓'의 데이터 선별 에�
 }
 
 규칙:
-- selected_tables에는 available_data에 실제로 있는 테이블 이름만 쓴다(환각 금지). available_data에
-  없는 테이블을 지어내지 않는다.
-- selection_query.filters는 analysis.categories에 실제로 있는 조건만 반영한다. 없는 조건을
-  지어내지 않는다.
-- sample_columns의 앞부분은 analysis.categories의 각 키를 "키 이름 그대로"(동의어나 다른 표현으로
-  바꾸지 않고) 컬럼명으로 담는다. 순서는 categories에 나온 순서를 따른다. is_predicted는 항상
-  false.
-- 회원ID/고객ID 같은 식별자 컬럼은 raw_requirement나 analysis에 명시적으로 필요하다고 언급되지
-  않는 한 추가하지 않는다.
-- 그 다음, raw_requirement와 usage_purpose에 비추어 이 요청에 가장 핵심적인 지표를 정확히 2개
-  선정해서 추가한다(1개도 3개도 안 되고 반드시 2개). 지표 이름은 반드시 selected_tables가 실제로
-  담고 있는 정보(결제·거래 기록)로 표현 가능한 개념만 쓴다 — "방문", "방문빈도", "체류시간"처럼
-  결제 기록만으로는 직접 확인할 수 없는 개념은 쓰지 않는다. 대신 "결제건수", "결제금액"처럼 거래
-  기록 자체를 가리키는 표현을 쓴다. 개수는 항상 2개로 고정한다. 이 2개는 원본에 없고 계산·추정해야
-  하는 지표이므로 is_predicted는 항상 true.
-- 시간(월/일/분기/시간대 등) 관련 컬럼이 필요하면 요청에 가장 자연스러운 단위 하나만 고르고,
-  여러 단위를 동시에 넣지 않는다. raw_requirement에 이미 특정 시간 단위 표현이 명시돼 있으면
-  (예: "시간대별로") 그 표현을 그대로 컬럼명으로 재사용하고 축약하거나 다른 표현으로 바꾸지
-  않는다. 이 컬럼은 원본에 있는 값이므로 is_predicted는 false.
-- 모든 컬럼명은 띄어쓰기 없이 붙여 쓴다(예: "총결제금액", "결제건수". "총 결제 금액"처럼 띄어
-  쓰지 않는다).
-- 핵심 지표 컬럼명에는 "총"/"평균"/"합계" 같은 집계 접두어·접미어를 붙이지 않는다(예: "총결제금액"이
-  아니라 "결제금액", "평균결제건수"가 아니라 "결제건수"). 집계 방식(합계인지 평균인지 등)은 컬럼명이
-  아니라 description에서 설명한다.
-- 핵심 지표 컬럼명에 이미 다른 컬럼(업종 등)에 담긴 정보를 반복해서 넣지 않는다(예: 업종 컬럼이
-  이미 있는데 "여행결제건수"처럼 업종명을 지표 이름 앞에 다시 붙이지 않는다 — "결제건수"로 충분).
-- sample_rows는 반드시 정확히 5건을 생성한다.
-- sample_rows의 각 객체는 sample_columns에 선언된 모든 컬럼을 정확히 한 번씩 포함하며, 그 외
-  컬럼은 포함하지 않는다.
-- sample_rows는 원본 CSV나 DB에서 가져온 값이 아니라 컬럼 형식과 필터 조건을 설명하기 위한 완전한
-  합성 더미 데이터다. 실제 고객ID, 카드번호, 전화번호, 이메일처럼 보이는 값을 만들지 않는다.
-- 필터 컬럼이 sample_columns에 포함돼 있다면 더미 값은 selection_query.filters와 모순되지 않아야 한다.
-- sample_metadata.is_synthetic는 반드시 true, sample_count는 반드시 5로 쓴다.
-- JSON 외의 텍스트를 절대 출력하지 않는다."""
+- schema_metadata의 DB COMMENT를 컬럼 의미 판단의 우선 근거로 사용한다.
+- selected_tables는 available_data에 있는 값만 사용한다.
+- source_columns.column은 schema_metadata에 실제 존재하는 허용 컬럼만 사용한다.
+- source_columns에는 고객 요청을 충족하는 데 필요한 최소 원본 컬럼만 넣는다.
+- derived_columns는 반드시 source_columns만으로 계산 가능해야 한다.
+- 고객 요청에 맞게 기존 컬럼을 계산·집계·분류·조합한 derived_columns를 최소 1개 만든다.
+- derived_columns를 단순한 원본 컬럼의 이름 변경으로 만들지 않는다.
+- retry_feedback이 있으면 실패 원인을 반드시 수정해서 전체 JSON을 다시 생성한다.
+- selection_query.columns에는 source_columns의 실제 컬럼명을 중복 없이 넣는다.
+- top_k, limit, vector_similarity는 절대 생성하지 않는다.
+- 이 Agent는 행 필터링을 담당하지 않으므로 selection_query.filters는 항상 빈 객체로 둔다.
+- sample_columns는 고객에게 최종 제공할 원본 컬럼과 파생 컬럼을 모두 설명한다.
+- sample_rows는 정확히 5건이며 sample_columns의 모든 이름을 정확히 한 번씩 포함한다.
+- sample_rows는 실제 DB 행을 복사하지 않은 완전한 합성 데이터여야 한다.
+- 실제 고객ID, 카드번호, 전화번호, 이메일처럼 보이는 값을 만들지 않는다.
+- sample_metadata는 합성 샘플 5건임을 명시한다.
+- JSON 외의 텍스트, 마크다운, 서두 문구를 절대 출력하지 않는다."""
+
 
 _JSON_BLOCK_RE = re.compile(r"\{.*\}", re.DOTALL)
-
-# 모델 호출 또는 응답 파싱이 실패했을 때 이 안에서 흡수할 수 있는 재시도 횟수. 오케스트레이션의
-# RETRY_SAME_STAGE는 이 3회를 다 써도 실패했을 때만 발동한다.
 MAX_ATTEMPTS = 3
 
 
 def _build_model() -> OpenAIModel:
-    """현재는 DeepSeek(OpenAI SDK 호환 API)를 사용한다(requirements_analysis와 동일 자격증명)."""
     return OpenAIModel(
         client_args={
             "api_key": settings.deepseek_api_key,
@@ -147,26 +136,66 @@ def _extract_json(raw_text: str) -> dict:
     return json.loads(match.group(0))
 
 
-def _validate_sample_contract(data: dict) -> None:
-    columns = data.get("sample_columns")
-    rows = data.get("sample_rows")
+def _validate_contract(data: dict, schema_metadata: list[dict]) -> None:
+    selected_tables = data.get("selected_tables")
+    source_columns = data.get("source_columns")
+    derived_columns = data.get("derived_columns")
+    query = data.get("selection_query")
+    sample_columns = data.get("sample_columns")
+    sample_rows = data.get("sample_rows")
     metadata = data.get("sample_metadata")
-    if not isinstance(columns, list) or not columns:
-        raise ValueError("sample_columns는 비어 있지 않은 배열이어야 함")
 
-    names = [column.get("name") for column in columns if isinstance(column, dict)]
-    if len(names) != len(columns) or any(not isinstance(name, str) or not name for name in names):
+    if not isinstance(selected_tables, list) or not selected_tables:
+        raise ValueError("selected_tables는 비어 있지 않은 배열이어야 함")
+    if not isinstance(source_columns, list) or not source_columns:
+        raise ValueError("source_columns는 비어 있지 않은 배열이어야 함")
+    if not isinstance(derived_columns, list):
+        raise ValueError("derived_columns는 배열이어야 함")
+    if not derived_columns:
+        raise ValueError("derived_columns는 최소 1개 이상이어야 함")
+    if not isinstance(query, dict):
+        raise ValueError("selection_query는 객체여야 함")
+    if any(key in query for key in ("top_k", "limit", "vector_similarity")):
+        raise ValueError("selection_query에 조회량 또는 벡터 검색 설정을 넣을 수 없음")
+
+    allowed = {
+        (dataset["dataset"], column["name"])
+        for dataset in schema_metadata
+        for column in dataset.get("columns", [])
+    }
+    selected_source_names = []
+    for column in source_columns:
+        key = (column.get("dataset"), column.get("column"))
+        if key not in allowed:
+            raise ValueError(f"DB 메타데이터에 없는 source column: {key}")
+        selected_source_names.append(column["column"])
+    if set(query.get("columns") or []) != set(selected_source_names):
+        raise ValueError("selection_query.columns는 source_columns와 일치해야 함")
+    if query.get("filters") not in ({}, None):
+        raise ValueError("컬럼 설계 Agent는 행 필터를 생성할 수 없음")
+
+    selected_source_set = set(selected_source_names)
+    for column in derived_columns:
+        sources = column.get("source_columns")
+        if not column.get("name") or not isinstance(sources, list) or not sources:
+            raise ValueError("모든 derived column에는 name과 source_columns가 필요함")
+        if not set(sources).issubset(selected_source_set):
+            raise ValueError("derived column은 선택된 source column만 참조해야 함")
+        if not column.get("derivation"):
+            raise ValueError("모든 derived column에는 derivation이 필요함")
+
+    if not isinstance(sample_columns, list) or not sample_columns:
+        raise ValueError("sample_columns는 비어 있지 않은 배열이어야 함")
+    names = [column.get("name") for column in sample_columns if isinstance(column, dict)]
+    if len(names) != len(sample_columns) or any(not name for name in names):
         raise ValueError("모든 sample_columns 항목에는 name이 필요함")
     if len(set(names)) != len(names):
         raise ValueError("sample_columns의 name은 중복될 수 없음")
-
-    if not isinstance(rows, list) or len(rows) != 5:
+    if not isinstance(sample_rows, list) or len(sample_rows) != 5:
         raise ValueError("sample_rows는 정확히 5건이어야 함")
     expected_keys = set(names)
-    for index, row in enumerate(rows):
-        if not isinstance(row, dict) or set(row) != expected_keys:
-            raise ValueError(f"sample_rows[{index}]의 컬럼이 sample_columns와 일치하지 않음")
-
+    if any(not isinstance(row, dict) or set(row) != expected_keys for row in sample_rows):
+        raise ValueError("sample_rows의 컬럼이 sample_columns와 일치하지 않음")
     if not isinstance(metadata, dict):
         raise ValueError("sample_metadata는 객체여야 함")
     if metadata.get("is_synthetic") is not True or metadata.get("sample_count") != 5:
@@ -174,40 +203,36 @@ def _validate_sample_contract(data: dict) -> None:
 
 
 @tool
-def run(raw_requirement: str, analysis: dict, available_data: list[str]) -> dict:
-    """데이터 선별 에이전트를 실행한다.
-
-    이 함수는 실행 결과만 돌려주고, 그 결과가 다음 단계로 넘길만큼 괜찮은지는 판단하지 않는다
-    — 그 판단(산출물 규격 검증, 재시도/롤백 여부)은 오케스트레이션의 몫이다.
-
-    모델 호출 또는 응답 파싱이 실패하면 최대 MAX_ATTEMPTS(3)회까지 재시도한다.
-
-    반환값: {"ok": bool, "data": dict | None, "error_message": str | None}
-    이 함수는 예외를 던지지 않는다.
-    """
-    message = json.dumps(
-        {
-            "raw_requirement": raw_requirement,
-            "analysis": analysis,
-            "available_data": available_data,
-        },
-        ensure_ascii=False,
-    )
-
+def run(
+    raw_requirement: str,
+    analysis: dict,
+    available_data: list[str],
+    schema_metadata: list[dict] | None = None,
+) -> dict:
+    """DB 메타데이터를 근거로 원본·파생 컬럼과 합성 샘플 5건을 설계한다."""
+    schema_metadata = schema_metadata or []
+    request_payload = {
+        "raw_requirement": raw_requirement,
+        "analysis": analysis,
+        "available_data": available_data,
+        "schema_metadata": schema_metadata,
+        "retry_feedback": None,
+    }
     last_error: str | None = None
-
     for _attempt in range(1, MAX_ATTEMPTS + 1):
         try:
-            agent = build_agent()
-            result = agent(message)
+            message = json.dumps(request_payload, ensure_ascii=False)
+            result = build_agent()(message)
             parsed = _extract_json(str(result))
-            _validate_sample_contract(parsed)
-        except Exception as exc:  # noqa: BLE001 — 호출/파싱 실패를 규격화해서 반환
+            _validate_contract(parsed, schema_metadata)
+        except Exception as exc:  # noqa: BLE001
             last_error = str(exc)
+            request_payload["retry_feedback"] = (
+                f"직전 {_attempt}회차 결과 검증 실패: {last_error}. "
+                "이 문제를 수정하고 derived_columns를 포함한 전체 JSON을 다시 생성하세요."
+            )
             continue
-
         return {"ok": True, "data": parsed, "error_message": None}
-
     return {
         "ok": False,
         "data": None,
