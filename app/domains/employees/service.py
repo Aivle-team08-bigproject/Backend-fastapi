@@ -2,6 +2,7 @@ import secrets
 import uuid
 
 from sqlalchemy import select, update
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
@@ -249,26 +250,34 @@ async def signup(db: AsyncSession, payload: SignupRequest, ip_address: str | Non
     employee.rejected_reason = None
     employee.updated_at = now
 
-    await db.flush()  # 신규 행이면 employee.id 확정 (consent_logs FK에 필요)
+    try:
+        await db.flush()  # 신규 행이면 employee.id 확정 (consent_logs FK에 필요)
 
-    await _record_consent(
-        db,
-        employee_id=employee.id,
-        consent_type="TERMS",
-        version=TERMS_VERSION,
-        agreed_at=now,
-        ip_address=ip_address,
-    )
-    await _record_consent(
-        db,
-        employee_id=employee.id,
-        consent_type="PRIVACY",
-        version=PRIVACY_VERSION,
-        agreed_at=now,
-        ip_address=ip_address,
-    )
+        await _record_consent(
+            db,
+            employee_id=employee.id,
+            consent_type="TERMS",
+            version=TERMS_VERSION,
+            agreed_at=now,
+            ip_address=ip_address,
+        )
+        await _record_consent(
+            db,
+            employee_id=employee.id,
+            consent_type="PRIVACY",
+            version=PRIVACY_VERSION,
+            agreed_at=now,
+            ip_address=ip_address,
+        )
 
-    await db.commit()
+        await db.commit()
+    except IntegrityError:
+        # 동시에 같은 이메일로 회원가입 요청이 들어오면 둘 다 위의 조회에서 "없음"으로 보고
+        # INSERT를 시도할 수 있다. DB의 email UNIQUE 제약이 뒤늦게 하나를 막아주는데,
+        # 여기서 잡지 않으면 500으로 새어나간다 — 처리되지 않은 예외이므로 409로 변환한다.
+        await db.rollback()
+        raise conflict("EMAIL_ALREADY_REGISTERED", "이미 사용 중인 이메일입니다.")
+
     await db.refresh(employee, attribute_names=["permissions"])
 
     return employee
