@@ -1,9 +1,10 @@
 import re
 from datetime import datetime
 
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, EmailStr, Field, field_validator
 
-from app.domains.employees.model import EmployeeRole, EmployeeStatus, PermissionCode
+from app.domains.auth.schema.auth_schema import validate_company_email
+from app.domains.employees.model import EmployeeRole, EmployeeStatus, PermissionCode, PositionType
 
 _EMPLOYEE_CODE_PATTERN = re.compile(r"^[A-Z0-9-]{5,40}$")
 
@@ -11,7 +12,8 @@ _EMPLOYEE_CODE_PATTERN = re.compile(r"^[A-Z0-9-]{5,40}$")
 class CreateEmployeeRequest(BaseModel):
     employee_code: str = Field(..., description="영문 대문자/숫자/하이픈, 5~40자")
     name: str = Field(..., min_length=1, max_length=80)
-    department: str = Field(..., min_length=1, max_length=100)
+    email: EmailStr = Field(..., description="회사 이메일 (로그인 ID로 사용)")
+    department_id: int = Field(..., description="GET /api/public/departments 목록에서 선택")
     permissions: set[PermissionCode]
 
     @field_validator("employee_code")
@@ -20,6 +22,11 @@ class CreateEmployeeRequest(BaseModel):
         if not _EMPLOYEE_CODE_PATTERN.match(value):
             raise ValueError("직원 ID는 영문 대문자, 숫자, 하이픈만 사용할 수 있습니다.")
         return value
+
+    @field_validator("email")
+    @classmethod
+    def _validate_email(cls, value: EmailStr) -> str:
+        return validate_company_email(str(value))
 
 
 class UpdatePermissionsRequest(BaseModel):
@@ -34,13 +41,38 @@ class UpdateStatusRequest(BaseModel):
     status: EmployeeStatus
 
 
+class ApproveSignupRequest(BaseModel):
+    role: EmployeeRole
+    department_id: int | None = None
+    position: PositionType | None = None
+
+
+class RejectSignupRequest(BaseModel):
+    reason: str = Field(..., min_length=1, max_length=500)
+
+
+class DepartmentResponse(BaseModel):
+    id: int
+    name: str
+    code: str
+
+
 class EmployeeResponse(BaseModel):
     employee_code: str
     name: str
-    department: str
+    email: str
+    phone_masked: str | None
+    department_id: int | None
+    department_name: str | None
+    position: PositionType | None
+    role: EmployeeRole | None
     status: EmployeeStatus
     must_change_password: bool
     permissions: list[PermissionCode]
+    approved_by: str | None
+    approved_at: datetime | None
+    rejected_reason: str | None
+    last_login_at: datetime | None
     created_by: str
     created_at: datetime
     updated_at: datetime

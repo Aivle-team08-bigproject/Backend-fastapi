@@ -1,19 +1,21 @@
 """7,8,9번 항목(감사 로그 / 마지막 관리자 보호 / 72바이트 비밀번호)에 대한 회귀 테스트."""
 
-from tests.conftest import BOOTSTRAP_ADMIN_ID
+from tests.conftest import BOOTSTRAP_ADMIN_ID, department_id
 from tests.test_auth_flow import _login_as_admin, unique_employee_code
 
 
 def _create_and_activate_employee(client, headers, employee_code: str, permissions: list[str]) -> dict:
     """직원을 만들고 임시 비밀번호로 로그인 + 비밀번호 변경까지 마쳐서 실제 권한이 적용된
     Authorization 헤더를 반환한다."""
+    email = f"{employee_code.lower()}@company.com"
     created = client.post(
         "/api/admin/employees",
         headers=headers,
         json={
             "employee_code": employee_code,
             "name": "테스트직원",
-            "department": "x",
+            "email": email,
+            "department_id": department_id(client),
             "permissions": permissions,
         },
     )
@@ -22,7 +24,7 @@ def _create_and_activate_employee(client, headers, employee_code: str, permissio
 
     login = client.post(
         "/api/auth/login",
-        json={"employee_code": employee_code, "password": temp_password, "remember_me": False},
+        json={"email": email, "password": temp_password, "remember_me": False},
     )
     assert login.status_code == 200
     token = login.json()["access_token"]
@@ -37,7 +39,7 @@ def _create_and_activate_employee(client, headers, employee_code: str, permissio
 
     relogin = client.post(
         "/api/auth/login",
-        json={"employee_code": employee_code, "password": new_password, "remember_me": False},
+        json={"email": email, "password": new_password, "remember_me": False},
     )
     assert relogin.status_code == 200
     return {"Authorization": f"Bearer {relogin.json()['access_token']}"}
@@ -78,7 +80,8 @@ def test_last_admin_protection_allows_when_another_manager_exists(client):
         json={
             "employee_code": comanager_code,
             "name": "공동관리자",
-            "department": "x",
+            "email": f"{comanager_code.lower()}@company.com",
+            "department_id": department_id(client),
             "permissions": ["EMPLOYEE_PERMISSION_MANAGE", "EMPLOYEE_UPDATE"],
         },
     )
@@ -104,7 +107,8 @@ def test_audit_log_records_admin_actions(client):
         json={
             "employee_code": audit_code,
             "name": "감사로그테스트",
-            "department": "x",
+            "email": f"{audit_code.lower()}@company.com",
+            "department_id": department_id(client),
             "permissions": ["DATA_PRODUCT_READ"],
         },
     )

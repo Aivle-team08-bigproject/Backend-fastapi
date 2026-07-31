@@ -15,8 +15,10 @@ from app.common.time_utils import utcnow
 from app.core.security import generate_temporary_password, hash_password, verify_password
 from app.db.session import AsyncSessionLocal, engine
 from app.domains.employees.model import (
+    Department,
     Employee,
     EmployeePermission,
+    EmployeeRole,
     EmployeeStatus,
     PermissionCode,
 )
@@ -24,6 +26,7 @@ from app.domains.employees.model import (
 
 DEMO_EMPLOYEE_CODE = "DEMO-001"
 DEMO_EMPLOYEE_NAME = "홍길동 책임"
+DEMO_EMPLOYEE_EMAIL = "demo.001@company.com"
 DEMO_DEPARTMENT = "데이터 운영팀"
 # 회원 관리·권한 변경 UI까지 로컬에서 검증할 수 있도록 데모 계정은 관리자 프로필을 사용한다.
 DEMO_PERMISSIONS = tuple(PermissionCode)
@@ -34,6 +37,19 @@ async def seed_demo_user() -> tuple[str, str]:
     now = utcnow()
 
     async with AsyncSessionLocal() as session:
+        department_id = await session.scalar(select(Department.id).where(Department.name == DEMO_DEPARTMENT))
+        if department_id is None:
+            department = Department(
+                name=DEMO_DEPARTMENT,
+                code=f"DEPT-{DEMO_DEPARTMENT}",
+                is_active=True,
+                created_at=now,
+                updated_at=now,
+            )
+            session.add(department)
+            await session.flush()
+            department_id = department.id
+
         employee = await session.scalar(
             select(Employee)
             .options(selectinload(Employee.permissions))
@@ -44,9 +60,11 @@ async def seed_demo_user() -> tuple[str, str]:
             employee = Employee(
                 employee_code=DEMO_EMPLOYEE_CODE,
                 name=DEMO_EMPLOYEE_NAME,
-                department=DEMO_DEPARTMENT,
+                email=DEMO_EMPLOYEE_EMAIL,
+                department_id=department_id,
                 password_hash=hash_password(password),
                 status=EmployeeStatus.ACTIVE,
+                role_code=EmployeeRole.ADMIN.value,
                 must_change_password=False,
                 failed_login_count=0,
                 locked_until=None,
@@ -61,9 +79,10 @@ async def seed_demo_user() -> tuple[str, str]:
             session.add(employee)
         else:
             employee.name = DEMO_EMPLOYEE_NAME
-            employee.department = DEMO_DEPARTMENT
+            employee.department_id = department_id
             employee.password_hash = hash_password(password)
             employee.status = EmployeeStatus.ACTIVE
+            employee.role_code = EmployeeRole.ADMIN.value
             employee.must_change_password = False
             employee.failed_login_count = 0
             employee.locked_until = None

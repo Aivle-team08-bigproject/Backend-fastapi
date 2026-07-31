@@ -12,7 +12,7 @@ from app.core.config import settings
 from app.db.session import AsyncSessionLocal, engine
 from app.core.security import generate_temporary_password, hash_password
 from app.domains.dashboard.model import DashboardAlert, DashboardInsight, TaskViewSnapshot
-from app.domains.employees.model import Employee, EmployeePermission, EmployeeStatus, PermissionCode
+from app.domains.employees.model import Department, Employee, EmployeePermission, EmployeeStatus, PermissionCode
 from app.domains.pipeline.model import (
     AgentMetric,
     Client,
@@ -375,16 +375,29 @@ async def seed_developer_monitoring_data(session, data_request: DataRequest, now
     return metric_count
 
 
+async def _ensure_department(session, name: str, now) -> int:
+    """이름으로 부서를 찾고, 없으면 만들어서 id를 반환한다 (데모 시드 전용 get-or-create)."""
+    department_id = await session.scalar(select(Department.id).where(Department.name == name))
+    if department_id is not None:
+        return department_id
+    department = Department(name=name, code=f"DEPT-{name}", is_active=True, created_at=now, updated_at=now)
+    session.add(department)
+    await session.flush()
+    return department.id
+
+
 async def upsert_dashboard_data() -> int:
     async with AsyncSessionLocal() as session:
         now = utcnow()
         for employee_code, name, department, employee_status, permissions in DEMO_EMPLOYEES:
             employee = await session.scalar(select(Employee).where(Employee.employee_code == employee_code))
             if employee is None:
+                department_id = await _ensure_department(session, department, now)
                 employee = Employee(
                     employee_code=employee_code,
                     name=name,
-                    department=department,
+                    email=f"{employee_code.lower()}@company.com",
+                    department_id=department_id,
                     password_hash=hash_password(generate_temporary_password()),
                     status=employee_status,
                     must_change_password=True,

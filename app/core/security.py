@@ -47,7 +47,7 @@ def create_access_token(
     session_id: uuid.UUID,
     auth_version: int,
     name: str,
-    department: str,
+    department: str | None,
 ) -> tuple[str, datetime]:
     now = utcnow()
     expires_at = now + timedelta(minutes=settings.access_token_ttl_minutes)
