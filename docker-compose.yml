@@ -1,5 +1,5 @@
-# portfolio 로컬 개발용 PostgreSQL
-# 스키마와 seed 데이터는 sqlfiles/bootstrap.sh로 구성한다.
+# PostgreSQL은 NeonDB(관리형)를 사용한다 — 이 파일은 DB를 띄우지 않는다.
+# 스키마·역할·권한은 NeonDB에 이미 구성돼 있고, 접속 정보는 .env의 세 DB URL로 주입한다.
 services:
   redis:
     image: redis:7.4-alpine
@@ -16,28 +16,6 @@ services:
       timeout: 3s
       retries: 10
 
-  db:
-    image: postgres:17-alpine
-    container_name: portfolio-postgres
-    restart: unless-stopped
-    environment:
-      POSTGRES_USER: ${POSTGRES_USER:-postgres}
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD가 .env에 필요합니다}
-      POSTGRES_DB: ${POSTGRES_DB:-portfolio}
-      TZ: UTC
-      PGTZ: UTC
-    command: ["postgres", "-c", "timezone=UTC"]
-    ports:
-      - "${POSTGRES_PORT:-5432}:5432"
-    volumes:
-      - postgres17_data:/var/lib/postgresql/data
-    healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-postgres} -d ${POSTGRES_DB:-portfolio}"]
-      interval: 10s
-      timeout: 5s
-      retries: 5
-      start_period: 10s
-
   api:
     build: .
     container_name: portfolio-api
@@ -47,7 +25,6 @@ services:
       - "${API_PORT:-8000}:8000"
     environment:
       PYTHONPATH: /app
-      DATABASE_HOST_OVERRIDE: db
       CELERY_BROKER_URL: redis://redis:6379/0
       CELERY_RESULT_BACKEND: redis://redis:6379/1
       WORKER_STATUS_REDIS_URL: redis://redis:6379/2
@@ -58,8 +35,6 @@ services:
     depends_on:
       redis:
         condition: service_healthy
-      db:
-        condition: service_healthy
 
   celery-worker:
     build: .
@@ -69,7 +44,6 @@ services:
     command: celery -A app.worker.celery_app:celery_app worker --loglevel=INFO --concurrency=2
     environment:
       PYTHONPATH: /app
-      DATABASE_HOST_OVERRIDE: db
       CELERY_BROKER_URL: redis://redis:6379/0
       CELERY_RESULT_BACKEND: redis://redis:6379/1
       WORKER_STATUS_REDIS_URL: redis://redis:6379/2
@@ -86,10 +60,7 @@ services:
     depends_on:
       redis:
         condition: service_healthy
-      db:
-        condition: service_healthy
 
 volumes:
-  postgres17_data:
   uploaded_data:
   redis_data:

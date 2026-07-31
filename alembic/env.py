@@ -24,7 +24,7 @@ sys.path.insert(0, os.getcwd())  # app 패키지를 import할 수 있게 경로 
 from app.core.config import settings
 config.set_main_option(
     "sqlalchemy.url",
-    settings.runtime_database_url(settings.portfolio_migration_database_url),
+    settings.portfolio_migration_database_url,
 )
 
 

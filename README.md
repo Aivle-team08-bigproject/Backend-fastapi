@@ -28,9 +28,9 @@ QUEUED
 
 ## 구성
 
-`docker-compose.yml`이 실행하는 서비스는 네 개다.
+`docker-compose.yml`이 실행하는 서비스는 세 개다. PostgreSQL은 NeonDB(관리형)를
+사용하므로 Compose에 포함하지 않는다.
 
-- `db`: PostgreSQL 17
 - `redis`: Celery broker/result backend 및 SSE 화면 갱신 채널
 - `api`: FastAPI/Gunicorn
 - `celery-worker`: Supervisor 및 단계별 에이전트 실행
@@ -55,7 +55,6 @@ Backend-fastapi/
 │   ├── worker/                  # Celery task, 상태 기록·화면 갱신 발행
 │   └── domains/                 # 인증, 직원, 자동화, 대시보드 도메인
 ├── alembic/                     # service 스키마 마이그레이션
-├── sqlfiles/                    # mart·anon 스키마와 권한 구성
 ├── scripts/                     # 마이그레이션·데모 데이터 도구
 ├── tests/                       # API·도메인·파이프라인 테스트
 ├── examples.http                # API 호출 예시
@@ -77,24 +76,16 @@ pip install -r requirements.txt
 ### 2. 환경변수 구성
 
 저장소는 실제 비밀값이 담긴 `.env`를 추적하지 않으며 `.env.example`도 제공하지 않는다.
-루트에 `.env`를 직접 만들고 최소한 아래 값을 설정한다. 세 DB URL의 비밀번호는 각각의
-역할 비밀번호와 같아야 한다.
+루트에 `.env`를 직접 만들고 최소한 아래 값을 설정한다. 세 DB URL은 NeonDB의 역할별
+접속 정보로 채운다. NeonDB는 SSL을 강제하므로 `?sslmode=require`를 반드시 붙인다.
 
 ```dotenv
-POSTGRES_USER=postgres
-POSTGRES_PASSWORD=change-postgres-password
-POSTGRES_DB=portfolio
-POSTGRES_PORT=5432
 REDIS_PORT=6379
 API_PORT=8000
 
-AGENT_SVC_PASSWORD=change-agent-password
-APP_SVC_PASSWORD=change-app-password
-PORTFOLIO_ADMIN_PASSWORD=change-admin-password
-
-PORTFOLIO_AGENT_DATABASE_URL=postgresql+psycopg://agent_svc:change-agent-password@127.0.0.1:5432/portfolio
-PORTFOLIO_APP_DATABASE_URL=postgresql+psycopg://app_svc:change-app-password@127.0.0.1:5432/portfolio
-PORTFOLIO_MIGRATION_DATABASE_URL=postgresql+psycopg://portfolio_admin:change-admin-password@127.0.0.1:5432/portfolio
+PORTFOLIO_AGENT_DATABASE_URL=postgresql+psycopg://agent_svc:PASSWORD@<neon-host>/portfolio?sslmode=require
+PORTFOLIO_APP_DATABASE_URL=postgresql+psycopg://app_svc:PASSWORD@<neon-host>/portfolio?sslmode=require
+PORTFOLIO_MIGRATION_DATABASE_URL=postgresql+psycopg://portfolio_admin:PASSWORD@<neon-host>/portfolio?sslmode=require
 
 JWT_SECRET=replace-with-a-long-random-secret
 BOOTSTRAP_ADMIN_PASSWORD=replace-with-a-strong-password
@@ -112,45 +103,37 @@ PIPELINE_QUERY_SOURCE=csv
 앱의 전체 설정과 기본값은 `app/core/config.py`, 에이전트 모델 설정은
 `agent_runtime/*/config.py`에서 확인할 수 있다. 비밀값이 든 `.env`는 커밋하지 않는다.
 
-### 3. DB 초기화
+### 3. DB 준비
 
-PostgreSQL을 먼저 시작한 뒤 신규 DB의 스키마·역할·권한을 구성한다.
+`mart`·`anon`·`service` 스키마와 역할·권한은 NeonDB에 이미 구성돼 있다. 별도의 로컬
+PostgreSQL을 띄우지 않으며, `docker-compose.yml`도 DB 컨테이너를 포함하지 않는다.
+2번에서 설정한 세 DB URL이 그대로 사용된다.
 
-```bash
-docker compose up -d db
-docker compose ps
-./sqlfiles/bootstrap.sh --with-v001 --create-roles
-```
-
-`bootstrap.sh`는 `mart`·`anon` SQL migration, `service` Alembic migration과 권한
-설정을 순서대로 실행한다. 기존 DB에 후속 migration만 적용할 때는 옵션 없이 실행한다.
-자세한 옵션은 `sqlfiles/README.md`를 참고한다.
-
-원천 CSV는 개인정보 보호를 위해 저장소에 포함하지 않는다. 권한 있는 경로에
-`sqlfiles/seed/*.csv`를 별도로 준비한 경우에만 적재·검증한다.
+`service` 스키마 변경은 Alembic으로 관리한다.
 
 ```bash
-./sqlfiles/bootstrap.sh --with-seed --with-verify
+alembic upgrade head
 ```
 
 ### 4. 서비스 실행
-
-DB 초기화가 끝나면 전체 서비스를 실행한다.
 
 ```bash
 docker compose up -d --build
 docker compose ps
 ```
 
+Compose가 실행하는 서비스는 `redis`, `api`, `celery-worker` 세 개이며 DB는 NeonDB에
+직접 접속한다.
+
 확인 주소:
 
 - Swagger UI: <http://127.0.0.1:8000/docs>
 - Health check: <http://127.0.0.1:8000/health>
 
-API와 Worker를 호스트에서 직접 실행하려면 PostgreSQL과 Redis를 먼저 띄운다.
+API와 Worker를 호스트에서 직접 실행하려면 Redis만 먼저 띄운다.
 
 ```bash
-docker compose up -d db redis
+docker compose up -d redis
 uvicorn app.main:app --host 127.0.0.1 --port 8000 --reload
 celery -A app.worker.celery_app:celery_app worker --loglevel=INFO --concurrency=2
 ```
