@@ -139,6 +139,7 @@ class EmployeeSummary(BaseModel):
     email: str
     department_id: int | None
     department_name: str | None
+    role: str | None
     status: str
     must_change_password: bool
     permissions: list[str]

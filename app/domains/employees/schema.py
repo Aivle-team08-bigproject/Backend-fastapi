@@ -65,12 +65,14 @@ class EmployeeResponse(BaseModel):
     department_id: int | None
     department_name: str | None
     position: PositionType | None
+    role: EmployeeRole | None
     status: EmployeeStatus
     must_change_password: bool
     permissions: list[PermissionCode]
     approved_by: str | None
     approved_at: datetime | None
     rejected_reason: str | None
+    last_login_at: datetime | None
     created_by: str
     created_at: datetime
     updated_at: datetime
