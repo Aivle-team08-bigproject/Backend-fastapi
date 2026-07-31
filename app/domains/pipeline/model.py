@@ -61,6 +61,37 @@ class StageRunStatus(str, enum.Enum):
     ROLLED_BACK = "ROLLED_BACK"
 
 
+class StageName(str, enum.Enum):
+    """Supervisor가 순서대로 진행시키는 실행 단계.
+
+    stage_runs.stage_code에 저장되는 값과 1:1로 대응한다. DATA_RETRIEVAL은 별도 단계가
+    아니라 DATA_PROCESSING 안에서 query 레이어(agent_runtime/query)가 담당하지만,
+    산출물 검증 계약이 이미 있어서 이름은 남겨둔다.
+    """
+
+    REQUIREMENT_ANALYSIS = "REQUIREMENT_ANALYSIS"
+    DATA_SELECTION = "DATA_SELECTION"
+    DATA_RETRIEVAL = "DATA_RETRIEVAL"
+    DATA_PROCESSING = "DATA_PROCESSING"
+    HITL_REVIEW = "HITL_REVIEW"
+
+
+class FailureCode(str, enum.Enum):
+    """단계 산출물 검증 실패 사유. 반려 시 어느 단계로 되돌릴지 판단하는 근거가 된다."""
+
+    SCHEMA_INVALID = "SCHEMA_INVALID"
+    REQUIRED_KEY_MISSING = "REQUIRED_KEY_MISSING"
+    FORMAT_INVALID = "FORMAT_INVALID"
+    LOGICAL_CONTRADICTION = "LOGICAL_CONTRADICTION"
+    MISINTERPRETED_REQUIREMENT = "MISINTERPRETED_REQUIREMENT"
+    INSUFFICIENT_DATA = "INSUFFICIENT_DATA"
+    LOW_SIMILARITY_MATCH = "LOW_SIMILARITY_MATCH"
+    DUPLICATED_DATA = "DUPLICATED_DATA"
+    OUTLIER_DETECTED = "OUTLIER_DETECTED"
+    PROCESSING_RULE_INVALID = "PROCESSING_RULE_INVALID"
+    HUMAN_REJECTED = "HUMAN_REJECTED"
+
+
 class EventType(str, enum.Enum):
     PROGRESS = "progress"
     AGENT_LOG = "agent_log"
@@ -200,6 +231,9 @@ class PipelineRun(Base):
     current_stage: Mapped[str | None] = mapped_column(String(80), index=True)
     progress_percent: Mapped[int] = mapped_column(SmallInteger, nullable=False, default=0)
     celery_task_id: Mapped[str | None] = mapped_column(String(255), unique=True, index=True)
+    # 검증 실패·반려 사유와, 반려 시 되돌아갈 단계(Supervisor가 다음 dispatch에서 읽는다)
+    error_message: Mapped[str | None] = mapped_column(Text)
+    rollback_to_stage: Mapped[str | None] = mapped_column(String(80))
     cancel_requested_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))

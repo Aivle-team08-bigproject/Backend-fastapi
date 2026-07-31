@@ -1,8 +1,20 @@
 """로그인 → 비밀번호 강제변경 → 직원 생성 → 권한관리 → 갱신 → 계정잠금까지 전체 흐름 검증."""
 
+from uuid import uuid4
+
 from tests.conftest import BOOTSTRAP_ADMIN_EMAIL, BOOTSTRAP_ADMIN_ID, BOOTSTRAP_ADMIN_PASSWORD, department_id
 
 CHANGED_ADMIN_PASSWORD = "HanaAdmin!2026Rotated"
+
+
+def unique_employee_code(prefix: str) -> str:
+    """실행마다 다른 직원 ID를 만든다.
+
+    테스트 DB는 실행 간에 초기화되지 않아서(tests/conftest.py의 client 주석 참고),
+    고정 ID를 쓰면 두 번째 실행부터 EMPLOYEE_CODE_DUPLICATED(409)로 준비 단계에서
+    죽는다 — 정작 검증하려던 로직에는 도달하지 못한다.
+    """
+    return f"{prefix}-{uuid4().hex[:8].upper()}"
 
 
 def _login_as_admin(client) -> dict:
@@ -52,20 +64,22 @@ def test_password_change_required_before_business_api(client):
 
     me = client.get("/api/auth/me", headers=headers)
     assert me.status_code == 200
+    assert me.json()["permissions"] == []
 
 
 def test_create_employee_and_login(client):
     headers = _login_as_admin(client)
-
+    employee_code = unique_employee_code("HANA-TEST")
+    email = f"{employee_code.lower()}@company.com"
     dept_id = department_id(client)
 
     created = client.post(
         "/api/admin/employees",
         headers=headers,
         json={
-            "employee_code": "HANA-TEST-001",
+            "employee_code": employee_code,
             "name": "홍길동",
-            "email": "hana-test-001@company.com",
+            "email": email,
             "department_id": dept_id,
             "permissions": ["DATA_PRODUCT_READ", "QUOTE_READ"],
         },
@@ -79,9 +93,9 @@ def test_create_employee_and_login(client):
         "/api/admin/employees",
         headers=headers,
         json={
-            "employee_code": "HANA-TEST-001",
+            "employee_code": employee_code,
             "name": "가짜",
-            "email": "hana-test-001-dup@company.com",
+            "email": f"dup.{email}",
             "department_id": dept_id,
             "permissions": [],
         },
@@ -91,7 +105,7 @@ def test_create_employee_and_login(client):
     login = client.post(
         "/api/auth/login",
         json={
-            "email": "hana-test-001@company.com",
+            "email": email,
             "password": body["temporary_password"],
             "remember_me": False,
         },
@@ -103,21 +117,22 @@ def test_create_employee_and_login(client):
 def test_update_permissions_with_overlap_does_not_fail(client):
     """겹치는 권한 코드를 유지한 채 교체해도 문제없이 성공해야 한다."""
     headers = _login_as_admin(client)
+    employee_code = unique_employee_code("HANA-PERM")
 
     client.post(
         "/api/admin/employees",
         headers=headers,
         json={
-            "employee_code": "HANA-TEST-002",
+            "employee_code": employee_code,
             "name": "테스트2",
-            "email": "hana-test-002@company.com",
+            "email": f"{employee_code.lower()}@company.com",
             "department_id": department_id(client),
             "permissions": ["DATA_PRODUCT_READ", "QUOTE_READ"],
         },
     )
 
     updated = client.put(
-        "/api/admin/employees/HANA-TEST-002/permissions",
+        f"/api/admin/employees/{employee_code}/permissions",
         headers=headers,
         json={"permissions": ["QUOTE_READ", "CONTRACT_MANAGE"]},
     )
@@ -127,20 +142,22 @@ def test_update_permissions_with_overlap_does_not_fail(client):
 
 def test_update_role_applies_server_side_permission_profile(client):
     headers = _login_as_admin(client)
+    employee_code = unique_employee_code("HANA-ROLE")
+
     client.post(
         "/api/admin/employees",
         headers=headers,
         json={
-            "employee_code": "HANA-ROLE-001",
+            "employee_code": employee_code,
             "name": "역할 테스트",
-            "email": "hana-role-001@company.com",
+            "email": f"{employee_code.lower()}@company.com",
             "department_id": department_id(client),
             "permissions": ["DATA_PRODUCT_READ"],
         },
     )
 
     updated = client.patch(
-        "/api/admin/employees/HANA-ROLE-001/role",
+        f"/api/admin/employees/{employee_code}/role",
         headers=headers,
         json={"role": "SENIOR"},
     )
@@ -178,15 +195,33 @@ def test_refresh_rotates_token(client):
 
 
 def test_login_lockout_after_five_failures(client):
+    # 잠글 대상 계정을 이 테스트가 직접 만든다. 예전에는 앞선 테스트가 남긴 고정 ID를
+    # 재사용해서, 실행 순서와 이전 실행의 잔여 데이터에 결과가 좌우됐다.
+    headers = _login_as_admin(client)
+    employee_code = unique_employee_code("HANA-LOCKOUT")
+    email = f"{employee_code.lower()}@company.com"
+    created = client.post(
+        "/api/admin/employees",
+        headers=headers,
+        json={
+            "employee_code": employee_code,
+            "name": "잠금테스트",
+            "email": email,
+            "department_id": department_id(client),
+            "permissions": [],
+        },
+    )
+    assert created.status_code == 200, created.text
+
     for _ in range(5):
         client.post(
             "/api/auth/login",
-            json={"email": "hana-test-001@company.com", "password": "wrong-password", "remember_me": False},
+            json={"email": email, "password": "wrong-password", "remember_me": False},
         )
 
     locked = client.post(
         "/api/auth/login",
-        json={"email": "hana-test-001@company.com", "password": "wrong-password", "remember_me": False},
+        json={"email": email, "password": "wrong-password", "remember_me": False},
     )
     assert locked.status_code == 403
     assert locked.json()["detail"]["code"] == "ACCOUNT_LOCKED"

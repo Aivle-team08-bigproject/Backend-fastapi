@@ -10,7 +10,7 @@ from app.domains.pipeline.model import (
 )
 from app.domains.pipeline.router import _sse_message
 from app.worker.status_event import PipelineStatusEvent
-from app.worker.status_subscriber import persist_status_event
+from app.worker.status_recorder import persist_status_event
 
 
 class FakeAsyncSession:

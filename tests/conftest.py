@@ -55,3 +55,19 @@ def department_id(client, name: str = "데이터사업팀") -> int:
         if item["name"] == name:
             return item["id"]
     raise AssertionError(f"'{name}' 부서를 찾을 수 없습니다 (마이그레이션 기본 부서 목록 확인 필요)")
+
+
+@pytest.fixture()
+def dashboard_factory():
+    """Unique workflow fixture factory for dashboard contract tests.
+
+    테스트가 끝나면 만든 행을 되돌린다 — 대시보드 응답이 테이블 전체 집계의 상위 5개만
+    돌려주기 때문에, 남은 행이 쌓이면 다음 실행에서 새 데이터가 상위권에 못 들어간다.
+    """
+    from tests.dashboard_fixtures import DashboardFixtureFactory
+
+    factory = DashboardFixtureFactory()
+    try:
+        yield factory
+    finally:
+        factory.cleanup()
