@@ -58,7 +58,7 @@ def test_database_executor_builds_bound_safe_join_query():
     statement = DatabaseQueryExecutor.build_statement(plan)
     sql = str(statement)
 
-    assert "anon.transactions" in sql
-    assert "anon.merchants" in sql
+    assert "anonymized.transactions" in sql
+    assert "anonymized.merchants" in sql
     assert "서울" not in sql
     assert statement.compile().params

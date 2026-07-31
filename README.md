@@ -1,253 +1,224 @@
 # Backend-fastapi
 
-이 레포는 하나 데이터 마켓 백엔드 저장소다. 현재 브랜치는 인증·직원 관리와 `service` 스키마 기반의 데이터 요청·대시보드 API를 제공한다.
+하나 데이터 마켓 백엔드다. FastAPI가 인증·직원 관리·데이터 요청·대시보드 API를
+제공하고, Celery Worker가 요구사항 분석부터 데이터 가공까지의 비동기 파이프라인을
+실행한다.
 
 ## 현재 구현 범위
 
-현재 브랜치의 파이프라인 API는 DB 상태 계약을 검증하기 위한 하드코딩 실행기로 동작한다. 요청 생성 시 아래 단계의 완료 상태와 화면 snapshot을 `service` DB에 저장한다.
+파이프라인은 다음 세 단계를 순서대로 실행하며 각 단계가 끝날 때 사람의 승인(HITL)을
+기다린다.
 
-- `REQUIREMENT_ANALYSIS`
-- `DATA_SELECTION`
-- `DATA_PROCESSING`
-- `HITL_REVIEW`
+1. `REQUIREMENT_ANALYSIS` — 자연어 요구사항 구조화
+2. `DATA_SELECTION` — 데이터셋·컬럼 선정과 합성 샘플 생성
+3. `DATA_PROCESSING` — CSV 또는 익명화 DB 조회 결과 가공
 
-실제 에이전트 실행기와 외부 브로커 연결은 후속 작업 범위다.
+상태 흐름은 다음과 같다.
 
-## 빠른 실행
+```text
+QUEUED
+-> RUNNING (REQUIREMENT_ANALYSIS) -> WAITING_REQUIREMENT_REVIEW
+-> RUNNING (DATA_SELECTION)       -> WAITING_SAMPLE_REVIEW
+-> RUNNING (DATA_PROCESSING)      -> WAITING_FINAL_REVIEW
+-> COMPLETED | FAILED
+```
 
-루트 FastAPI와 PostgreSQL을 함께 실행하는 순서는 다음과 같다.
+반려 시 실패 코드에 따라 되돌아갈 단계를 결정하고 새 attempt를 만든다. 시각화·보고서
+생성, 최종 QA 자동화와 외부 오케스트레이터 연동은 아직 구현되지 않았다.
+
+## 구성
+
+`docker-compose.yml`이 실행하는 서비스는 네 개다.
+
+- `db`: PostgreSQL 17
+- `redis`: Celery broker/result backend 및 SSE 화면 갱신 채널
+- `api`: FastAPI/Gunicorn
+- `celery-worker`: Supervisor 및 단계별 에이전트 실행
+
+별도의 상태 구독 서비스는 없다. Worker가 상태를 PostgreSQL에 먼저 기록한 뒤 Redis에
+발행하고, FastAPI의 SSE 엔드포인트가 이를 구독한다. Redis 발행에 실패해도 DB 상태는
+유지된다.
+
+```text
+API -> Redis broker -> Celery Worker
+                         |-> PostgreSQL (상태·산출물 저장)
+                         `-> Redis Pub/Sub -> FastAPI SSE -> Frontend
+```
+
+주요 디렉터리는 다음과 같다.
+
+```text
+Backend-fastapi/
+├── agent_runtime/               # 단계별 에이전트와 검증된 데이터 조회 계층
+├── app/
+│   ├── domains/pipeline/        # 파이프라인 API, Supervisor, 산출물 검증
+│   ├── worker/                  # Celery task, 상태 기록·화면 갱신 발행
+│   └── domains/                 # 인증, 직원, 자동화, 대시보드 도메인
+├── alembic/                     # service 스키마 마이그레이션
+├── sqlfiles/                    # mart·anon 스키마와 권한 구성
+├── scripts/                     # 마이그레이션·데모 데이터 도구
+├── tests/                       # API·도메인·파이프라인 테스트
+├── examples.http                # API 호출 예시
+└── docker-compose.yml
+```
+
+## 로컬 실행
+
+### 1. Python 환경 준비
+
+Python 3.12 기준이다.
 
 ```bash
-cd /path/to/Backend-fastapi
 python -m venv .venv
 source .venv/bin/activate
 pip install -r requirements.txt
-cp .env.example .env                 # 비밀번호와 로컬 설정 확인
+```
 
+### 2. 환경변수 구성
+
+저장소는 실제 비밀값이 담긴 `.env`를 추적하지 않으며 `.env.example`도 제공하지 않는다.
+루트에 `.env`를 직접 만들고 최소한 아래 값을 설정한다. 세 DB URL의 비밀번호는 각각의
+역할 비밀번호와 같아야 한다.
+
+```dotenv
+POSTGRES_USER=postgres
+POSTGRES_PASSWORD=change-postgres-password
+POSTGRES_DB=portfolio
+POSTGRES_PORT=5432
+REDIS_PORT=6379
+API_PORT=8000
+
+AGENT_SVC_PASSWORD=change-agent-password
+APP_SVC_PASSWORD=change-app-password
+PORTFOLIO_ADMIN_PASSWORD=change-admin-password
+
+PORTFOLIO_AGENT_DATABASE_URL=postgresql+psycopg://agent_svc:change-agent-password@127.0.0.1:5432/portfolio
+PORTFOLIO_APP_DATABASE_URL=postgresql+psycopg://app_svc:change-app-password@127.0.0.1:5432/portfolio
+PORTFOLIO_MIGRATION_DATABASE_URL=postgresql+psycopg://portfolio_admin:change-admin-password@127.0.0.1:5432/portfolio
+
+JWT_SECRET=replace-with-a-long-random-secret
+BOOTSTRAP_ADMIN_PASSWORD=replace-with-a-strong-password
+ANON_HASH_SALT=replace-with-a-random-salt
+
+DEEPSEEK_API_KEY=replace-with-your-api-key
+REQUIREMENTS_ANALYSIS_MODEL_PROVIDER=deepseek
+REQUIREMENTS_ANALYSIS_MODEL_ID=deepseek-v4-flash
+DATA_SELECTION_MODEL_PROVIDER=deepseek
+DATA_SELECTION_MODEL_ID=deepseek-v4-flash
+
+PIPELINE_QUERY_SOURCE=csv
+```
+
+앱의 전체 설정과 기본값은 `app/core/config.py`, 에이전트 모델 설정은
+`agent_runtime/*/config.py`에서 확인할 수 있다. 비밀값이 든 `.env`는 커밋하지 않는다.
+
+### 3. DB 초기화
+
+PostgreSQL을 먼저 시작한 뒤 신규 DB의 스키마·역할·권한을 구성한다.
+
+```bash
 docker compose up -d db
-docker compose ps                     # db가 healthy인지 확인
+docker compose ps
 ./sqlfiles/bootstrap.sh --with-v001 --create-roles
-
-uvicorn app.main:app --host 127.0.0.1 --port 8000 --reload
 ```
 
-확인 주소:
+`bootstrap.sh`는 `mart`·`anon` SQL migration, `service` Alembic migration과 권한
+설정을 순서대로 실행한다. 기존 DB에 후속 migration만 적용할 때는 옵션 없이 실행한다.
+자세한 옵션은 `sqlfiles/README.md`를 참고한다.
 
-- Swagger UI: [http://127.0.0.1:8000/docs](http://127.0.0.1:8000/docs)
-- Health: [http://127.0.0.1:8000/health](http://127.0.0.1:8000/health)
-
-## 파이프라인 실행 환경
-
-현재 루트 FastAPI 앱은 `service` 스키마에 인증·요청·파이프라인 상태를 저장하고 조회한다.
-파이프라인 단계는 현재 하드코딩 실행기로 완료 처리한다.
-
-```bash
-docker compose up -d db
-```
-
-요청 생성 직후 `pipeline_runs`/`stage_runs`/`pipeline_events`와 작업 화면 snapshot이 저장된다.
-
-기존 PostgreSQL volume을 재사용하는 경우 모델에서 삭제한 `stage_runs.executor`와
-`stage_runs.executor_reference` 컬럼이 물리적으로 남을 수 있다. 먼저 점검한 뒤 명시적으로
-삭제한다.
-
-```bash
-python -m scripts.migrate_remove_executor_columns
-python -m scripts.migrate_remove_executor_columns --apply
-```
-
-### DB 구축
-
-`sqlfiles`는 PostgreSQL의 `mart`·`anon`·`service` 스키마를 초기화한다. `mart`와 `anon`의
-구조·권한은 SQL migration이 만들고, FastAPI가 사용하는 `service` 21개 테이블은 Alembic이
-생성한다. 새 환경에서는 애플리케이션 실행 전에 아래 명령을 한 번 실행한다.
-
-```bash
-cp .env.example .env                 # 역할 비밀번호·JWT_SECRET을 로컬 값으로 변경
-docker compose up -d db
-docker compose ps                     # db가 healthy인지 확인
-./sqlfiles/bootstrap.sh --with-v001 --create-roles
-```
-
-`--with-v001`은 DB·스키마 기본 설정, `--create-roles`는 `agent_svc`, `app_svc`,
-`portfolio_admin` 계정을 생성·보정한다. 기존 DB에 다시 실행할 때는 두 옵션을 생략하고,
-소유권이 어긋난 경우에만 `sqlfiles/patch/P001__align_existing_db.sql`을 검토한다.
-
-CSV 원천 데이터는 개인정보 보호를 위해 Git에 포함하지 않는다. 별도 권한 저장소에서
-`sqlfiles/seed/*.csv`를 받은 환경에서만 선택적으로 적재·검증한다.
+원천 CSV는 개인정보 보호를 위해 저장소에 포함하지 않는다. 권한 있는 경로에
+`sqlfiles/seed/*.csv`를 별도로 준비한 경우에만 적재·검증한다.
 
 ```bash
 ./sqlfiles/bootstrap.sh --with-seed --with-verify
 ```
 
-DB 볼륨까지 삭제하고 처음부터 다시 구성하려면 다음 명령을 사용한다.
+### 4. 서비스 실행
+
+DB 초기화가 끝나면 전체 서비스를 실행한다.
 
 ```bash
-docker compose down -v
-docker compose up -d db
-./sqlfiles/bootstrap.sh --with-v001 --create-roles
+docker compose up -d --build
+docker compose ps
 ```
 
-## 테스트 방법
+확인 주소:
 
-현재 구현 기준 검증 방법은 아래 두 가지다.
+- Swagger UI: <http://127.0.0.1:8000/docs>
+- Health check: <http://127.0.0.1:8000/health>
 
-### 1. Dry-run
-
-DB 없이 `stub agent`로 전체 흐름과 롤백 정책을 확인한다.
+API와 Worker를 호스트에서 직접 실행하려면 PostgreSQL과 Redis를 먼저 띄운다.
 
 ```bash
-cd /Users/joupark/bigproject/Backend-fastapi/automation-supervisor-api
-python scripts/dry_run_supervisor.py
+docker compose up -d db redis
+uvicorn app.main:app --host 127.0.0.1 --port 8000 --reload
+celery -A app.worker.celery_app:celery_app worker --loglevel=INFO --concurrency=2
 ```
 
-예시:
+두 프로세스는 각각 별도 터미널에서 실행한다.
 
-```bash
-python scripts/dry_run_supervisor.py --sample travel
-python scripts/dry_run_supervisor.py --sample cafe
-python scripts/dry_run_supervisor.py --requirement "30대 남성의 헬스 업종 월별 결제 변화를 차트와 CSV로 제공해줘."
-python scripts/dry_run_supervisor.py --sample travel --csv /absolute/path/to/selected.csv
-python scripts/dry_run_supervisor.py --sample subscription --feedback "가공 컬럼과 보고서 형식이 맞지 않습니다."
-```
+## 파이프라인 사용
 
-### 2. API 수동 검증
+주요 API 흐름은 다음과 같다.
 
-서버를 띄운 뒤 아래 순서로 호출한다.
+1. `POST /api/v1/data-requests` — 요청 생성 및 Celery 작업 등록
+2. `GET /api/v1/runs/{run_id}` — 실행 상태와 단계별 결과 조회
+3. `POST /api/v1/runs/{run_id}/review` — 현재 단계 승인 또는 반려
+4. `GET /api/v1/runs/{run_id}/events` — 진행 상태 SSE 구독
 
-1. `POST /api/v1/supervisor/jobs`
-2. `POST /api/v1/supervisor/jobs/{job_id}/run`
-3. `POST /api/v1/supervisor/jobs/{job_id}/hitl-review`
-4. `GET /api/v1/supervisor/jobs/{job_id}`
+`PIPELINE_QUERY_SOURCE=csv`이면 데이터 선별 승인 후 CSV를 업로드한다.
 
-요청 예시는 `automation-supervisor-api/examples.http`를 보면 된다.
+- `POST /api/v1/runs/{run_id}/input-csv` — CSV 업로드
+- `GET /api/v1/runs/{run_id}/result.csv` — 가공 결과 다운로드
 
-## 프로젝트 목표
+API와 Worker는 Compose의 `uploaded_data` 볼륨을 공유한다.
 
-루트 문서 기준 전체 목표는 아래 5단계 자동화 파이프라인이다.
+`PIPELINE_QUERY_SOURCE=database`이면 업로드 없이 `agent_svc` 계정으로 `anon` 스키마를
+조회한다. 에이전트가 만든 SQL 문자열을 직접 실행하지 않고 등록된 데이터셋·컬럼·필터·조인만
+SQLAlchemy 표현식으로 변환한다.
 
-1. 요구사항 분석
-2. 데이터 선별
-3. 데이터 가공
-4. 시각화 및 보고서 2차 가공
-5. 최종 산출물 QA
+인증이 필요한 검토 API를 포함한 구체적인 요청 본문은 `examples.http`와 Swagger UI에서
+확인한다.
 
-관련 문서:
+## 에이전트와 Supervisor
 
-- [프로세스_개요.md](/Users/joupark/bigproject/프로세스_개요.md)
-- [aws_workflow_architecture.md](/Users/joupark/bigproject/aws_workflow_architecture.md)
+`app/domains/pipeline/supervisor.py`는 다음 단계를 선택하고 입력 payload를 조립하며,
+`app/domains/pipeline/validation.py`로 산출물 계약을 검증한다.
 
-## 디렉터리
+현재 연결된 런타임은 다음과 같다.
 
-```text
-Backend-fastapi/
-├── agent_runtime/               # 독립 배포를 염두에 둔 에이전트 런타임 모듈
-├── app/                         # 인증·직원·파이프라인·대시보드 API
-├── alembic/                     # service 스키마 마이그레이션
-├── scripts/                     # 테스트·데모 데이터 적재
-├── tests/                       # API·모델 테스트
-└── docker-compose.yml           # 루트 PostgreSQL 실행용
-```
+- `agent_runtime/requirements_analysis`: 요구사항 구조화
+- `agent_runtime/data_selection`: 데이터셋·원본/파생 컬럼과 합성 샘플 설계
+- `agent_runtime/query`: CSV 또는 익명화 DB의 검증된 조회 계층
+- `agent_runtime/data_processing`: 결정론적 가공·익명화
+- `agent_runtime/data_retrieval`: 허용 경로의 CSV 검증과 메타데이터 생성
 
-## 에이전트 구현 현황
-
-### 1. Supervisor API
-
-`automation-supervisor-api/app/application/supervisor_service.py`가 전체 흐름을 제어한다.
-
-- 작업 생성
-- 단계별 실행
-- 산출물 검증
-- 동일 입력 재실행 시 캐시 재사용
-- HITL 승인/반려 처리
-- 반려 시 `failure_code -> rollback_stage` 고정 정책 적용
-
-상태 흐름은 대략 아래와 같다.
-
-```text
-QUEUED
--> RUNNING
--> REQUIREMENT_ANALYSIS
--> DATA_SELECTION
--> DATA_PROCESSING
--> WAITING_HITL
--> COMPLETED | WAITING_RETRY | FAILED
-```
-
-### 2. 현재 연결된 에이전트
-
-`automation-supervisor-api` 기준으로 아래 3개 agent 이름을 사용한다.
-
-- `requirement-analysis-agent`
-- `data-selection-agent`
-- `data-processing-agent`
-
-모델명은 `.env`에서 단계별로 분리한다.
-
-```text
-REQUIREMENT_ANALYSIS_MODEL=sonnet-4.6
-DATA_SELECTION_MODEL=aws-nova
-DATA_PROCESSING_MODEL=chatgpt-5.5
-```
-
-로컬에서 Strands 환경이 준비되지 않았으면 `stub agent`로 fallback 되도록 구성돼 있다. 그래서 API 구조와 상태 전이는 실제로 먼저 검증할 수 있다.
-
-### 3. 독립 런타임 모듈
-
-`agent_runtime/`은 나중에 AgentCore 또는 Lambda로 분리 배포할 것을 전제로 둔 실험/준비 코드다.
-
-현재 확인되는 구현:
-
-- `agent_runtime/requirements_analysis/agent.py`
-  요구사항 자연어를 구조화된 JSON으로 변환하는 독립 실행형 Strands 에이전트
-
-이 모듈은 FastAPI 앱에 직접 의존하지 않도록 분리돼 있다.
-
-## 미구현 항목
-
-시각화 및 보고서 2차 가공, 최종 QA 자동화, 운영 데이터 소스 및 외부 오케스트레이션 연동은 아직 구현되지 않았다.
+요구사항 분석과 데이터 선별은 현재 DeepSeek의 OpenAI 호환 API를 사용한다.
 
 ## API 범위
 
-루트 `app/`은 인증, 세션, 직원 관리, 데이터 요청·파이프라인, 대시보드 API를 제공한다.
-기존 `/requirements`·`/tasks` 레거시 API는 제거되었으며, 현재 작업 흐름은 `/api/v1` API를 사용한다.
-## Celery · Redis 비동기 파이프라인
+현재 앱은 아래 영역을 제공한다.
 
-`POST /api/v1/data-requests`는 `service.pipeline_runs`에 실행을 먼저 등록하고,
-동일한 `celery_task_id`로 Redis broker에 `pipeline.process_run` 작업을 발행합니다.
-Worker는 요구사항 분석과 데이터 선별 상태를 Redis Pub/Sub으로 전달합니다.
-`worker-status-subscriber`는 이벤트를 DB의 `pipeline_runs`, `stage_runs`,
-`pipeline_events`에 저장한 뒤 SSE 전용 채널로 재발행합니다.
-각 실행의 최신 이벤트는 `pipeline:run-status:latest:{run_id}` 키에도 TTL과 함께
-저장되므로 SSE 재연결 시 가장 최근 상태부터 받을 수 있습니다.
+- `/api/auth`: 로그인, 토큰 갱신, 로그아웃, 비밀번호 변경
+- `/api/admin`: 직원·권한·세션 관리
+- `/api/automation/requirements-analysis`: 단독 요구사항 분석
+- `/api/v1`: 데이터 요청과 파이프라인
+- `/api/dashboard`: 운영·개발자 대시보드
 
-실시간 상태는 `GET /api/v1/runs/{run_id}/events`로 구독합니다. 프론트 구독
-예제는 `docs/frontend/pipelineEvents.ts`에 있습니다.
+정확한 엔드포인트와 스키마는 실행 중인 Swagger UI를 기준으로 한다.
 
-DB migration 적용 후 서비스를 실행합니다.
+## 테스트
 
 ```bash
-alembic upgrade head
-docker compose up -d --build db redis api celery-worker worker-status-subscriber
+python -m pytest -q
 ```
 
-API와 Worker는 `uploaded_data:/app/uploads` named volume을 공유합니다.
-`POST /api/v1/runs/{run_id}/input-csv`에 multipart `file`로 CSV를 업로드하면
-원본을 실행별 경로에 저장하고 Celery가 실제 행을 가공합니다. 완료 결과는
-`service.artifacts`에 기록되며 `GET /api/v1/runs/{run_id}/result.csv`로
-다운로드할 수 있습니다.
+주요 파이프라인 검증:
 
-## Query Layer
+- `tests/test_supervisor_flow.py`: 단계 진행, 승인 게이트, 반려 롤백
+- `tests/test_supervisor_stages.py`: 단계 선택과 검증 로직
+- `tests/test_pipeline_dispatch.py`: Celery dispatch
+- `tests/test_pipeline_status_events.py`: DB 상태 기록과 Redis/SSE 이벤트
+- `tests/test_query_layer.py`: CSV·DB 조회 제한
 
-`agent_runtime/query`는 데이터 선별 Agent의 결과를 검증된 `SelectionPlan`으로
-변환합니다. Agent가 만든 SQL 문자열은 실행하지 않으며, 등록된 논리 데이터셋,
-허용 컬럼, 필터 연산자와 최대 조회 건수만 SQLAlchemy 표현식으로 변환합니다.
-
-- `CsvQueryExecutor`: 업로드 CSV에 같은 컬럼·필터·건수 계획 적용
-- `DatabaseQueryExecutor`: `agent_svc` 계정으로 `anon` 스키마만 조회
-- 민감 원본 컬럼(`card_number_masked`, `ip_address`, 사업자번호 등)은 DB 조회 차단
-- 다중 데이터셋은 등록된 FK 조인 경로만 허용
-
-기본 `PIPELINE_QUERY_SOURCE=csv`에서는 기존처럼 CSV 업로드를 기다립니다.
-`PIPELINE_QUERY_SOURCE=database`로 실행하면 CSV가 없는 요청도 데이터 선별 직후
-`anon` 데이터베이스를 조회하여 가공 단계로 전달합니다.
+테스트 설정은 `tests/conftest.py`가 외부 API 호출과 운영 인프라 의존성을 격리한다.

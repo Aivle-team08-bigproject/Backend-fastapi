@@ -1,37 +1,49 @@
-from datetime import datetime, timedelta, timezone
+from collections import Counter
+from dataclasses import dataclass
+from datetime import datetime, timedelta
 from decimal import Decimal
 from zoneinfo import ZoneInfo
 
-from sqlalchemy import select
+from sqlalchemy import case, func, literal, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.common.errors import not_found
-from app.common.time_utils import utcnow
+from app.common.time_utils import as_utc, utcnow
 from app.core.config import settings
-from app.domains.dashboard.model import DashboardAlert, DashboardInsight, TaskViewSnapshot
+from app.domains.dashboard.model import TaskViewSnapshot
 from app.domains.dashboard.schema import (
     AgentFailureRateResponse,
     AgentStatusResponse,
+    DashboardDeadlineTaskResponse,
+    DashboardResponse,
+    DashboardTaskItemResponse,
+    DashboardTaskListResponse,
+    DashboardTaskQuery,
+    DashboardPriorityCardResponse,
+    PopularProductResponse,
     DeveloperDashboardPayload,
     DeveloperDashboardPeriod,
-    PractitionerDashboardResponse,
     DeveloperDashboardResponse,
     DeveloperErrorLogResponse,
     MemberManagementResponse,
     MemberResponse,
     MyTaskStatusResponse,
-    PreferredItemResponse,
-    StatCardResponse,
-    SupplementItemResponse,
     TaskLookupResponse,
     TaskRowResponse,
     TaskViewResponse,
     TokenUsagePointResponse,
     TokenUsageSummaryResponse,
-    WarningCardResponse,
 )
-from app.domains.pipeline.model import Client, DataRequest
-from app.domains.pipeline.model import AgentMetric, EventType, PipelineEvent, StageRun
+from app.domains.pipeline.model import (
+    AgentMetric,
+    Client,
+    DataRequest,
+    EventType,
+    PipelineEvent,
+    PipelineRun,
+    Review,
+    StageRun,
+)
 from app.domains.employees.model import Employee, EmployeeStatus, PermissionCode
 
 
@@ -49,139 +61,436 @@ AGENT_CARD_ORDER = (
 FAILURE_RATE_ORDER = (*AGENT_CARD_ORDER, "delivery-pipeline")
 DELAY_THRESHOLD_MS = 2_000
 
-
-def _to_dashboard_time(value: datetime) -> datetime:
-    return value.replace(tzinfo=timezone.utc).astimezone(ZoneInfo(settings.dashboard_timezone))
-
-
-def _to_utc_naive(value: datetime) -> datetime:
-    return value.astimezone(timezone.utc).replace(tzinfo=None)
-
-
-def _task_row(data_request: DataRequest, client: Client) -> TaskRowResponse:
-    metadata = data_request.analysis_condition or {}
-    return TaskRowResponse(
-        request_no=data_request.request_no,
-        client=client.company_name,
-        data_type=metadata.get("data_type", "데이터 분석"),
-        detail=metadata.get("detail", data_request.title),
-        assignee=metadata.get("assignee", "미배정"),
-        created_at=data_request.created_at.strftime("%Y.%m.%d"),
-        updated_at=data_request.updated_at.strftime("%Y.%m.%d"),
-        status=metadata.get("dashboard_status", "요구사항 분석"),
-    )
-
-
-async def _demo_tasks(db: AsyncSession) -> list[tuple[DataRequest, Client]]:
-    rows = (
-        await db.execute(
-            select(DataRequest, Client)
-            .join(Client, Client.id == DataRequest.client_id)
-            .order_by(DataRequest.created_at.desc(), DataRequest.request_no.desc())
-        )
-    ).all()
-    return [(request, client) for request, client in rows if (request.analysis_condition or {}).get("demo_dashboard")]
+POPULAR_PRODUCTS_UNAVAILABLE_MESSAGE = "인기 상품 데이터는 제공되지 않습니다."
+UNKNOWN_DETAIL_ROUTE = "/dashboard/tasks?stage=UNKNOWN"
+DETAIL_ROUTE_BY_STAGE_GROUP = {
+    "REQUIREMENT_ANALYSIS": "/tasks/review",
+    "SAMPLE_DATA": "/tasks/sample-feedback",
+    "FINAL_OUTPUT": "/tasks/final-feedback",
+    "COMPLETED": "/tasks/complete",
+}
+PRIORITY_LABEL_BY_CODE = {
+    "REQUIREMENT": "요구사항 승인·반려",
+    "SAMPLE": "샘플 데이터 승인·반려",
+    "FINAL": "최종 산출물 승인·반려",
+}
+WAITING_PRIORITY_BY_STATUS = {
+    "WAITING_REQUIREMENT_REVIEW": "REQUIREMENT",
+    "WAITING_SAMPLE_REVIEW": "SAMPLE",
+    "WAITING_FINAL_REVIEW": "FINAL",
+}
+RECOGNIZED_REVIEW_TYPES = ("REQUIREMENT", "SAMPLE", "FINAL")
+STAGE_GROUP_BY_STAGE_CODE = {
+    "REQUIREMENT_ANALYSIS": "REQUIREMENT_ANALYSIS",
+    "DATA_SELECTION": "SAMPLE_DATA",
+    "SAMPLE_DATA": "SAMPLE_DATA",
+    "DATA_PROCESSING": "FINAL_OUTPUT",
+    "FINAL_OUTPUT": "FINAL_OUTPUT",
+    "DELIVERY": "FINAL_OUTPUT",
+    "COMPLETED": "COMPLETED",
+}
 
 
-async def get_practitioner_dashboard(db: AsyncSession) -> PractitionerDashboardResponse:
-    task_pairs = await _demo_tasks(db)
-    task_rows = [_task_row(request, client) for request, client in task_pairs]
-    counts = {"요구사항 분석": 0, "진행중": 0, "가공중": 0, "완료": 0}
-    for row in task_rows:
-        counts[row.status] = counts.get(row.status, 0) + 1
+@dataclass(frozen=True)
+class _ProjectedTask:
+    request_no: str
+    client: str
+    title: str
+    analysis_condition: dict
+    owner_id: int | None
+    assignee_code: str | None
+    assignee_name: str
+    stage_code: str | None
+    stage_group_code: str
+    stage_label: str
+    status_code: str | None
+    status_group_code: str
+    priority_code: str | None
+    decision_status: str
+    requires_action: bool
+    detail_route: str
+    created_at: datetime
+    updated_at: datetime
 
-    alerts = list((await db.scalars(select(DashboardAlert).order_by(DashboardAlert.display_order))).all())
-    insights = list(
-        (await db.scalars(select(DashboardInsight).order_by(DashboardInsight.section, DashboardInsight.display_order))).all()
-    )
-    preferred = [item for item in insights if item.section == "PREFERRED"]
-    supplement = [item for item in insights if item.section == "SUPPLEMENT"]
 
-    return PractitionerDashboardResponse(
-        stat_cards=[
-            StatCardResponse(
-                label="전체 활성 작업",
-                value=len(task_rows),
-                unit="건",
-                caption=f"대기 {counts['요구사항 분석']} / 진행 {counts['진행중'] + counts['가공중']} / 완료 {counts['완료']}",
-                highlight=True,
+def _detail_route_for_stage_group(stage_group_code: str) -> str:
+    return DETAIL_ROUTE_BY_STAGE_GROUP.get(stage_group_code, UNKNOWN_DETAIL_ROUTE)
+
+
+def _latest_pipeline_run_subquery():
+    ranked = select(
+        PipelineRun.id.label("run_id"),
+        PipelineRun.data_request_id.label("data_request_id"),
+        PipelineRun.status.label("run_status"),
+        PipelineRun.attempt_no.label("attempt_no"),
+        func.row_number()
+        .over(
+            partition_by=PipelineRun.data_request_id,
+            order_by=(
+                PipelineRun.attempt_no.desc(),
+                PipelineRun.created_at.desc(),
+                PipelineRun.id.desc(),
             ),
-            StatCardResponse(label="요구사항 분석 단계", value=counts["요구사항 분석"], unit="건", caption="평균 소요 1.2일"),
-            StatCardResponse(label="데이터 선별 단계", value=counts["진행중"], unit="건", caption="평균 소요 2.4일"),
-            StatCardResponse(label="데이터 가공 단계", value=counts["가공중"], unit="건", caption="평균 소요 3.5일"),
-        ],
-        alert_banner_count=sum(int(alert.count_label.removesuffix("건")) for alert in alerts),
-        warning_cards=[
-            WarningCardResponse(
-                title=alert.title,
-                count_label=alert.count_label,
-                count_bg=alert.count_bg,
-                count_color=alert.count_color,
-                description=alert.description,
-                foot_note=alert.foot_note,
-                action_to=alert.action_to,
-            )
-            for alert in alerts
-        ],
-        preferred_items=[
-            PreferredItemResponse(
-                rank=item.display_order,
-                title=item.title,
-                subtitle=item.subtitle or "",
-                tag=item.tag,
-                tag_bg=item.tag_bg,
-                tag_color=item.tag_color,
-            )
-            for item in preferred
-        ],
-        supplement_items=[
-            SupplementItemResponse(
-                title=item.title,
-                note=item.note or "",
-                note_color=item.note_color or "#d97706",
-                tag=item.tag,
-                tag_bg=item.tag_bg,
-                tag_color=item.tag_color,
-            )
-            for item in supplement
-        ],
-        task_rows=task_rows,
-        page_size=4,
+        )
+        .label("run_rank"),
+    ).subquery("ranked_pipeline_runs")
+    return select(ranked).where(ranked.c.run_rank == 1).subquery("latest_pipeline_runs")
+
+
+def _latest_stage_run_subquery():
+    ranked = select(
+        StageRun.id.label("stage_run_id"),
+        StageRun.pipeline_run_id.label("pipeline_run_id"),
+        StageRun.stage_code.label("stage_code"),
+        StageRun.status.label("stage_status"),
+        func.row_number()
+        .over(
+            partition_by=StageRun.pipeline_run_id,
+            order_by=(StageRun.created_at.desc(), StageRun.id.desc()),
+        )
+        .label("stage_rank"),
+    ).subquery("ranked_stage_runs")
+    return select(ranked).where(ranked.c.stage_rank == 1).subquery("latest_stage_runs")
+
+
+def _latest_review_subquery():
+    ranked = select(
+        Review.id.label("review_id"),
+        Review.data_request_id.label("data_request_id"),
+        Review.review_type.label("review_type"),
+        Review.decision.label("review_decision"),
+        func.row_number()
+        .over(
+            partition_by=Review.data_request_id,
+            order_by=(Review.created_at.desc(), Review.id.desc()),
+        )
+        .label("review_rank"),
+    ).subquery("ranked_reviews")
+    return select(ranked).where(ranked.c.review_rank == 1).subquery("latest_reviews")
+
+
+def _projection_query():
+    latest_run = _latest_pipeline_run_subquery()
+    latest_stage = _latest_stage_run_subquery()
+    latest_review = _latest_review_subquery()
+
+    stage_group = case(
+        (latest_stage.c.stage_code.is_(None), literal("UNKNOWN")),
+        *(
+            (latest_stage.c.stage_code == stage_code, literal(stage_group))
+            for stage_code, stage_group in STAGE_GROUP_BY_STAGE_CODE.items()
+        ),
+        else_=literal("UNKNOWN"),
+    )
+    waiting_priority = case(
+        *(
+            (latest_run.c.run_status == run_status, literal(priority))
+            for run_status, priority in WAITING_PRIORITY_BY_STATUS.items()
+        ),
+        else_=literal(None),
+    )
+    review_priority = case(
+        *(
+            (latest_review.c.review_type == review_type, literal(review_type))
+            for review_type in RECOGNIZED_REVIEW_TYPES
+        ),
+        else_=literal(None),
+    )
+    has_unknown_review = latest_review.c.review_type.is_not(None) & ~latest_review.c.review_type.in_(
+        RECOGNIZED_REVIEW_TYPES
+    )
+    has_workflow_state = latest_run.c.run_id.is_not(None) & latest_stage.c.stage_code.is_not(None)
+    priority = case(
+        (stage_group == "COMPLETED", literal(None)),
+        (~has_workflow_state, literal(None)),
+        (has_unknown_review, literal(None)),
+        (latest_run.c.run_status.in_(tuple(WAITING_PRIORITY_BY_STATUS)), waiting_priority),
+        (latest_review.c.review_type.in_(RECOGNIZED_REVIEW_TYPES), review_priority),
+        else_=literal(None),
+    )
+    decision_status = case(
+        (latest_review.c.review_decision == "APPROVED", literal("approved")),
+        (latest_review.c.review_decision == "CHANGES_REQUESTED", literal("changes_requested")),
+        (
+            latest_run.c.run_status.in_(tuple(WAITING_PRIORITY_BY_STATUS)) & priority.is_not(None),
+            literal("pending"),
+        ),
+        else_=literal("not_required"),
+    )
+    status_code = func.coalesce(
+        latest_stage.c.stage_status,
+        latest_run.c.run_status,
+        DataRequest.status,
+    )
+    status_group = case(
+        (latest_stage.c.stage_code.is_(None), literal("unknown")),
+        (latest_run.c.run_status.in_(tuple(WAITING_PRIORITY_BY_STATUS)), literal("waiting_review")),
+        (status_code == "COMPLETED", literal("completed")),
+        (status_code.in_(("FAILED", "CANCELLED")), literal("failed")),
+        (status_code.in_(("PENDING", "RUNNING", "QUEUED")), literal("in_progress")),
+        else_=literal("unknown"),
+    )
+    requires_action = case(
+        (priority.is_(None), literal(False)),
+        (decision_status.in_(("pending", "changes_requested")), literal(True)),
+        else_=literal(False),
+    )
+
+    return (
+        select(
+            DataRequest.request_no.label("request_no"),
+            DataRequest.title.label("title"),
+            DataRequest.analysis_condition.label("analysis_condition"),
+            DataRequest.owner_id.label("owner_id"),
+            DataRequest.created_at.label("created_at"),
+            DataRequest.updated_at.label("updated_at"),
+            Client.company_name.label("client"),
+            Employee.employee_code.label("assignee_code"),
+            func.coalesce(Employee.name, literal("미배정")).label("assignee_name"),
+            latest_stage.c.stage_code.label("stage_code"),
+            stage_group.label("stage_group_code"),
+            status_code.label("status_code"),
+            status_group.label("status_group_code"),
+            priority.label("priority_code"),
+            decision_status.label("decision_status"),
+            requires_action.label("requires_action"),
+        )
+        .join(Client, Client.id == DataRequest.client_id)
+        .outerjoin(Employee, Employee.id == DataRequest.owner_id)
+        .outerjoin(latest_run, latest_run.c.data_request_id == DataRequest.id)
+        .outerjoin(latest_stage, latest_stage.c.pipeline_run_id == latest_run.c.run_id)
+        .outerjoin(latest_review, latest_review.c.data_request_id == DataRequest.id)
+    )
+
+
+def _task_projection_from_row(row) -> _ProjectedTask:
+    values = row._mapping
+    stage_group_code = values["stage_group_code"]
+    stage_label = {
+        "REQUIREMENT_ANALYSIS": "요구사항 분석",
+        "SAMPLE_DATA": "샘플 데이터",
+        "FINAL_OUTPUT": "최종 산출물",
+        "COMPLETED": "완료",
+        "UNKNOWN": "상태 확인 필요",
+    }.get(stage_group_code, "상태 확인 필요")
+    return _ProjectedTask(
+        request_no=values["request_no"],
+        client=values["client"],
+        title=values["title"],
+        analysis_condition=values["analysis_condition"] or {},
+        owner_id=values["owner_id"],
+        assignee_code=values["assignee_code"],
+        assignee_name=values["assignee_name"],
+        stage_code=values["stage_code"],
+        stage_group_code=stage_group_code,
+        stage_label=stage_label,
+        status_code=values["status_code"],
+        status_group_code=values["status_group_code"],
+        priority_code=values["priority_code"],
+        decision_status=values["decision_status"],
+        requires_action=bool(values["requires_action"]),
+        detail_route=_detail_route_for_stage_group(stage_group_code),
+        created_at=values["created_at"],
+        updated_at=values["updated_at"],
+    )
+
+
+def _dashboard_task_item(task: _ProjectedTask) -> DashboardTaskItemResponse:
+    return DashboardTaskItemResponse(
+        request_no=task.request_no,
+        client=task.client,
+        title=task.title,
+        assignee_code=task.assignee_code,
+        assignee_name=task.assignee_name,
+        stage_code=task.stage_code,
+        stage_group_code=task.stage_group_code,
+        stage_label=task.stage_label,
+        status_code=task.status_code,
+        status_group_code=task.status_group_code,
+        priority_code=task.priority_code,
+        decision_status=task.decision_status,
+        requires_action=task.requires_action,
+        detail_route=task.detail_route,
+        created_at=task.created_at,
+        updated_at=task.updated_at,
+    )
+
+
+def _legacy_task_row(task: _ProjectedTask) -> TaskRowResponse:
+    metadata = task.analysis_condition
+    return TaskRowResponse(
+        request_no=task.request_no,
+        client=task.client,
+        data_type=metadata.get("data_type", "데이터 분석"),
+        detail=metadata.get("detail", task.title),
+        assignee=task.assignee_name,
+        created_at=task.created_at.strftime("%Y.%m.%d"),
+        updated_at=task.updated_at.strftime("%Y.%m.%d"),
+        status={
+            "REQUIREMENT_ANALYSIS": "요구사항 분석",
+            "SAMPLE_DATA": "진행중",
+            "FINAL_OUTPUT": "가공중",
+            "COMPLETED": "완료",
+            "UNKNOWN": "상태 확인 필요",
+        }.get(task.stage_group_code, "상태 확인 필요"),
+    )
+
+
+def _is_completed(task: _ProjectedTask) -> bool:
+    return task.status_group_code == "completed" or task.status_code == "COMPLETED"
+
+
+async def _load_projected_tasks(db: AsyncSession) -> list[_ProjectedTask]:
+    result = await db.execute(
+        _projection_query().order_by(DataRequest.created_at.desc(), DataRequest.request_no.desc())
+    )
+    return [_task_projection_from_row(row) for row in result]
+
+
+def _task_filters(projection, query: DashboardTaskQuery) -> list:
+    predicates = []
+    if query.priority is not None:
+        predicates.append(projection.c.priority_code == query.priority)
+    if query.stage is not None:
+        predicates.append(projection.c.stage_group_code == query.stage)
+    return predicates
+
+
+def _popular_products(tasks: list[_ProjectedTask]) -> list[PopularProductResponse]:
+    product_counts: Counter[str] = Counter()
+    for task in tasks:
+        product_name = task.analysis_condition.get("product_name")
+        if isinstance(product_name, str) and product_name.strip():
+            product_counts[product_name.strip()] += 1
+
+    return [
+        PopularProductResponse(
+            product_code=f"PRODUCT-{index:03d}",
+            product_name=product_name,
+            request_count=request_count,
+        )
+        for index, (product_name, request_count) in enumerate(
+            sorted(product_counts.items(), key=lambda item: (-item[1], item[0]))[:5],
+            start=1,
+        )
+    ]
+
+
+def _due_at_from_metadata(metadata: dict) -> datetime | None:
+    due_at = metadata.get("due_at")
+    if not isinstance(due_at, str):
+        return None
+    try:
+        return as_utc(datetime.fromisoformat(due_at.replace("Z", "+00:00")))
+    except ValueError:
+        return None
+
+
+def _deadline_tasks(tasks: list[_ProjectedTask]) -> list[DashboardDeadlineTaskResponse]:
+    due_tasks = [
+        (task, due_at)
+        for task in tasks
+        if not _is_completed(task)
+        if (due_at := _due_at_from_metadata(task.analysis_condition)) is not None
+    ]
+    due_tasks.sort(key=lambda item: item[1])
+    return [
+        DashboardDeadlineTaskResponse(
+            request_no=task.request_no,
+            client=task.client,
+            title=task.title,
+            assignee_name=task.assignee_name,
+            stage_label=task.stage_label,
+            due_at=due_at,
+            detail_route=task.detail_route,
+        )
+        for task, due_at in due_tasks[:5]
+    ]
+
+
+async def get_dashboard_tasks(
+    db: AsyncSession,
+    query: DashboardTaskQuery,
+) -> DashboardTaskListResponse:
+    projection = _projection_query().subquery("dashboard_task_projection")
+    predicates = _task_filters(projection, query)
+    filtered = select(projection).where(*predicates)
+    total_count = int(
+        await db.scalar(select(func.count()).select_from(filtered.subquery("filtered_dashboard_tasks"))) or 0
+    )
+    result = await db.execute(
+        filtered
+        .order_by(projection.c.created_at.desc(), projection.c.request_no.desc())
+        .limit(query.page_size)
+        .offset((query.page - 1) * query.page_size)
+    )
+    items = [_dashboard_task_item(_task_projection_from_row(row)) for row in result]
+    return DashboardTaskListResponse(
+        items=items,
+        total_count=total_count,
+        page=query.page,
+        page_size=query.page_size,
+    )
+
+
+async def get_practitioner_dashboard(db: AsyncSession) -> DashboardResponse:
+    projected_tasks = await _load_projected_tasks(db)
+    popular_products = _popular_products(projected_tasks)
+    action_items = [
+        task for task in projected_tasks if task.requires_action and not _is_completed(task)
+    ]
+    approval_items = [
+        task for task in action_items if task.decision_status == "pending"
+    ]
+    priority_cards = [
+        DashboardPriorityCardResponse(
+            priority_code=priority_code,
+            label=PRIORITY_LABEL_BY_CODE[priority_code],
+            count=sum(task.priority_code == priority_code for task in action_items),
+            detail_route=f"/dashboard/tasks?priority={priority_code}",
+        )
+        for priority_code in PRIORITY_LABEL_BY_CODE
+    ]
+    return DashboardResponse(
+        generated_at=utcnow(),
+        priority_cards=priority_cards,
+        priority_actions=[_dashboard_task_item(task) for task in action_items[:5]],
+        popular_products=popular_products,
+        popular_products_unavailable_message=(
+            POPULAR_PRODUCTS_UNAVAILABLE_MESSAGE if not popular_products else ""
+        ),
+        approval_tasks=[_dashboard_task_item(task) for task in approval_items[:5]],
+        deadline_tasks=_deadline_tasks(projected_tasks),
+        active_task_count=sum(not _is_completed(task) for task in projected_tasks),
     )
 
 
 async def get_my_task_status(db: AsyncSession, employee: Employee) -> MyTaskStatusResponse:
-    task_pairs = await _demo_tasks(db)
-    assigned_tasks = []
-    for request, client in task_pairs:
-        metadata = request.analysis_condition or {}
-        is_assigned = metadata.get("assignee_employee_code") == employee.employee_code
-        if not is_assigned and not metadata.get("assignee_employee_code"):
-            is_assigned = metadata.get("assignee") == employee.name
-        if is_assigned:
-            assigned_tasks.append(_task_row(request, client))
-
-    active_tasks = [task for task in assigned_tasks if task.status != "완료"]
-    completed_count = sum(task.status == "완료" for task in assigned_tasks)
+    projected_tasks = await _load_projected_tasks(db)
+    assigned_tasks = [task for task in projected_tasks if task.assignee_code == employee.employee_code]
+    active_tasks = [task for task in assigned_tasks if not _is_completed(task)]
+    completed_count = len(assigned_tasks) - len(active_tasks)
     completion_rate = round(completed_count / len(assigned_tasks) * 100, 1) if assigned_tasks else 0.0
     return MyTaskStatusResponse(
         employee_code=employee.employee_code,
         user_name=employee.name,
         department=employee.department.name if employee.department else "",
         active_count=len(active_tasks),
-        urgent_count=sum(task.status == "요구사항 분석" for task in active_tasks),
+        urgent_count=sum(
+            task.stage_group_code == "REQUIREMENT_ANALYSIS" for task in active_tasks
+        ),
         completed_count=completed_count,
         completion_rate=completion_rate,
-        tasks=assigned_tasks,
+        tasks=[_legacy_task_row(task) for task in assigned_tasks],
     )
 
 
 async def get_task_lookup(db: AsyncSession) -> TaskLookupResponse:
-    pairs = await _demo_tasks(db)
+    projected_tasks = await _load_projected_tasks(db)
     selected = [
-        _task_row(request, client)
-        for request, client in pairs
-        if (request.analysis_condition or {}).get("alert_code") == "REQUIREMENT_GUIDE"
+        _legacy_task_row(task)
+        for task in projected_tasks
+        if task.analysis_condition.get("alert_code") == "REQUIREMENT_GUIDE"
     ]
     return TaskLookupResponse(
         banner_title=f"경고: 요구사항 가이드 미확정 관련 작업 ({len(selected)}건)",
@@ -208,6 +517,15 @@ async def get_task_view(db: AsyncSession, request_no: str, view_code: str) -> Ta
     )
 
 
+def _to_dashboard_time(value: datetime) -> datetime:
+    return as_utc(value).astimezone(ZoneInfo(settings.dashboard_timezone))
+
+
+def _to_utc(value: datetime) -> datetime:
+    """대시보드의 모든 시간 비교를 UTC aware datetime으로 통일한다."""
+    return as_utc(value)
+
+
 def _chart_buckets(
     period: DeveloperDashboardPeriod,
     now: datetime,
@@ -217,7 +535,7 @@ def _chart_buckets(
     if period == DeveloperDashboardPeriod.DAILY:
         size = timedelta(hours=4)
         buckets = [
-            (_to_utc_naive(local_today + size * index), f"{index * 4:02d}:00")
+            (_to_utc(local_today + size * index), f"{index * 4:02d}:00")
             for index in range(6)
         ]
         return buckets[0][0], buckets, size
@@ -225,7 +543,7 @@ def _chart_buckets(
         start = local_today - timedelta(days=6)
         size = timedelta(days=1)
         buckets = [
-            (_to_utc_naive(start + size * index), (start + size * index).strftime("%m.%d"))
+            (_to_utc(start + size * index), (start + size * index).strftime("%m.%d"))
             for index in range(7)
         ]
         return buckets[0][0], buckets, size
@@ -233,7 +551,7 @@ def _chart_buckets(
     start = local_today.replace(day=1)
     size = timedelta(days=1)
     buckets = [
-        (_to_utc_naive(start + size * index), f"{index + 1}일")
+        (_to_utc(start + size * index), f"{index + 1}일")
         for index in range(local_now.day)
     ]
     return buckets[0][0], buckets, size
@@ -255,8 +573,8 @@ async def get_developer_dashboard(
 ) -> DeveloperDashboardResponse:
     now = utcnow()
     local_now = _to_dashboard_time(now)
-    today = _to_utc_naive(local_now.replace(hour=0, minute=0, second=0, microsecond=0))
-    month_start = _to_utc_naive(local_now.replace(day=1, hour=0, minute=0, second=0, microsecond=0))
+    today = _to_utc(local_now.replace(hour=0, minute=0, second=0, microsecond=0))
+    month_start = _to_utc(local_now.replace(day=1, hour=0, minute=0, second=0, microsecond=0))
     chart_start, bucket_specs, bucket_size = _chart_buckets(period, now)
     metrics_start = min(month_start, chart_start, now - timedelta(hours=24))
 
@@ -270,8 +588,8 @@ async def get_developer_dashboard(
         ).all()
     )
 
-    month_metrics = [metric for metric in metrics if metric.created_at >= month_start]
-    today_metrics = [metric for metric in metrics if metric.created_at >= today]
+    month_metrics = [metric for metric in metrics if as_utc(metric.created_at) >= month_start]
+    today_metrics = [metric for metric in metrics if as_utc(metric.created_at) >= today]
     month_tokens = sum(metric.input_tokens + metric.output_tokens for metric in month_metrics)
     today_tokens = sum(metric.input_tokens + metric.output_tokens for metric in today_metrics)
     month_cost = sum((metric.cost_usd or Decimal("0")) for metric in month_metrics)
@@ -281,9 +599,10 @@ async def get_developer_dashboard(
         for _ in bucket_specs
     ]
     for metric in metrics:
-        if metric.created_at < chart_start:
+        metric_created_at = as_utc(metric.created_at)
+        if metric_created_at < chart_start:
             continue
-        bucket_index = int((metric.created_at - chart_start) // bucket_size)
+        bucket_index = int((metric_created_at - chart_start) // bucket_size)
         if 0 <= bucket_index < len(bucket_values):
             bucket_values[bucket_index]["input_tokens"] += metric.input_tokens
             bucket_values[bucket_index]["output_tokens"] += metric.output_tokens
@@ -309,9 +628,9 @@ async def get_developer_dashboard(
                 agent_key=agent_key,
                 name=AGENT_LABELS[agent_key],
                 status=_agent_status(latest),
-                last_response_at=latest.created_at if latest else None,
+                last_response_at=as_utc(latest.created_at) if latest else None,
                 latency_ms=latest.latency_ms if latest else None,
-                today_throughput=sum(metric.created_at >= today for metric in agent_metrics),
+                today_throughput=sum(as_utc(metric.created_at) >= today for metric in agent_metrics),
             )
         )
 
@@ -321,7 +640,7 @@ async def get_developer_dashboard(
         recent = [
             metric
             for metric in metrics
-            if metric.agent_name == agent_key and metric.created_at >= last_24_hours
+            if metric.agent_name == agent_key and as_utc(metric.created_at) >= last_24_hours
         ]
         failed = sum(metric.outcome.upper() != "SUCCEEDED" for metric in recent)
         percent = round(failed / len(recent) * 100, 1) if recent else 0.0

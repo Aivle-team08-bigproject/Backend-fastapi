@@ -1,7 +1,7 @@
 """7,8,9번 항목(감사 로그 / 마지막 관리자 보호 / 72바이트 비밀번호)에 대한 회귀 테스트."""
 
 from tests.conftest import BOOTSTRAP_ADMIN_ID
-from tests.test_auth_flow import _login_as_admin
+from tests.test_auth_flow import _login_as_admin, unique_employee_code
 
 
 def _create_and_activate_employee(client, headers, employee_code: str, permissions: list[str]) -> dict:
@@ -50,7 +50,7 @@ def test_last_admin_protection_blocks_disabling_only_permission_manager(client):
 
     # EMPLOYEE_PERMISSION_MANAGE 없이 EMPLOYEE_UPDATE만 가진 직원을 하나 만든다.
     limited_headers = _create_and_activate_employee(
-        client, admin_headers, "DEMO-LIMITED-001", ["EMPLOYEE_UPDATE"]
+        client, admin_headers, unique_employee_code("DEMO-LIMITED"), ["EMPLOYEE_UPDATE"]
     )
 
     attempt = client.patch(
@@ -70,12 +70,13 @@ def test_last_admin_protection_blocks_disabling_only_permission_manager(client):
 def test_last_admin_protection_allows_when_another_manager_exists(client):
     """EMPLOYEE_PERMISSION_MANAGE를 가진 다른 직원이 있으면, 그중 한 명을 비활성화하는 건 허용돼야 한다."""
     admin_headers = _login_as_admin(client)
+    comanager_code = unique_employee_code("DEMO-COMANAGER")
 
     created = client.post(
         "/api/admin/employees",
         headers=admin_headers,
         json={
-            "employee_code": "DEMO-COMANAGER-001",
+            "employee_code": comanager_code,
             "name": "공동관리자",
             "department": "x",
             "permissions": ["EMPLOYEE_PERMISSION_MANAGE", "EMPLOYEE_UPDATE"],
@@ -84,7 +85,7 @@ def test_last_admin_protection_allows_when_another_manager_exists(client):
     assert created.status_code == 200
 
     disable = client.patch(
-        "/api/admin/employees/DEMO-COMANAGER-001/status",
+        f"/api/admin/employees/{comanager_code}/status",
         headers=admin_headers,
         json={"status": "DISABLED"},
     )
@@ -95,12 +96,13 @@ def test_last_admin_protection_allows_when_another_manager_exists(client):
 
 def test_audit_log_records_admin_actions(client):
     admin_headers = _login_as_admin(client)
+    audit_code = unique_employee_code("DEMO-AUDIT")
 
     client.post(
         "/api/admin/employees",
         headers=admin_headers,
         json={
-            "employee_code": "DEMO-AUDIT-001",
+            "employee_code": audit_code,
             "name": "감사로그테스트",
             "department": "x",
             "permissions": ["DATA_PRODUCT_READ"],
@@ -111,7 +113,7 @@ def test_audit_log_records_admin_actions(client):
     assert logs.status_code == 200
     entries = logs.json()
     assert any(
-        entry["action"] == "EMPLOYEE_CREATED" and entry["target_employee_code"] == "DEMO-AUDIT-001"
+        entry["action"] == "EMPLOYEE_CREATED" and entry["target_employee_code"] == audit_code
         for entry in entries
     )
     assert all(entry["actor_employee_code"] for entry in entries)
