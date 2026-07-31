@@ -32,7 +32,7 @@ PRIVACY_VERSION = "2026-01"
 async def _find_employee(db: AsyncSession, employee_code: str) -> Employee:
     result = await db.execute(
         select(Employee)
-        .options(selectinload(Employee.permissions))
+        .options(selectinload(Employee.permissions), selectinload(Employee.department))
         .where(Employee.employee_code == employee_code)
     )
     employee = result.scalar_one_or_none()
@@ -199,7 +199,7 @@ async def create_employee(
         detail=f"permissions={sorted(p.value for p in payload.permissions)}",
     )
     await db.commit()
-    await db.refresh(employee, attribute_names=["permissions"])
+    await db.refresh(employee, attribute_names=["permissions", "department"])
 
     return employee, temporary_password
 
@@ -278,7 +278,7 @@ async def signup(db: AsyncSession, payload: SignupRequest, ip_address: str | Non
         await db.rollback()
         raise conflict("EMAIL_ALREADY_REGISTERED", "이미 사용 중인 이메일입니다.")
 
-    await db.refresh(employee, attribute_names=["permissions"])
+    await db.refresh(employee, attribute_names=["permissions", "department"])
 
     return employee
 
@@ -286,7 +286,7 @@ async def signup(db: AsyncSession, payload: SignupRequest, ip_address: str | Non
 async def list_pending_signups(db: AsyncSession) -> list[Employee]:
     result = await db.execute(
         select(Employee)
-        .options(selectinload(Employee.permissions))
+        .options(selectinload(Employee.permissions), selectinload(Employee.department))
         .where(Employee.status == EmployeeStatus.PENDING_APPROVAL)
         .order_by(Employee.created_at.asc())
     )
@@ -326,7 +326,7 @@ async def approve_signup(
         detail=f"role={payload.role.value}",
     )
     await db.commit()
-    await db.refresh(employee, attribute_names=["permissions"])
+    await db.refresh(employee, attribute_names=["permissions", "department"])
 
     return employee
 
@@ -351,12 +351,15 @@ async def reject_signup(
         detail=reason,
     )
     await db.commit()
+    await db.refresh(employee, attribute_names=["permissions", "department"])
 
     return employee
 
 async def find_all(db: AsyncSession) -> list[Employee]:
     result = await db.execute(
-        select(Employee).options(selectinload(Employee.permissions)).order_by(Employee.created_at.desc())
+        select(Employee)
+        .options(selectinload(Employee.permissions), selectinload(Employee.department))
+        .order_by(Employee.created_at.desc())
     )
     return list(result.scalars().all())
 
@@ -409,7 +412,7 @@ async def replace_permissions(
         detail=f"before={previous} after={sorted(p.value for p in permissions)}",
     )
     await db.commit()
-    await db.refresh(employee, attribute_names=["permissions"])
+    await db.refresh(employee, attribute_names=["permissions", "department"])
 
     return employee
 
@@ -455,6 +458,7 @@ async def change_status(
         detail=f"before={previous_status} after={status.value}",
     )
     await db.commit()
+    await db.refresh(employee, attribute_names=["permissions", "department"])
 
     return employee
 
@@ -475,6 +479,7 @@ async def reset_password(db: AsyncSession, employee_code: str, operator_code: st
         target_employee_code=employee_code,
     )
     await db.commit()
+    await db.refresh(employee, attribute_names=["permissions", "department"])
 
     return employee, temporary_password
 
