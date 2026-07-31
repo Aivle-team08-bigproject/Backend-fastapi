@@ -3,3 +3,4 @@
 # 동일하게 포함되어 있다.
 strands-agents[openai]==1.48.0
 pydantic-settings==2.5.2
+sqlalchemy[asyncio]==2.0.41

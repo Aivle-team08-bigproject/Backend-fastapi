@@ -42,3 +42,19 @@ def settings():
     from app.core.config import settings as app_settings
 
     return app_settings
+
+
+@pytest.fixture()
+def dashboard_factory():
+    """Unique workflow fixture factory for dashboard contract tests.
+
+    테스트가 끝나면 만든 행을 되돌린다 — 대시보드 응답이 테이블 전체 집계의 상위 5개만
+    돌려주기 때문에, 남은 행이 쌓이면 다음 실행에서 새 데이터가 상위권에 못 들어간다.
+    """
+    from tests.dashboard_fixtures import DashboardFixtureFactory
+
+    factory = DashboardFixtureFactory()
+    try:
+        yield factory
+    finally:
+        factory.cleanup()

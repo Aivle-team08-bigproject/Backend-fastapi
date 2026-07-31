@@ -52,14 +52,88 @@ class TaskRowResponse(BaseModel):
     status: str
 
 
-class PractitionerDashboardResponse(BaseModel):
-    stat_cards: list[StatCardResponse]
-    alert_banner_count: int
-    warning_cards: list[WarningCardResponse]
-    preferred_items: list[PreferredItemResponse]
-    supplement_items: list[SupplementItemResponse]
-    task_rows: list[TaskRowResponse]
-    page_size: int
+PriorityCode = Literal["REQUIREMENT", "SAMPLE", "FINAL"]
+StageGroupCode = Literal[
+    "REQUIREMENT_ANALYSIS",
+    "SAMPLE_DATA",
+    "FINAL_OUTPUT",
+    "COMPLETED",
+    "UNKNOWN",
+]
+DecisionStatus = Literal["pending", "approved", "changes_requested", "not_required"]
+StatusGroupCode = Literal["waiting_review", "in_progress", "completed", "failed", "unknown"]
+
+
+class DashboardTaskItemResponse(BaseModel):
+    request_no: str
+    client: str
+    title: str
+    assignee_code: str | None
+    assignee_name: str
+    stage_code: str | None
+    stage_group_code: StageGroupCode
+    stage_label: str
+    status_code: str | None
+    status_group_code: StatusGroupCode
+    priority_code: PriorityCode | None
+    decision_status: DecisionStatus
+    requires_action: bool
+    detail_route: str
+    created_at: datetime
+    updated_at: datetime
+
+
+class DashboardPriorityCardResponse(BaseModel):
+    priority_code: PriorityCode
+    label: str
+    count: int = Field(ge=0)
+    detail_route: str
+
+
+class PopularProductResponse(BaseModel):
+    product_code: str
+    product_name: str
+    request_count: int = Field(ge=0)
+
+
+class DashboardDeadlineTaskResponse(BaseModel):
+    request_no: str
+    client: str
+    title: str
+    assignee_name: str
+    stage_label: str
+    due_at: datetime
+    detail_route: str
+
+
+class DashboardResponse(BaseModel):
+    generated_at: datetime
+    priority_cards: list[DashboardPriorityCardResponse]
+    priority_actions: list[DashboardTaskItemResponse]
+    popular_products: list[PopularProductResponse]
+    popular_products_unavailable_message: str
+    approval_tasks: list[DashboardTaskItemResponse]
+    deadline_tasks: list[DashboardDeadlineTaskResponse]
+    active_task_count: int = Field(ge=0)
+
+
+class DashboardTaskQuery(BaseModel):
+    priority: PriorityCode | None = None
+    stage: StageGroupCode | None = None
+    page: int = Field(default=1, ge=1)
+    page_size: Literal[30, 50, 100] = 30
+
+
+class DashboardTaskListResponse(BaseModel):
+    items: list[DashboardTaskItemResponse]
+    total_count: int = Field(ge=0)
+    page: int = Field(ge=1)
+    page_size: Literal[30, 50, 100]
+
+
+# The old name remains import-compatible for code that only references the
+# response type, while its fields now describe the canonical dashboard DTO.
+PractitionerDashboardResponse = DashboardResponse
 
 
 class MyTaskStatusResponse(BaseModel):

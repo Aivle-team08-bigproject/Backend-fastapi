@@ -5,7 +5,9 @@ from pydantic import BaseModel, Field
 from app.domains.pipeline.model import (
     DataRequestStatus,
     EventType,
+    FailureCode,
     PipelineRunStatus,
+    ReviewDecision,
     StageRunStatus,
 )
 
@@ -22,6 +24,7 @@ class CreateDataRequestResponse(BaseModel):
     request_status: DataRequestStatus
     run_status: PipelineRunStatus
     current_stage: str
+    celery_task_id: str
     created_at: datetime
 
 
@@ -50,7 +53,37 @@ class PipelineRunResponse(BaseModel):
     run_status: PipelineRunStatus
     current_stage: str | None
     progress_percent: int
+    celery_task_id: str | None
     created_at: datetime
     updated_at: datetime
     stages: list[RunStageResponse]
     events: list[RunEventResponse]
+
+
+class CsvUploadResponse(BaseModel):
+    run_id: int
+    celery_task_id: str
+    filename: str
+    size_bytes: int
+    checksum: str
+    run_status: PipelineRunStatus
+
+
+class StageReviewRequest(BaseModel):
+    """단계 산출물에 대한 사람 검토 결과(HITL)."""
+
+    approved: bool
+    feedback: str | None = Field(default=None, max_length=4000)
+    # 반려 시 되돌아갈 단계를 정하는 근거. 없으면 HUMAN_REJECTED로 처음부터 다시 돈다.
+    failure_code: FailureCode | None = None
+
+
+class StageReviewResponse(BaseModel):
+    run_id: int
+    reviewed_stage: str
+    decision: ReviewDecision
+    run_status: PipelineRunStatus
+    # 승인 후 이어서 진행할 단계. 최종 승인이면 None.
+    next_stage: str | None
+    rollback_to_stage: str | None
+    celery_task_id: str | None

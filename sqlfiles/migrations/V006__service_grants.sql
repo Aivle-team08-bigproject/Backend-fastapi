@@ -22,8 +22,11 @@
 -- ---------------------------------------------------------------------
 GRANT USAGE ON SCHEMA service TO app_svc;
 GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA service TO app_svc;
+GRANT USAGE, SELECT ON ALL SEQUENCES IN SCHEMA service TO app_svc;
 ALTER DEFAULT PRIVILEGES IN SCHEMA service
     GRANT SELECT, INSERT, UPDATE, DELETE ON TABLES TO app_svc;
+ALTER DEFAULT PRIVILEGES IN SCHEMA service
+    GRANT USAGE, SELECT ON SEQUENCES TO app_svc;
 
 -- ---------------------------------------------------------------------
 -- agent_svc — 워커/에이전트 실행. anon 읽기(V6) + service 최소 권한.

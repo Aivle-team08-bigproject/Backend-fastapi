@@ -15,6 +15,10 @@ htmlcov/
 .env
 env
 
+# 로컬 CSV 및 worker 산출물
+data/*
+!data/.gitkeep
+
 # OS가 자동 생성하는 파일
 .DS_Store
 
