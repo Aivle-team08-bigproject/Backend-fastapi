@@ -3,6 +3,7 @@ import uuid
 from fastapi import APIRouter, Depends, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.common.masking import mask_phone
 from app.common.security_deps import CurrentAuth, require_any_permission, require_permission
 from app.db.session import get_db
 from app.common.time_utils import utcnow
@@ -11,14 +12,18 @@ from app.domains.employees.model import (
     AdminAuditLog,
     PERMISSION_DESCRIPTIONS,
     Employee,
+    EmployeeRole,
     PermissionCode,
 )
 from app.domains.employees.schema import (
+    ApproveSignupRequest,
     AuditLogResponse,
     CreateEmployeeRequest,
     CreateEmployeeResponse,
+    DepartmentResponse,
     EmployeeResponse,
     PermissionCatalogItem,
+    RejectSignupRequest,
     ResetPasswordResponse,
     SessionResponse,
     UpdatePermissionsRequest,
@@ -29,20 +34,36 @@ from app.domains.employees import service as employee_service
 
 router = APIRouter(prefix="/api/admin/employees", tags=["employees-admin"])
 session_router = APIRouter(prefix="/api/admin", tags=["session-admin"])
+public_router = APIRouter(prefix="/api/public", tags=["public"])
 
 
 def _to_response(employee: Employee) -> EmployeeResponse:
     return EmployeeResponse(
         employee_code=employee.employee_code,
         name=employee.name,
-        department=employee.department,
+        email=employee.email,
+        phone_masked=mask_phone(employee.phone),
+        department_id=employee.department_id,
+        department_name=employee.department.name if employee.department else None,
+        position=employee.position,
+        role=EmployeeRole(employee.role_code) if employee.role_code else None,
         status=employee.status,
         must_change_password=employee.must_change_password,
         permissions=[p.permission_code for p in employee.permissions],
+        approved_by=employee.approved_by,
+        approved_at=employee.approved_at,
+        rejected_reason=employee.rejected_reason,
+        last_login_at=employee.last_login_at,
         created_by=employee.created_by,
         created_at=employee.created_at,
         updated_at=employee.updated_at,
     )
+
+
+@public_router.get("/departments", response_model=list[DepartmentResponse])
+async def list_departments(db: AsyncSession = Depends(get_db)) -> list[DepartmentResponse]:
+    departments = await employee_service.list_departments(db)
+    return [DepartmentResponse(id=d.id, name=d.name, code=d.code) for d in departments]
 
 
 def _audit_log_to_response(log: AdminAuditLog) -> AuditLogResponse:
@@ -88,6 +109,43 @@ async def list_employees(
 ) -> list[EmployeeResponse]:
     employees = await employee_service.find_all(db)
     return [_to_response(e) for e in employees]
+
+
+@router.get("/signup-requests", response_model=list[EmployeeResponse])
+async def list_signup_requests(
+    auth: CurrentAuth = Depends(
+        require_any_permission(PermissionCode.EMPLOYEE_CREATE, PermissionCode.EMPLOYEE_PERMISSION_MANAGE)
+    ),
+    db: AsyncSession = Depends(get_db),
+) -> list[EmployeeResponse]:
+    employees = await employee_service.list_pending_signups(db)
+    return [_to_response(e) for e in employees]
+
+
+@router.post("/signup-requests/{employee_code}/approve", response_model=EmployeeResponse)
+async def approve_signup_request(
+    employee_code: str,
+    payload: ApproveSignupRequest,
+    auth: CurrentAuth = Depends(require_permission(PermissionCode.EMPLOYEE_PERMISSION_MANAGE)),
+    db: AsyncSession = Depends(get_db),
+) -> EmployeeResponse:
+    employee = await employee_service.approve_signup(
+        db, employee_code, payload, auth.employee.employee_code
+    )
+    return _to_response(employee)
+
+
+@router.post("/signup-requests/{employee_code}/reject", response_model=EmployeeResponse)
+async def reject_signup_request(
+    employee_code: str,
+    payload: RejectSignupRequest,
+    auth: CurrentAuth = Depends(require_permission(PermissionCode.EMPLOYEE_UPDATE)),
+    db: AsyncSession = Depends(get_db),
+) -> EmployeeResponse:
+    employee = await employee_service.reject_signup(
+        db, employee_code, payload.reason, auth.employee.employee_code
+    )
+    return _to_response(employee)
 
 
 @router.get("/{employee_code}", response_model=EmployeeResponse)

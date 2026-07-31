@@ -12,9 +12,12 @@ from app.domains.auth.schema.auth_schema import (
     EmployeeSummary,
     LoginRequest,
     LoginResponse,
+    SignupRequest,
+    SignupResponse,
     TokenResponse,
 )
 from app.domains.auth.service import auth_service
+from app.domains.employees import service as employee_service
 from app.domains.employees.model import Employee
 
 router = APIRouter(prefix="/api/auth", tags=["auth"])
@@ -27,7 +30,10 @@ def _to_summary(
     return EmployeeSummary(
         employee_code=employee.employee_code,
         name=employee.name,
-        department=employee.department,
+        email=employee.email,
+        department_id=employee.department_id,
+        department_name=employee.department.name if employee.department else None,
+        role=employee.role_code,
         status=employee.status.value,
         must_change_password=employee.must_change_password,
         permissions=sorted(
@@ -65,6 +71,21 @@ def _clear_refresh_cookie(response: Response) -> None:
         samesite=settings.cookie_samesite,
         domain=settings.cookie_domain or None,
         path="/api/auth",
+    )
+
+
+@router.post("/signup", response_model=SignupResponse)
+async def signup(
+    payload: SignupRequest,
+    request: Request,
+    db: AsyncSession = Depends(get_db),
+) -> SignupResponse:
+    ip_address = request.client.host if request.client else None
+    employee = await employee_service.signup(db, payload, ip_address)
+    return SignupResponse(
+        employee_code=employee.employee_code,
+        email=employee.email,
+        status=employee.status.value,
     )
 
 
