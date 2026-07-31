@@ -12,9 +12,12 @@ os.environ.setdefault(
 os.environ.setdefault("JWT_SECRET", "test-only-jwt-secret-at-least-32-bytes-long-2026")
 os.environ.setdefault("BOOTSTRAP_ADMIN_PASSWORD", "TestAdmin!2026Secure")
 os.environ.setdefault("BOOTSTRAP_ADMIN_ID", "HANA-ADMIN-001")
+os.environ.setdefault("BOOTSTRAP_ADMIN_EMAIL", "admin@company.com")
+os.environ.setdefault("ALLOWED_EMAIL_DOMAINS", "company.com")
 
 BOOTSTRAP_ADMIN_PASSWORD = os.environ["BOOTSTRAP_ADMIN_PASSWORD"]
 BOOTSTRAP_ADMIN_ID = os.environ["BOOTSTRAP_ADMIN_ID"]
+BOOTSTRAP_ADMIN_EMAIL = os.environ["BOOTSTRAP_ADMIN_EMAIL"]
 
 
 @pytest.fixture(scope="session", autouse=True)
@@ -42,3 +45,13 @@ def settings():
     from app.core.config import settings as app_settings
 
     return app_settings
+
+
+def department_id(client, name: str = "데이터사업팀") -> int:
+    """마이그레이션이 심어둔 기본 부서 목록에서 이름으로 id를 찾는다 (테스트 전용 헬퍼)."""
+    response = client.get("/api/public/departments")
+    assert response.status_code == 200, response.text
+    for item in response.json():
+        if item["name"] == name:
+            return item["id"]
+    raise AssertionError(f"'{name}' 부서를 찾을 수 없습니다 (마이그레이션 기본 부서 목록 확인 필요)")

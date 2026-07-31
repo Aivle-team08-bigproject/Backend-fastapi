@@ -1,3 +1,4 @@
+import secrets
 import uuid
 
 from sqlalchemy import select, update
@@ -8,15 +9,22 @@ from app.core import security
 from app.common.time_utils import utcnow
 from app.common.errors import bad_request, conflict, not_found
 from app.domains.auth.model.session_model import LoginSession
+from app.domains.auth.schema.auth_schema import SignupRequest
 from app.domains.employees.model import (
     AdminAuditLog,
+    Department,
     Employee,
     EmployeePermission,
     EmployeeRole,
     EmployeeStatus,
     PermissionCode,
 )
-from app.domains.employees.schema import CreateEmployeeRequest
+from app.domains.employees.schema import ApproveSignupRequest, CreateEmployeeRequest
+
+# 회원가입 시점에 동의받는 약관 버전. 실제 약관 문서를 별도로 관리하게 되면
+# 그 컨텐츠의 버전과 맞춰서 갱신한다.
+TERMS_VERSION = "2026-01"
+PRIVACY_VERSION = "2026-01"
 
 async def _find_employee(db: AsyncSession, employee_code: str) -> Employee:
     result = await db.execute(
@@ -80,6 +88,41 @@ async def _count_other_active_permission_holders(
     )
     return len(result.all())
 
+async def _assert_email_available(db: AsyncSession, email: str) -> None:
+    existing = await db.execute(select(Employee.id).where(Employee.email == email))
+    if existing.scalar_one_or_none() is not None:
+        raise conflict("EMAIL_ALREADY_REGISTERED", "이미 사용 중인 이메일입니다.")
+
+
+async def _assert_department_active(db: AsyncSession, department_id: int) -> None:
+    result = await db.execute(
+        select(Department.id).where(Department.id == department_id, Department.is_active.is_(True))
+    )
+    if result.scalar_one_or_none() is None:
+        raise bad_request("DEPARTMENT_NOT_FOUND", "존재하지 않거나 비활성화된 부서입니다.")
+
+
+async def list_departments(db: AsyncSession) -> list[Department]:
+    result = await db.execute(
+        select(Department).where(Department.is_active.is_(True)).order_by(Department.name.asc())
+    )
+    return list(result.scalars().all())
+
+
+async def _generate_unique_employee_code(db: AsyncSession) -> str:
+    """자기 가입자는 사번을 직접 정하지 않으므로 서버가 발급한다.
+
+    PENDING_APPROVAL 상태에서는 로그인에 employee_code를 쓰지 않으니 형식보다는
+    유일성이 중요하다. 충돌 시 재시도한다 (실제로 충돌할 확률은 매우 낮다).
+    """
+    for _ in range(5):
+        candidate = f"SU-{secrets.token_hex(4).upper()}"
+        existing = await db.execute(select(Employee.id).where(Employee.employee_code == candidate))
+        if existing.scalar_one_or_none() is None:
+            return candidate
+    raise conflict("EMPLOYEE_CODE_GENERATION_FAILED", "사번 발급에 실패했습니다. 다시 시도해주세요.")
+
+
 async def create_employee(
     db: AsyncSession, payload: CreateEmployeeRequest, created_by: str
 ) -> tuple[Employee, str]:
@@ -88,6 +131,8 @@ async def create_employee(
     )
     if existing.scalar_one_or_none() is not None:
         raise conflict("EMPLOYEE_CODE_DUPLICATED", "이미 사용 중인 직원 ID입니다.")
+    await _assert_email_available(db, payload.email)
+    await _assert_department_active(db, payload.department_id)
 
     temporary_password = security.generate_temporary_password()
     now = utcnow()
@@ -95,7 +140,8 @@ async def create_employee(
     employee = Employee(
         employee_code=payload.employee_code,
         name=payload.name,
-        department=payload.department,
+        email=payload.email,
+        department_id=payload.department_id,
         password_hash=security.hash_password(temporary_password),
         status=EmployeeStatus.ACTIVE,
         must_change_password=True,
@@ -121,6 +167,112 @@ async def create_employee(
     await db.refresh(employee, attribute_names=["permissions"])
 
     return employee, temporary_password
+
+
+async def signup(db: AsyncSession, payload: SignupRequest) -> Employee:
+    """직원 자율 회원가입. role/permissions는 절대 요청에서 받지 않고, 승인 전까지는
+    권한 없이 PENDING_APPROVAL 상태로만 만든다 (관리자 승인 → 권한 부여 흐름)."""
+    await _assert_email_available(db, payload.email)
+    await _assert_department_active(db, payload.department_id)
+    employee_code = await _generate_unique_employee_code(db)
+    now = utcnow()
+
+    employee = Employee(
+        employee_code=employee_code,
+        name=payload.name,
+        email=payload.email,
+        phone=payload.phone,
+        department_id=payload.department_id,
+        position=payload.position,
+        password_hash=security.hash_password(payload.password),
+        status=EmployeeStatus.PENDING_APPROVAL,
+        must_change_password=False,
+        failed_login_count=0,
+        auth_version=1,
+        terms_agreed_at=now,
+        terms_version=TERMS_VERSION,
+        privacy_agreed_at=now,
+        privacy_version=PRIVACY_VERSION,
+        created_by="SELF_SIGNUP",
+        created_at=now,
+        updated_at=now,
+    )
+
+    db.add(employee)
+    await db.commit()
+    await db.refresh(employee, attribute_names=["permissions"])
+
+    return employee
+
+
+async def list_pending_signups(db: AsyncSession) -> list[Employee]:
+    result = await db.execute(
+        select(Employee)
+        .options(selectinload(Employee.permissions))
+        .where(Employee.status == EmployeeStatus.PENDING_APPROVAL)
+        .order_by(Employee.created_at.asc())
+    )
+    return list(result.scalars().all())
+
+
+async def approve_signup(
+    db: AsyncSession, employee_code: str, payload: ApproveSignupRequest, operator_code: str
+) -> Employee:
+    employee = await _find_employee(db, employee_code)
+    if employee.status != EmployeeStatus.PENDING_APPROVAL:
+        raise bad_request("SIGNUP_NOT_PENDING", "승인 대기 중인 가입 신청이 아닙니다.")
+
+    now = utcnow()
+    if payload.department_id is not None:
+        await _assert_department_active(db, payload.department_id)
+        employee.department_id = payload.department_id
+    if payload.position is not None:
+        employee.position = payload.position
+
+    employee.status = EmployeeStatus.ACTIVE
+    employee.approved_by = operator_code
+    employee.approved_at = now
+    employee.permissions = [
+        EmployeePermission(permission_code=code) for code in ROLE_PERMISSIONS[payload.role]
+    ]
+    employee.auth_version += 1
+    employee.updated_at = now
+
+    await _record_audit_log(
+        db,
+        actor_employee_code=operator_code,
+        action="EMPLOYEE_SIGNUP_APPROVED",
+        target_employee_code=employee_code,
+        detail=f"role={payload.role.value}",
+    )
+    await db.commit()
+    await db.refresh(employee, attribute_names=["permissions"])
+
+    return employee
+
+
+async def reject_signup(
+    db: AsyncSession, employee_code: str, reason: str, operator_code: str
+) -> Employee:
+    employee = await _find_employee(db, employee_code)
+    if employee.status != EmployeeStatus.PENDING_APPROVAL:
+        raise bad_request("SIGNUP_NOT_PENDING", "승인 대기 중인 가입 신청이 아닙니다.")
+
+    employee.status = EmployeeStatus.REJECTED
+    employee.rejected_reason = reason
+    employee.auth_version += 1
+    employee.updated_at = utcnow()
+
+    await _record_audit_log(
+        db,
+        actor_employee_code=operator_code,
+        action="EMPLOYEE_SIGNUP_REJECTED",
+        target_employee_code=employee_code,
+        detail=reason,
+    )
+    await db.commit()
+
+    return employee
 
 async def find_all(db: AsyncSession) -> list[Employee]:
     result = await db.execute(

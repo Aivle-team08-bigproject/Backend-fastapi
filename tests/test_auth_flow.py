@@ -1,6 +1,6 @@
 """로그인 → 비밀번호 강제변경 → 직원 생성 → 권한관리 → 갱신 → 계정잠금까지 전체 흐름 검증."""
 
-from tests.conftest import BOOTSTRAP_ADMIN_ID, BOOTSTRAP_ADMIN_PASSWORD
+from tests.conftest import BOOTSTRAP_ADMIN_EMAIL, BOOTSTRAP_ADMIN_ID, BOOTSTRAP_ADMIN_PASSWORD, department_id
 
 CHANGED_ADMIN_PASSWORD = "HanaAdmin!2026Rotated"
 
@@ -11,7 +11,7 @@ def _login_as_admin(client) -> dict:
     for password in (BOOTSTRAP_ADMIN_PASSWORD, CHANGED_ADMIN_PASSWORD):
         response = client.post(
             "/api/auth/login",
-            json={"employee_code": BOOTSTRAP_ADMIN_ID, "password": password, "remember_me": False},
+            json={"email": BOOTSTRAP_ADMIN_EMAIL, "password": password, "remember_me": False},
         )
         if response.status_code == 200:
             body = response.json()
@@ -25,7 +25,7 @@ def _login_as_admin(client) -> dict:
                 response = client.post(
                     "/api/auth/login",
                     json={
-                        "employee_code": BOOTSTRAP_ADMIN_ID,
+                        "email": BOOTSTRAP_ADMIN_EMAIL,
                         "password": CHANGED_ADMIN_PASSWORD,
                         "remember_me": False,
                     },
@@ -38,7 +38,7 @@ def _login_as_admin(client) -> dict:
 def test_password_change_required_before_business_api(client):
     response = client.post(
         "/api/auth/login",
-        json={"employee_code": BOOTSTRAP_ADMIN_ID, "password": BOOTSTRAP_ADMIN_PASSWORD, "remember_me": False},
+        json={"email": BOOTSTRAP_ADMIN_EMAIL, "password": BOOTSTRAP_ADMIN_PASSWORD, "remember_me": False},
     )
     if response.status_code != 200:
         # 다른 테스트가 이미 비밀번호를 바꿔놨다면 이 테스트는 의미가 없으니 건너뛴다.
@@ -57,13 +57,16 @@ def test_password_change_required_before_business_api(client):
 def test_create_employee_and_login(client):
     headers = _login_as_admin(client)
 
+    dept_id = department_id(client)
+
     created = client.post(
         "/api/admin/employees",
         headers=headers,
         json={
             "employee_code": "HANA-TEST-001",
             "name": "홍길동",
-            "department": "데이터사업팀",
+            "email": "hana-test-001@company.com",
+            "department_id": dept_id,
             "permissions": ["DATA_PRODUCT_READ", "QUOTE_READ"],
         },
     )
@@ -78,7 +81,8 @@ def test_create_employee_and_login(client):
         json={
             "employee_code": "HANA-TEST-001",
             "name": "가짜",
-            "department": "x",
+            "email": "hana-test-001-dup@company.com",
+            "department_id": dept_id,
             "permissions": [],
         },
     )
@@ -87,7 +91,7 @@ def test_create_employee_and_login(client):
     login = client.post(
         "/api/auth/login",
         json={
-            "employee_code": "HANA-TEST-001",
+            "email": "hana-test-001@company.com",
             "password": body["temporary_password"],
             "remember_me": False,
         },
@@ -106,7 +110,8 @@ def test_update_permissions_with_overlap_does_not_fail(client):
         json={
             "employee_code": "HANA-TEST-002",
             "name": "테스트2",
-            "department": "x",
+            "email": "hana-test-002@company.com",
+            "department_id": department_id(client),
             "permissions": ["DATA_PRODUCT_READ", "QUOTE_READ"],
         },
     )
@@ -128,7 +133,8 @@ def test_update_role_applies_server_side_permission_profile(client):
         json={
             "employee_code": "HANA-ROLE-001",
             "name": "역할 테스트",
-            "department": "데이터사업팀",
+            "email": "hana-role-001@company.com",
+            "department_id": department_id(client),
             "permissions": ["DATA_PRODUCT_READ"],
         },
     )
@@ -175,12 +181,12 @@ def test_login_lockout_after_five_failures(client):
     for _ in range(5):
         client.post(
             "/api/auth/login",
-            json={"employee_code": "HANA-TEST-001", "password": "wrong-password", "remember_me": False},
+            json={"email": "hana-test-001@company.com", "password": "wrong-password", "remember_me": False},
         )
 
     locked = client.post(
         "/api/auth/login",
-        json={"employee_code": "HANA-TEST-001", "password": "wrong-password", "remember_me": False},
+        json={"email": "hana-test-001@company.com", "password": "wrong-password", "remember_me": False},
     )
     assert locked.status_code == 403
     assert locked.json()["detail"]["code"] == "ACCOUNT_LOCKED"

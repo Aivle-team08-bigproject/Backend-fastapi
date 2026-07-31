@@ -167,7 +167,7 @@ async def get_my_task_status(db: AsyncSession, employee: Employee) -> MyTaskStat
     return MyTaskStatusResponse(
         employee_code=employee.employee_code,
         user_name=employee.name,
-        department=employee.department,
+        department=employee.department.name if employee.department else "",
         active_count=len(active_tasks),
         urgent_count=sum(task.status == "요구사항 분석" for task in active_tasks),
         completed_count=completed_count,
@@ -408,7 +408,7 @@ async def get_member_management(db: AsyncSession) -> MemberManagementResponse:
                 role=role,
                 role_bg=role_bg,
                 role_color=role_color,
-                part=employee.department,
+                part=employee.department.name if employee.department else "",
                 last_login_at=employee.updated_at.strftime("%Y.%m.%d %H:%M"),
                 status="활성" if employee.status == EmployeeStatus.ACTIVE else "비활성",
             )

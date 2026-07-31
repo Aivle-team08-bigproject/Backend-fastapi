@@ -21,7 +21,9 @@ class AdminAuditLog(Base):
 
 
 class EmployeeStatus(str, enum.Enum):
+    PENDING_APPROVAL = "PENDING_APPROVAL"
     ACTIVE = "ACTIVE"
+    REJECTED = "REJECTED"
     LOCKED = "LOCKED"
     DISABLED = "DISABLED"
 
@@ -31,6 +33,16 @@ class EmployeeRole(str, enum.Enum):
     MANAGER = "MANAGER"
     SENIOR = "SENIOR"
     GENERAL = "GENERAL"
+
+
+class PositionType(str, enum.Enum):
+    """직급. role(시스템 권한)과는 별개의 조직 정보이며 자동으로 권한과 연결되지 않는다."""
+
+    STAFF = "STAFF"
+    ASSISTANT_MANAGER = "ASSISTANT_MANAGER"
+    MANAGER = "MANAGER"
+    DEPUTY_GENERAL_MANAGER = "DEPUTY_GENERAL_MANAGER"
+    GENERAL_MANAGER = "GENERAL_MANAGER"
 
 
 class PermissionCode(str, enum.Enum):
@@ -62,13 +74,33 @@ PERMISSION_DESCRIPTIONS: dict[PermissionCode, str] = {
 }
 
 
+class Department(Base):
+    """부서. 자유 문자열로 두면 오탈자로 같은 부서가 여러 형태로 저장될 수 있어 별도 테이블로 관리한다."""
+
+    __tablename__ = "departments"
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    name: Mapped[str] = mapped_column(String(100), unique=True, nullable=False)
+    code: Mapped[str] = mapped_column(String(40), unique=True, nullable=False)
+    is_active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+
 class Employee(Base):
     __tablename__ = "employees"
 
     id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
     employee_code: Mapped[str] = mapped_column(String(40), unique=True, nullable=False, index=True)
     name: Mapped[str] = mapped_column(String(100), nullable=False)
-    department: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    email: Mapped[str] = mapped_column(String(255), unique=True, nullable=False, index=True)
+    phone: Mapped[str | None] = mapped_column(String(20), nullable=True)
+    department_id: Mapped[int | None] = mapped_column(
+        BigInteger, ForeignKey("service.departments.id"), nullable=True, index=True
+    )
+    position: Mapped[PositionType | None] = mapped_column(
+        SAEnum(PositionType, native_enum=False, length=30), nullable=True
+    )
     password_hash: Mapped[str] = mapped_column(String(255), nullable=False)
     status: Mapped[EmployeeStatus] = mapped_column(
         SAEnum(EmployeeStatus, native_enum=False, length=20), nullable=False, default=EmployeeStatus.ACTIVE
@@ -77,6 +109,19 @@ class Employee(Base):
     failed_login_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     locked_until: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     auth_version: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
+
+    # 회원가입 시 동의한 약관 이력. Boolean 하나만 두면 나중에 약관이 바뀌었을 때
+    # 어떤 버전에 동의했는지 알 수 없으므로 시각과 버전을 같이 남긴다.
+    terms_agreed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    terms_version: Mapped[str | None] = mapped_column(String(20), nullable=True)
+    privacy_agreed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    privacy_version: Mapped[str | None] = mapped_column(String(20), nullable=True)
+
+    # 관리자 승인/거절 이력
+    approved_by: Mapped[str | None] = mapped_column(String(40), nullable=True)
+    approved_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    rejected_reason: Mapped[str | None] = mapped_column(String(500), nullable=True)
+
     created_by: Mapped[str] = mapped_column(String(40), nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
@@ -86,6 +131,7 @@ class Employee(Base):
         cascade="all, delete-orphan",
         lazy="selectin",  # 직원을 읽을 때 권한도 항상 같이 로드 (N+1 방지)
     )
+    department: Mapped["Department | None"] = relationship(lazy="selectin")
 
 
 class EmployeePermission(Base):

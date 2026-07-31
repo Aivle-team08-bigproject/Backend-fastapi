@@ -1,15 +1,37 @@
 from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core import security
 from app.core.config import settings
 from app.common.time_utils import utcnow
 from app.db.session import AsyncSessionLocal
 from app.domains.employees.model import (
+    Department,
     Employee,
     EmployeePermission,
     EmployeeStatus,
     PermissionCode,
 )
+
+
+async def _ensure_department(db: AsyncSession, name: str) -> int:
+    """이름으로 부서를 찾고, 없으면 만들어서 id를 반환한다 (부트스트랩 전용 get-or-create)."""
+    result = await db.execute(select(Department.id).where(Department.name == name))
+    department_id = result.scalar_one_or_none()
+    if department_id is not None:
+        return department_id
+
+    now = utcnow()
+    department = Department(
+        name=name,
+        code=f"DEPT-{name}",
+        is_active=True,
+        created_at=now,
+        updated_at=now,
+    )
+    db.add(department)
+    await db.flush()
+    return department.id
 
 
 async def ensure_bootstrap_admin() -> None:
@@ -25,11 +47,14 @@ async def ensure_bootstrap_admin() -> None:
         if result.scalar_one_or_none() is not None:
             return
 
+        department_id = await _ensure_department(db, settings.bootstrap_admin_department)
+
         now = utcnow()
         admin = Employee(
             employee_code=settings.bootstrap_admin_id,
             name=settings.bootstrap_admin_name,
-            department=settings.bootstrap_admin_department,
+            email=settings.bootstrap_admin_email,
+            department_id=department_id,
             password_hash=security.hash_password(settings.bootstrap_admin_password),
             status=EmployeeStatus.ACTIVE,
             must_change_password=True,

@@ -42,7 +42,7 @@ def _absolute_ttl(remember_me: bool) -> timedelta:
 
 
 def _invalid_credentials():
-    return unauthorized("INVALID_CREDENTIALS", "직원 ID 또는 비밀번호가 올바르지 않습니다.")
+    return unauthorized("INVALID_CREDENTIALS", "이메일 또는 비밀번호가 올바르지 않습니다.")
 
 
 async def _find_employee(db: AsyncSession, employee_code: str) -> Employee:
@@ -89,13 +89,19 @@ async def login(
     result = await db.execute(
         select(Employee)
         .options(selectinload(Employee.permissions))
-        .where(Employee.employee_code == payload.employee_code)
+        .where(Employee.email == payload.email)
     )
     employee = result.scalar_one_or_none()
     if employee is None:
         raise _invalid_credentials()
 
     now = utcnow()
+
+    if employee.status == EmployeeStatus.PENDING_APPROVAL:
+        raise forbidden("SIGNUP_PENDING_APPROVAL", "관리자 승인 대기 중인 계정입니다.")
+
+    if employee.status == EmployeeStatus.REJECTED:
+        raise forbidden("SIGNUP_REJECTED", "가입 신청이 거절된 계정입니다. 관리자에게 문의해주세요.")
 
     if employee.status == EmployeeStatus.DISABLED:
         raise forbidden("ACCOUNT_DISABLED", "사용이 중지된 직원 계정입니다. 관리자에게 문의해주세요.")
@@ -141,7 +147,7 @@ async def login(
         session_id=session.id,
         auth_version=employee.auth_version,
         name=employee.name,
-        department=employee.department,
+        department=employee.department.name if employee.department else None,
     )
 
     await db.commit()
@@ -278,7 +284,7 @@ async def refresh(
             session_id=session.id,
             auth_version=employee.auth_version,
             name=employee.name,
-            department=employee.department,
+            department=employee.department.name if employee.department else None,
         )
     )
 
