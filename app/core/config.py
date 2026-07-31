@@ -77,6 +77,20 @@ class Settings(BaseSettings):
     bootstrap_admin_password: str
     bootstrap_admin_name: str = "최초 관리자"
     bootstrap_admin_department: str = "IT관리팀"
+    bootstrap_admin_email: str = "admin@company.com"
+
+    # --- 회원가입 ---
+    # 회사 직원만 가입할 수 있도록 이메일 도메인을 제한한다. 콤마로 여러 도메인을 나열할 수 있고,
+    # JSON 형식이 아니므로 .env에 배열 문법 없이 바로 적으면 된다. 값을 바꾼 뒤에는 재배포(재시작)만
+    # 하면 되고 코드 수정은 필요 없다.
+    allowed_email_domains: str = "company.com"
+
+    def allowed_email_domain_list(self) -> list[str]:
+        return [
+            domain.strip().lower()
+            for domain in self.allowed_email_domains.split(",")
+            if domain.strip()
+        ]
 
     # 자동화 파이프라인 에이전트(요구사항 분석 등)의 모델/API 설정은 여기 없다 —
     # agent_runtime/ 아래 각 에이전트가 자체 설정을 갖는다. FastAPI 앱은 에이전트를
