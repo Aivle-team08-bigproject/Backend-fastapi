@@ -11,7 +11,7 @@ from app.core import security
 from app.db.session import AsyncSessionLocal
 from app.domains.auth.model.session_model import LoginSession
 from app.domains.dashboard.model import TaskViewSnapshot
-from app.domains.employees.model import Employee, EmployeePermission, EmployeeStatus
+from app.domains.employees.model import Department, Employee, EmployeePermission, EmployeeStatus
 from app.domains.pipeline.model import (
     Client,
     DataRequest,
@@ -198,7 +198,7 @@ class DashboardFixtureFactory:
         employee = Employee(
             employee_code=f"DASH-{marker}",
             name=f"대시보드 담당자 {marker}",
-            department="데이터사업팀",
+            email=f"dash-{marker}@company.com".lower(),
             password_hash=security.hash_password(password),
             status=EmployeeStatus.ACTIVE,
             must_change_password=False,
@@ -210,6 +210,16 @@ class DashboardFixtureFactory:
         )
 
         async with AsyncSessionLocal() as db:
+            department_id = await db.scalar(select(Department.id).where(Department.name == "데이터사업팀"))
+            if department_id is None:
+                department = Department(
+                    name="데이터사업팀", code="DEPT-데이터사업팀", is_active=True, created_at=now, updated_at=now
+                )
+                db.add(department)
+                await db.flush()
+                department_id = department.id
+            employee.department_id = department_id
+
             db.add_all([customer, employee])
             await db.flush()
 

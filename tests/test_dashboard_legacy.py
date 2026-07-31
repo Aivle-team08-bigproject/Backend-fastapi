@@ -33,7 +33,7 @@ def _login_as_fixture_employee(client: TestClient, record) -> dict:
     response = client.post(
         "/api/auth/login",
         json={
-            "employee_code": record.employee.employee_code,
+            "email": record.employee.email,
             "password": record.password,
             "remember_me": False,
         },
