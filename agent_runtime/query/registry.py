@@ -14,7 +14,7 @@ from sqlalchemy import (
 )
 
 
-metadata = MetaData(schema="anon")
+metadata = MetaData(schema="anonymized")
 
 customers = Table(
     "customers",

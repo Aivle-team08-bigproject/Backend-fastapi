@@ -22,6 +22,8 @@ def validate_stage_output(stage_name: StageName, output: dict) -> dict:
     if stage_name == StageName.DATA_SELECTION:
         required = [
             "selected_tables",
+            "source_columns",
+            "derived_columns",
             "selection_query",
             "sample_columns",
             "sample_rows",
@@ -31,6 +33,44 @@ def validate_stage_output(stage_name: StageName, output: dict) -> dict:
         if not output.get("selected_tables"):
             errors.append("selected_tables must not be empty")
             failure_code = FailureCode.INSUFFICIENT_DATA
+        source_columns = output.get("source_columns")
+        derived_columns = output.get("derived_columns")
+        selection_query = output.get("selection_query")
+        if not isinstance(source_columns, list) or not source_columns:
+            errors.append("source_columns must be a non-empty list")
+        if not isinstance(derived_columns, list):
+            errors.append("derived_columns must be a list")
+        if not isinstance(selection_query, dict):
+            errors.append("selection_query must be a JSON object")
+        elif any(
+            key in selection_query
+            for key in ("top_k", "limit", "vector_similarity")
+        ):
+            errors.append("selection_query must not control row count or vector search")
+        elif isinstance(source_columns, list):
+            source_names = {
+                column.get("column")
+                for column in source_columns
+                if isinstance(column, dict) and column.get("column")
+            }
+            if set(selection_query.get("columns") or []) != source_names:
+                errors.append("selection_query.columns must match source_columns")
+        if isinstance(derived_columns, list) and isinstance(source_columns, list):
+            source_names = {
+                column.get("column")
+                for column in source_columns
+                if isinstance(column, dict) and column.get("column")
+            }
+            for index, column in enumerate(derived_columns):
+                references = column.get("source_columns") if isinstance(column, dict) else None
+                if (
+                    not isinstance(references, list)
+                    or not references
+                    or not set(references).issubset(source_names)
+                ):
+                    errors.append(
+                        f"derived_columns[{index}] must reference selected source columns"
+                    )
         sample_columns = output.get("sample_columns")
         sample_rows = output.get("sample_rows")
         sample_metadata = output.get("sample_metadata")

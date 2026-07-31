@@ -47,14 +47,60 @@ class StubAgents:
 
         if agent_name == "data-selection-agent":
             columns = [
-                {"name": "지역", "data_type": "string", "is_predicted": False, "description": "지역"},
-                {"name": "결제건수", "data_type": "integer", "is_predicted": True, "description": "건수"},
+                {
+                    "name": "merchant_region",
+                    "data_type": "string",
+                    "is_derived": False,
+                    "source_columns": ["merchant_region"],
+                    "description": "가맹점 지역",
+                },
+                {
+                    "name": "결제건수",
+                    "data_type": "integer",
+                    "is_derived": True,
+                    "source_columns": ["transaction_id"],
+                    "description": "지역별 거래 ID 개수",
+                },
             ]
             return {
-                "selected_tables": [{"table": "transaction_pseudonymized", "reason": "결제 분석"}],
-                "selection_query": {"vector_similarity": True, "top_k": 20, "filters": {}},
+                "selected_tables": [
+                    {"table": "transaction_pseudonymized", "reason": "결제 분석"},
+                    {"table": "merchant", "reason": "지역 정보"},
+                ],
+                "source_columns": [
+                    {
+                        "dataset": "transaction_pseudonymized",
+                        "column": "transaction_id",
+                        "data_type": "character varying",
+                        "comment": "거래 식별자",
+                        "reason": "결제 건수 계산",
+                    },
+                    {
+                        "dataset": "merchant",
+                        "column": "merchant_region",
+                        "data_type": "character varying",
+                        "comment": "가맹점 지역",
+                        "reason": "지역 구분",
+                    },
+                ],
+                "derived_columns": [
+                    {
+                        "name": "결제건수",
+                        "data_type": "integer",
+                        "source_columns": ["transaction_id"],
+                        "derivation": "merchant_region별 transaction_id 개수",
+                        "description": "지역별 결제 건수",
+                    }
+                ],
+                "selection_query": {
+                    "columns": ["transaction_id", "merchant_region"],
+                    "filters": {},
+                },
                 "sample_columns": columns,
-                "sample_rows": [{"지역": "서울", "결제건수": i} for i in range(1, 6)],
+                "sample_rows": [
+                    {"merchant_region": "서울", "결제건수": i}
+                    for i in range(1, 6)
+                ],
                 "sample_metadata": {"is_synthetic": True, "sample_count": 5},
             }
 
