@@ -1,6 +1,21 @@
 # hanacard 로컬 개발용 PostgreSQL
 # 스키마와 seed 데이터는 sqlfiles/bootstrap.sh로 구성한다.
 services:
+  redis:
+    image: redis:7.4-alpine
+    container_name: hanacard-redis
+    restart: unless-stopped
+    command: ["redis-server", "--appendonly", "yes"]
+    ports:
+      - "${REDIS_PORT:-6379}:6379"
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
   db:
     image: postgres:17-alpine
     container_name: hanacard-postgres
@@ -15,7 +30,7 @@ services:
     ports:
       - "${POSTGRES_PORT:-5432}:5432"
     volumes:
-      - postgres_data:/var/lib/postgresql/data
+      - postgres17_data:/var/lib/postgresql/data
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-postgres} -d ${POSTGRES_DB:-hanacard}"]
       interval: 10s
@@ -23,5 +38,58 @@ services:
       retries: 5
       start_period: 10s
 
+  api:
+    build: .
+    container_name: hanacard-api
+    restart: unless-stopped
+    env_file: .env
+    ports:
+      - "${API_PORT:-8000}:8000"
+    environment:
+      PYTHONPATH: /app
+      DATABASE_HOST_OVERRIDE: db
+      CELERY_BROKER_URL: redis://redis:6379/0
+      CELERY_RESULT_BACKEND: redis://redis:6379/1
+      WORKER_STATUS_REDIS_URL: redis://redis:6379/2
+      UPLOAD_ROOT: /app/uploads
+      PIPELINE_QUERY_SOURCE: ${PIPELINE_QUERY_SOURCE:-csv}
+    volumes:
+      - uploaded_data:/app/uploads
+    depends_on:
+      redis:
+        condition: service_healthy
+      db:
+        condition: service_healthy
+
+  celery-worker:
+    build: .
+    container_name: hanacard-celery-worker
+    restart: unless-stopped
+    env_file: .env
+    command: celery -A app.worker.celery_app:celery_app worker --loglevel=INFO --concurrency=2
+    environment:
+      PYTHONPATH: /app
+      DATABASE_HOST_OVERRIDE: db
+      CELERY_BROKER_URL: redis://redis:6379/0
+      CELERY_RESULT_BACKEND: redis://redis:6379/1
+      WORKER_STATUS_REDIS_URL: redis://redis:6379/2
+      UPLOAD_ROOT: /app/uploads
+      PIPELINE_QUERY_SOURCE: ${PIPELINE_QUERY_SOURCE:-csv}
+      # 단계 에이전트(agent_runtime/)가 이 worker 안에서 돌기 때문에 필요한 설정.
+      # data_processing/processor.py가 식별자 가명화 키와 파일 경로 제한에 쓴다.
+      DATA_ANONYMIZATION_KEY: ${DATA_ANONYMIZATION_KEY:-}
+      DATA_RETRIEVAL_ALLOWED_ROOT: /data
+      DATA_RETRIEVAL_OUTPUT_ROOT: /data/jobs
+    volumes:
+      - uploaded_data:/app/uploads
+      - ./data:/data
+    depends_on:
+      redis:
+        condition: service_healthy
+      db:
+        condition: service_healthy
+
 volumes:
-  postgres_data:
+  postgres17_data:
+  uploaded_data:
+  redis_data:
