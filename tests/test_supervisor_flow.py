@@ -23,8 +23,7 @@ from tests.test_auth_flow import _login_as_admin
 
 def _sync_engine():
     """검증용 동기 엔진 — API가 쓴 결과를 앱 세션 밖에서 읽는다."""
-    url = settings.runtime_database_url(settings.hanacard_app_database_url)
-    return create_engine(url.replace("+psycopg", "+psycopg"), future=True)
+    return create_engine(settings.hanacard_app_database_url, future=True)
 
 
 class StubAgents:

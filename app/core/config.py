@@ -1,7 +1,6 @@
 from decimal import Decimal
 
 from pydantic_settings import BaseSettings, SettingsConfigDict
-from sqlalchemy.engine import make_url
 
 
 class Settings(BaseSettings):
@@ -35,7 +34,6 @@ class Settings(BaseSettings):
     upload_root: str = "/app/uploads"
     csv_upload_max_bytes: int = 50 * 1024 * 1024
     pipeline_query_source: str = "csv"
-    database_host_override: str | None = None
 
     # --- 개발자 대시보드 ---
     dashboard_usd_to_krw_rate: Decimal = Decimal("1330")
@@ -107,10 +105,5 @@ class Settings(BaseSettings):
     # 익명화 배치에서 사용하는 가맹점 가명화 salt. 저장소에는 두지 않는다.
     anon_hash_salt: str = ""
 
-    def runtime_database_url(self, url: str) -> str:
-        """Docker에서는 자격증명을 유지한 채 DB 호스트만 service name으로 치환한다."""
-        if not self.database_host_override:
-            return url
-        return make_url(url).set(host=self.database_host_override).render_as_string(hide_password=False)
 
 settings = Settings()
