@@ -4,8 +4,8 @@ service 스키마 전체 + mart 스키마(담당자 대시보드용)에 사용�
 agent_svc 세션(app/db/portfolio_agent_session.py)과 엔진을 공유하지 않는다.
 
 Base: 이 엔진으로 매핑할 ORM 모델(app/domains/requirements 등)의 메타데이터.
-테이블은 이미 sqlfiles/V7 DDL로 존재하므로 create_all()은 쓰지 않는다
-(app/db/session.py의 init_db()와 달리, 여기선 마이그레이션 주체가 SQL 파일이다).
+테이블은 NeonDB에 이미 구성돼 있으므로 create_all()은 쓰지 않는다
+(app/db/session.py의 init_db()와 달리, 여기선 마이그레이션 주체가 Alembic/NeonDB다).
 """
 
 from collections.abc import AsyncGenerator
@@ -21,7 +21,7 @@ class Base(DeclarativeBase):
 
 
 engine = create_async_engine(
-    settings.runtime_database_url(settings.portfolio_app_database_url),
+    settings.portfolio_app_database_url,
     echo=False,
     future=True,
     pool_pre_ping=True,

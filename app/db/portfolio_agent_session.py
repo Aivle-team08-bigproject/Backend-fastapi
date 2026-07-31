@@ -12,7 +12,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_asyn
 from app.core.config import settings
 
 engine = create_async_engine(
-    settings.runtime_database_url(settings.portfolio_agent_database_url),
+    settings.portfolio_agent_database_url,
     echo=False,
     future=True,
     pool_pre_ping=True,
