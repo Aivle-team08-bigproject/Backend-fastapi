@@ -60,7 +60,9 @@ class DepartmentResponse(BaseModel):
 class EmployeeResponse(BaseModel):
     employee_code: str
     name: str
-    email: str
+    # 과도기: NeonDB에 이메일 없이 만들어진 기존 계정 6건이 있어 NULL 허용.
+    # 값이 다 채워지고 NOT NULL 전환되면 다시 str로 좁힐 것.
+    email: str | None
     phone_masked: str | None
     department_id: int | None
     department_name: str | None
