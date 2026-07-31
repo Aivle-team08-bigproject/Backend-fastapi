@@ -12,6 +12,7 @@ from app.domains.employees.model import (
     AdminAuditLog,
     PERMISSION_DESCRIPTIONS,
     Employee,
+    EmployeeRole,
     PermissionCode,
 )
 from app.domains.employees.schema import (
@@ -45,12 +46,14 @@ def _to_response(employee: Employee) -> EmployeeResponse:
         department_id=employee.department_id,
         department_name=employee.department.name if employee.department else None,
         position=employee.position,
+        role=EmployeeRole(employee.role_code) if employee.role_code else None,
         status=employee.status,
         must_change_password=employee.must_change_password,
         permissions=[p.permission_code for p in employee.permissions],
         approved_by=employee.approved_by,
         approved_at=employee.approved_at,
         rejected_reason=employee.rejected_reason,
+        last_login_at=employee.last_login_at,
         created_by=employee.created_by,
         created_at=employee.created_at,
         updated_at=employee.updated_at,

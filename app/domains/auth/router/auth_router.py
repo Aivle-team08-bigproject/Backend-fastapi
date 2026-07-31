@@ -30,6 +30,7 @@ def _to_summary(employee: Employee) -> EmployeeSummary:
         email=employee.email,
         department_id=employee.department_id,
         department_name=employee.department.name if employee.department else None,
+        role=employee.role_code,
         status=employee.status.value,
         must_change_password=employee.must_change_password,
         permissions=[p.permission_code.value for p in employee.permissions],
@@ -68,9 +69,11 @@ def _clear_refresh_cookie(response: Response) -> None:
 @router.post("/signup", response_model=SignupResponse)
 async def signup(
     payload: SignupRequest,
+    request: Request,
     db: AsyncSession = Depends(get_db),
 ) -> SignupResponse:
-    employee = await employee_service.signup(db, payload)
+    ip_address = request.client.host if request.client else None
+    employee = await employee_service.signup(db, payload, ip_address)
     return SignupResponse(
         employee_code=employee.employee_code,
         email=employee.email,

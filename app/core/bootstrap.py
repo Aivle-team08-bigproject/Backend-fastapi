@@ -9,6 +9,7 @@ from app.domains.employees.model import (
     Department,
     Employee,
     EmployeePermission,
+    EmployeeRole,
     EmployeeStatus,
     PermissionCode,
 )
@@ -57,6 +58,7 @@ async def ensure_bootstrap_admin() -> None:
             department_id=department_id,
             password_hash=security.hash_password(settings.bootstrap_admin_password),
             status=EmployeeStatus.ACTIVE,
+            role_code=EmployeeRole.ADMIN.value,
             must_change_password=True,
             failed_login_count=0,
             auth_version=1,

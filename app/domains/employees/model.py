@@ -87,6 +87,54 @@ class Department(Base):
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
 
 
+class Role(Base):
+    """역할(시스템 권한 묶음)의 정본. EmployeeRole enum과 코드값을 동일하게 유지한다."""
+
+    __tablename__ = "roles"
+
+    role_code: Mapped[str] = mapped_column(String(30), primary_key=True)
+    name: Mapped[str] = mapped_column(String(50), nullable=False)
+    description: Mapped[str | None] = mapped_column(String(300), nullable=True)
+    display_order: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+
+
+class Permission(Base):
+    """권한 코드의 정본. PermissionCode enum과 코드값을 동일하게 유지한다."""
+
+    __tablename__ = "permissions"
+
+    permission_code: Mapped[str] = mapped_column(String(40), primary_key=True)
+    name: Mapped[str] = mapped_column(String(80), nullable=False)
+    description: Mapped[str | None] = mapped_column(String(300), nullable=True)
+    is_default: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    display_order: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+
+
+class RolePermission(Base):
+    """역할별 기본 권한 템플릿. 승인/역할변경 시 이 조합이 employee_permissions로 복사된다."""
+
+    __tablename__ = "role_permissions"
+
+    role_code: Mapped[str] = mapped_column(String(30), ForeignKey("service.roles.role_code"), primary_key=True)
+    permission_code: Mapped[str] = mapped_column(
+        String(40), ForeignKey("service.permissions.permission_code"), primary_key=True
+    )
+
+
+class ConsentLog(Base):
+    """약관/개인정보 동의 이력. employees의 동의 컬럼은 "현재 상태"만 담고, 여기엔 매 동의 시점의
+    스냅샷이 계속 쌓인다 — 약관이 개정돼 재동의를 받아도 과거 동의 기록이 사라지지 않는다."""
+
+    __tablename__ = "consent_logs"
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    employee_id: Mapped[int] = mapped_column(BigInteger, ForeignKey("service.employees.id"), nullable=False, index=True)
+    consent_type: Mapped[str] = mapped_column(String(30), nullable=False)  # "TERMS" | "PRIVACY"
+    version: Mapped[str] = mapped_column(String(20), nullable=False)
+    agreed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    ip_address: Mapped[str | None] = mapped_column(String(64), nullable=True)
+
+
 class Employee(Base):
     __tablename__ = "employees"
 
@@ -105,10 +153,14 @@ class Employee(Base):
     status: Mapped[EmployeeStatus] = mapped_column(
         SAEnum(EmployeeStatus, native_enum=False, length=20), nullable=False, default=EmployeeStatus.ACTIVE
     )
+    role_code: Mapped[str | None] = mapped_column(
+        String(30), ForeignKey("service.roles.role_code"), nullable=True
+    )
     must_change_password: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
     failed_login_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     locked_until: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     auth_version: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
+    last_login_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
     # 회원가입 시 동의한 약관 이력. Boolean 하나만 두면 나중에 약관이 바뀌었을 때
     # 어떤 버전에 동의했는지 알 수 없으므로 시각과 버전을 같이 남긴다.

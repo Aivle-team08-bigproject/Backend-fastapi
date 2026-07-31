@@ -12,12 +12,14 @@ from app.domains.auth.model.session_model import LoginSession
 from app.domains.auth.schema.auth_schema import SignupRequest
 from app.domains.employees.model import (
     AdminAuditLog,
+    ConsentLog,
     Department,
     Employee,
     EmployeePermission,
     EmployeeRole,
     EmployeeStatus,
     PermissionCode,
+    RolePermission,
 )
 from app.domains.employees.schema import ApproveSignupRequest, CreateEmployeeRequest
 
@@ -109,6 +111,38 @@ async def list_departments(db: AsyncSession) -> list[Department]:
     return list(result.scalars().all())
 
 
+async def _get_role_permission_codes(db: AsyncSession, role: EmployeeRole) -> set[PermissionCode]:
+    """role_permissions 테이블에서 역할에 대응하는 권한 템플릿을 읽어온다.
+
+    예전엔 이 매핑이 코드(ROLE_PERMISSIONS dict)에 하드코딩돼 있었는데, 역할별 권한을
+    조정할 때마다 배포가 필요했다. 이제는 DB가 정본이라 운영 중에도 값만 바꾸면 된다.
+    """
+    result = await db.execute(
+        select(RolePermission.permission_code).where(RolePermission.role_code == role.value)
+    )
+    return {PermissionCode(code) for code in result.scalars().all()}
+
+
+async def _record_consent(
+    db: AsyncSession,
+    *,
+    employee_id: int,
+    consent_type: str,
+    version: str,
+    agreed_at,
+    ip_address: str | None,
+) -> None:
+    db.add(
+        ConsentLog(
+            employee_id=employee_id,
+            consent_type=consent_type,
+            version=version,
+            agreed_at=agreed_at,
+            ip_address=ip_address,
+        )
+    )
+
+
 async def _generate_unique_employee_code(db: AsyncSession) -> str:
     """자기 가입자는 사번을 직접 정하지 않으므로 서버가 발급한다.
 
@@ -169,36 +203,71 @@ async def create_employee(
     return employee, temporary_password
 
 
-async def signup(db: AsyncSession, payload: SignupRequest) -> Employee:
+async def signup(db: AsyncSession, payload: SignupRequest, ip_address: str | None = None) -> Employee:
     """직원 자율 회원가입. role/permissions는 절대 요청에서 받지 않고, 승인 전까지는
-    권한 없이 PENDING_APPROVAL 상태로만 만든다 (관리자 승인 → 권한 부여 흐름)."""
-    await _assert_email_available(db, payload.email)
-    await _assert_department_active(db, payload.department_id)
-    employee_code = await _generate_unique_employee_code(db)
-    now = utcnow()
+    권한 없이 PENDING_APPROVAL 상태로만 만든다 (관리자 승인 → 권한 부여 흐름).
 
-    employee = Employee(
-        employee_code=employee_code,
-        name=payload.name,
-        email=payload.email,
-        phone=payload.phone,
-        department_id=payload.department_id,
-        position=payload.position,
-        password_hash=security.hash_password(payload.password),
-        status=EmployeeStatus.PENDING_APPROVAL,
-        must_change_password=False,
-        failed_login_count=0,
-        auth_version=1,
-        terms_agreed_at=now,
-        terms_version=TERMS_VERSION,
-        privacy_agreed_at=now,
-        privacy_version=PRIVACY_VERSION,
-        created_by="SELF_SIGNUP",
-        created_at=now,
-        updated_at=now,
+    거절(REJECTED)된 이메일은 재신청을 허용한다 — 기존 행을 새 신청 내용으로 덮어써서
+    PENDING_APPROVAL로 되돌린다 (employee_code는 유지되어 감사 로그 이력이 끊기지 않는다).
+    PENDING_APPROVAL/ACTIVE/LOCKED/DISABLED 상태인 이메일은 그대로 중복으로 막는다.
+    """
+    await _assert_department_active(db, payload.department_id)
+
+    existing = await db.execute(select(Employee).where(Employee.email == payload.email))
+    employee = existing.scalar_one_or_none()
+
+    if employee is not None and employee.status != EmployeeStatus.REJECTED:
+        raise conflict("EMAIL_ALREADY_REGISTERED", "이미 사용 중인 이메일입니다.")
+
+    now = utcnow()
+    password_hash = security.hash_password(payload.password)
+
+    if employee is None:
+        employee = Employee(
+            employee_code=await _generate_unique_employee_code(db),
+            created_by="SELF_SIGNUP",
+            failed_login_count=0,
+            auth_version=1,
+            created_at=now,
+        )
+        db.add(employee)
+
+    employee.name = payload.name
+    employee.email = payload.email
+    employee.phone = payload.phone
+    employee.department_id = payload.department_id
+    employee.position = payload.position
+    employee.password_hash = password_hash
+    employee.status = EmployeeStatus.PENDING_APPROVAL
+    employee.must_change_password = False
+    employee.terms_agreed_at = now
+    employee.terms_version = TERMS_VERSION
+    employee.privacy_agreed_at = now
+    employee.privacy_version = PRIVACY_VERSION
+    employee.approved_by = None
+    employee.approved_at = None
+    employee.rejected_reason = None
+    employee.updated_at = now
+
+    await db.flush()  # 신규 행이면 employee.id 확정 (consent_logs FK에 필요)
+
+    await _record_consent(
+        db,
+        employee_id=employee.id,
+        consent_type="TERMS",
+        version=TERMS_VERSION,
+        agreed_at=now,
+        ip_address=ip_address,
+    )
+    await _record_consent(
+        db,
+        employee_id=employee.id,
+        consent_type="PRIVACY",
+        version=PRIVACY_VERSION,
+        agreed_at=now,
+        ip_address=ip_address,
     )
 
-    db.add(employee)
     await db.commit()
     await db.refresh(employee, attribute_names=["permissions"])
 
@@ -232,8 +301,10 @@ async def approve_signup(
     employee.status = EmployeeStatus.ACTIVE
     employee.approved_by = operator_code
     employee.approved_at = now
+    employee.role_code = payload.role.value
     employee.permissions = [
-        EmployeePermission(permission_code=code) for code in ROLE_PERMISSIONS[payload.role]
+        EmployeePermission(permission_code=code)
+        for code in await _get_role_permission_codes(db, payload.role)
     ]
     employee.auth_version += 1
     employee.updated_at = now
@@ -288,6 +359,7 @@ async def replace_permissions(
     employee_code: str,
     permissions: set[PermissionCode],
     operator_code: str,
+    role_code: str | None = None,
 ) -> Employee:
     employee = await _find_employee(db, employee_code)
 
@@ -314,6 +386,8 @@ async def replace_permissions(
 
     previous = sorted(p.permission_code.value for p in employee.permissions)
     employee.permissions = [EmployeePermission(permission_code=code) for code in permissions]
+    if role_code is not None:
+        employee.role_code = role_code
     employee.auth_version += 1
     employee.updated_at = utcnow()
 
@@ -331,29 +405,11 @@ async def replace_permissions(
     return employee
 
 
-ROLE_PERMISSIONS: dict[EmployeeRole, set[PermissionCode]] = {
-    EmployeeRole.ADMIN: set(PermissionCode),
-    EmployeeRole.MANAGER: {
-        PermissionCode.EMPLOYEE_READ,
-        PermissionCode.EMPLOYEE_UPDATE,
-        PermissionCode.DATA_PRODUCT_READ,
-        PermissionCode.QUOTE_READ,
-        PermissionCode.QUOTE_PROCESS,
-    },
-    EmployeeRole.SENIOR: {
-        PermissionCode.DATA_PRODUCT_READ,
-        PermissionCode.DATA_PRODUCT_WRITE,
-        PermissionCode.QUOTE_READ,
-    },
-    EmployeeRole.GENERAL: {PermissionCode.DATA_PRODUCT_READ, PermissionCode.QUOTE_READ},
-}
-
-
 async def replace_role(
     db: AsyncSession, employee_code: str, role: EmployeeRole, operator_code: str
 ) -> Employee:
-    permissions = ROLE_PERMISSIONS[role]
-    return await replace_permissions(db, employee_code, permissions, operator_code)
+    permissions = await _get_role_permission_codes(db, role)
+    return await replace_permissions(db, employee_code, permissions, operator_code, role_code=role.value)
 
 async def change_status(
     db: AsyncSession, employee_code: str, status: EmployeeStatus, operator_code: str

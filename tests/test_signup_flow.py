@@ -96,6 +96,7 @@ def test_approve_flow_grants_access(client):
     )
     assert approved.status_code == 200, approved.text
     assert approved.json()["status"] == "ACTIVE"
+    assert approved.json()["role"] == "GENERAL"
     assert set(approved.json()["permissions"]) == {"DATA_PRODUCT_READ", "QUOTE_READ"}
 
     login = client.post(
@@ -126,6 +127,46 @@ def test_reject_flow_blocks_login(client):
     )
     assert login.status_code == 403
     assert login.json()["detail"]["code"] == "SIGNUP_REJECTED"
+
+
+def test_signup_after_rejection_is_allowed(client):
+    """거절된 이메일은 재신청을 허용한다 — employee_code는 유지된 채 PENDING_APPROVAL로 되돌아간다."""
+    signup = client.post("/api/auth/signup", json=_signup_payload(client, "retry.after.reject@company.com"))
+    employee_code = signup.json()["employee_code"]
+
+    admin_headers = _login_as_admin(client)
+    rejected = client.post(
+        f"/api/admin/employees/signup-requests/{employee_code}/reject",
+        headers=admin_headers,
+        json={"reason": "직급 정보 확인 불가"},
+    )
+    assert rejected.status_code == 200
+
+    retry = client.post(
+        "/api/auth/signup",
+        json=_signup_payload(client, "retry.after.reject@company.com", name="김재신청"),
+    )
+    assert retry.status_code == 200, retry.text
+    body = retry.json()
+    assert body["status"] == "PENDING_APPROVAL"
+    assert body["employee_code"] == employee_code  # 같은 행을 재사용 — 감사 로그 이력이 끊기지 않음
+
+    approved = client.post(
+        f"/api/admin/employees/signup-requests/{employee_code}/approve",
+        headers=admin_headers,
+        json={"role": "GENERAL"},
+    )
+    assert approved.status_code == 200, approved.text
+    assert approved.json()["rejected_reason"] is None
+    assert approved.json()["name"] == "김재신청"
+
+
+def test_signup_blocked_while_pending_or_active(client):
+    """PENDING_APPROVAL/ACTIVE 상태인 이메일은 여전히 재신청이 막혀야 한다 (REJECTED만 예외)."""
+    client.post("/api/auth/signup", json=_signup_payload(client, "still.pending@company.com"))
+    duplicate = client.post("/api/auth/signup", json=_signup_payload(client, "still.pending@company.com"))
+    assert duplicate.status_code == 409
+    assert duplicate.json()["detail"]["code"] == "EMAIL_ALREADY_REGISTERED"
 
 
 def test_non_admin_cannot_approve_signup(client):

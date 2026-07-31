@@ -121,6 +121,7 @@ async def login(
 
     employee.failed_login_count = 0
     employee.locked_until = None
+    employee.last_login_at = now
     employee.updated_at = now
 
     await _enforce_concurrent_session_limit(db, employee.id, now)

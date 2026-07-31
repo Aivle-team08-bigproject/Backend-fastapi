@@ -18,6 +18,7 @@ from app.domains.employees.model import (
     Department,
     Employee,
     EmployeePermission,
+    EmployeeRole,
     EmployeeStatus,
     PermissionCode,
 )
@@ -63,6 +64,7 @@ async def seed_demo_user() -> tuple[str, str]:
                 department_id=department_id,
                 password_hash=hash_password(password),
                 status=EmployeeStatus.ACTIVE,
+                role_code=EmployeeRole.ADMIN.value,
                 must_change_password=False,
                 failed_login_count=0,
                 locked_until=None,
@@ -80,6 +82,7 @@ async def seed_demo_user() -> tuple[str, str]:
             employee.department_id = department_id
             employee.password_hash = hash_password(password)
             employee.status = EmployeeStatus.ACTIVE
+            employee.role_code = EmployeeRole.ADMIN.value
             employee.must_change_password = False
             employee.failed_login_count = 0
             employee.locked_until = None
