@@ -131,6 +131,17 @@ def process_payload(payload: dict[str, Any]) -> dict[str, Any]:
 
     return {
         "processing_engine": "deterministic-python-v1",
+        "execution_audit": {
+            "approved_selection_stage_run_id": (
+                payload.get("approval_audit") or {}
+            ).get("stage_run_id"),
+            "approved_selection_sha256": (
+                payload.get("approval_audit") or {}
+            ).get("sha256"),
+            "approved_at": (payload.get("approval_audit") or {}).get("approved_at"),
+            "reviewer_id": (payload.get("approval_audit") or {}).get("reviewer_id"),
+            "reviewer_name": (payload.get("approval_audit") or {}).get("reviewer_name"),
+        },
         "processed_columns": columns,
         "api_result": api_result,
         "csv_columns": columns if csv_artifact else [],

@@ -25,6 +25,9 @@ def validate_stage_output(stage_name: StageName, output: dict) -> dict:
             "source_columns",
             "derived_columns",
             "selection_query",
+            "interpretations",
+            "catalog_issues",
+            "catalog_matches",
             "sample_columns",
             "sample_rows",
             "sample_metadata",
@@ -55,6 +58,41 @@ def validate_stage_output(stage_name: StageName, output: dict) -> dict:
             }
             if set(selection_query.get("columns") or []) != source_names:
                 errors.append("selection_query.columns must match source_columns")
+            filters = selection_query.get("filters")
+            if not isinstance(filters, dict):
+                errors.append("selection_query.filters must be a JSON object")
+            else:
+                for column_name, condition in filters.items():
+                    if column_name not in source_names:
+                        errors.append(
+                            f"selection_query.filters.{column_name} must reference a source column"
+                        )
+                    if not isinstance(condition, dict):
+                        errors.append(
+                            f"selection_query.filters.{column_name} must be a JSON object"
+                        )
+                        continue
+                    if condition.get("operator") not in {
+                        "eq",
+                        "in",
+                        "gte",
+                        "lte",
+                        "between",
+                        "starts_with",
+                    }:
+                        errors.append(
+                            f"selection_query.filters.{column_name} has an unsupported operator"
+                        )
+                    if not condition.get("reason") or not condition.get("evidence"):
+                        errors.append(
+                            f"selection_query.filters.{column_name} must include reason and evidence"
+                        )
+        if not isinstance(output.get("interpretations"), list):
+            errors.append("interpretations must be a list")
+        if not isinstance(output.get("catalog_issues"), list):
+            errors.append("catalog_issues must be a list")
+        if not isinstance(output.get("catalog_matches"), list):
+            errors.append("catalog_matches must be a list")
         if isinstance(derived_columns, list) and isinstance(source_columns, list):
             source_names = {
                 column.get("column")
@@ -146,6 +184,7 @@ def validate_stage_output(stage_name: StageName, output: dict) -> dict:
 
     if stage_name == StageName.DATA_PROCESSING:
         required = [
+            "execution_audit",
             "processed_columns",
             "api_result",
             "csv_columns",

@@ -29,7 +29,6 @@ services:
       CELERY_RESULT_BACKEND: redis://redis:6379/1
       WORKER_STATUS_REDIS_URL: redis://redis:6379/2
       UPLOAD_ROOT: /app/uploads
-      PIPELINE_QUERY_SOURCE: ${PIPELINE_QUERY_SOURCE:-csv}
     volumes:
       - uploaded_data:/app/uploads
     depends_on:
@@ -48,7 +47,6 @@ services:
       CELERY_RESULT_BACKEND: redis://redis:6379/1
       WORKER_STATUS_REDIS_URL: redis://redis:6379/2
       UPLOAD_ROOT: /app/uploads
-      PIPELINE_QUERY_SOURCE: ${PIPELINE_QUERY_SOURCE:-csv}
       # 단계 에이전트(agent_runtime/)가 이 worker 안에서 돌기 때문에 필요한 설정.
       # data_processing/processor.py가 식별자 가명화 키와 파일 경로 제한에 쓴다.
       DATA_ANONYMIZATION_KEY: ${DATA_ANONYMIZATION_KEY:-}

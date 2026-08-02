@@ -46,3 +46,12 @@ def test_create_request_then_read_pipeline_run(client: TestClient, monkeypatch):
 
     assert response.status_code == 404
     assert response.json()["detail"]["code"] == "PIPELINE_RUN_NOT_FOUND"
+
+    response = client.get(f"/api/v1/runs/{created_body['run_id']}/sample-preview")
+
+    assert response.status_code == 404
+    assert response.json()["detail"]["code"] == "PIPELINE_SAMPLE_NOT_READY"
+
+    response = client.post(f"/api/v1/runs/{created_body['run_id']}/input-csv")
+
+    assert response.status_code == 404

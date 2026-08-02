@@ -1,11 +1,11 @@
 import asyncio
 
-from fastapi import APIRouter, Depends, File, UploadFile, status
+from fastapi import APIRouter, Depends, status
 from fastapi.responses import FileResponse, StreamingResponse
 from redis.asyncio import Redis
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.common.errors import DomainException, bad_request, not_found
+from app.common.errors import not_found
 from app.common.security_deps import CurrentAuth, get_current_auth
 from app.core.config import settings
 from app.db.session import get_db
@@ -13,19 +13,19 @@ from app.domains.pipeline.model import PipelineRun
 from app.domains.pipeline.schema import (
     CreateDataRequestRequest,
     CreateDataRequestResponse,
-    CsvUploadResponse,
     PipelineRunResponse,
+    SamplePreviewResponse,
     StageReviewRequest,
     StageReviewResponse,
 )
 from app.domains.pipeline.service import (
     create_data_request,
-    dispatch_uploaded_csv,
     get_pipeline_run,
     get_result_artifact,
+    get_sample_preview,
     submit_stage_review,
 )
-from app.worker.file_storage import resolve_storage_key, save_upload
+from app.worker.file_storage import resolve_storage_key
 from app.worker.status_event import PipelineStatusEvent
 
 router = APIRouter(prefix="/api/v1", tags=["pipeline"])
@@ -51,41 +51,15 @@ async def get_run(
     return await get_pipeline_run(db, run_id)
 
 
-@router.post(
-    "/runs/{run_id}/input-csv",
-    response_model=CsvUploadResponse,
-    status_code=status.HTTP_202_ACCEPTED,
+@router.get(
+    "/runs/{run_id}/sample-preview",
+    response_model=SamplePreviewResponse,
 )
-@router.post(
-    "/runs/{run_id}/csv",
-    response_model=CsvUploadResponse,
-    status_code=status.HTTP_202_ACCEPTED,
-    include_in_schema=False,
-)
-async def upload_run_csv(
+async def get_run_sample_preview(
     run_id: int,
-    file: UploadFile = File(...),
     db: AsyncSession = Depends(get_db),
-) -> CsvUploadResponse:
-    if await db.get(PipelineRun, run_id) is None:
-        raise not_found("PIPELINE_RUN_NOT_FOUND", "파이프라인 실행을 찾을 수 없습니다.")
-    try:
-        metadata = await save_upload(run_id, file)
-    except ValueError as exc:
-        raise bad_request("INVALID_CSV_UPLOAD", str(exc)) from exc
-    try:
-        celery_task_id = await dispatch_uploaded_csv(db, run_id, metadata)
-    except DomainException:
-        resolve_storage_key(metadata["storage_key"]).unlink(missing_ok=True)
-        raise
-    return CsvUploadResponse(
-        run_id=run_id,
-        celery_task_id=celery_task_id,
-        filename=metadata["original_filename"],
-        size_bytes=metadata["size_bytes"],
-        checksum=metadata["checksum"],
-        run_status="QUEUED",
-    )
+) -> SamplePreviewResponse:
+    return await get_sample_preview(db, run_id)
 
 
 @router.post("/runs/{run_id}/review", response_model=StageReviewResponse)

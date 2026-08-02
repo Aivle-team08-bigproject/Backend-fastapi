@@ -60,13 +60,42 @@ class PipelineRunResponse(BaseModel):
     events: list[RunEventResponse]
 
 
-class CsvUploadResponse(BaseModel):
+class SamplePreviewColumn(BaseModel):
+    name: str
+    data_type: str
+    is_derived: bool
+    source_columns: list[str]
+    description: str
+
+
+class SamplePreviewMetadata(BaseModel):
+    is_synthetic: bool
+    sample_count: int
+    notice: str | None = None
+
+
+class SamplePreviewReviewSummary(BaseModel):
+    requires_confirmation: bool
+    confirmation_terms: list[str]
+    has_catalog_issues: bool
+    catalog_issue_count: int
+
+
+class SamplePreviewResponse(BaseModel):
     run_id: int
-    celery_task_id: str
-    filename: str
-    size_bytes: int
-    checksum: str
-    run_status: PipelineRunStatus
+    stage: str
+    attempt_no: int
+    columns: list[SamplePreviewColumn]
+    rows: list[dict]
+    metadata: SamplePreviewMetadata
+    selected_tables: list[dict]
+    source_columns: list[dict]
+    derived_columns: list[dict]
+    selection_query: dict
+    interpretations: list[dict]
+    catalog_issues: list[dict]
+    catalog_matches: list[dict]
+    review_summary: SamplePreviewReviewSummary
 
 
 class StageReviewRequest(BaseModel):
