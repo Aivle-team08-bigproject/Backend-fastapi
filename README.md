@@ -88,7 +88,6 @@ PORTFOLIO_APP_DATABASE_URL=postgresql+psycopg://app_svc:PASSWORD@<neon-host>/por
 PORTFOLIO_MIGRATION_DATABASE_URL=postgresql+psycopg://portfolio_admin:PASSWORD@<neon-host>/portfolio?sslmode=require
 
 JWT_SECRET=replace-with-a-long-random-secret
-BOOTSTRAP_ADMIN_PASSWORD=replace-with-a-strong-password
 ANON_HASH_SALT=replace-with-a-random-salt
 
 DEEPSEEK_API_KEY=replace-with-your-api-key
