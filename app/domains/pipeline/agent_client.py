@@ -13,9 +13,6 @@ validation.validate_stage_output이 그걸 REQUIRED_KEY_MISSING 등으로 정상
 import asyncio
 from typing import Protocol
 
-from app.core.config import settings
-
-
 class AgentClient(Protocol):
     async def run(self, agent_name: str, model_name: str, payload: dict) -> dict:
         ...
@@ -61,13 +58,17 @@ class AgentRuntimeClient(AgentClient):
     async def _run_data_selection(self, payload: dict) -> dict:
         """Neon DB COMMENT 메타데이터를 읽어 컬럼 설계 에이전트에 전달한다."""
         from agent_runtime.data_selection.agent import run as run_data_selection
-        from agent_runtime.query.metadata import load_dataset_metadata
+        from agent_runtime.query.metadata import (
+            load_dataset_metadata,
+            load_reference_catalogs,
+        )
         from app.db.portfolio_agent_session import AsyncSessionLocal as AgentSessionLocal
 
         available_data = payload.get("available_data", [])
         try:
             async with AgentSessionLocal() as db:
                 schema_metadata = await load_dataset_metadata(db, available_data)
+                reference_catalogs = await load_reference_catalogs(db)
         except Exception as exc:
             return {
                 "_agent_error": f"database metadata lookup failed: {exc}",
@@ -85,6 +86,8 @@ class AgentRuntimeClient(AgentClient):
             payload.get("analysis", {}),
             available_data,
             schema_metadata,
+            payload.get("hitl_feedback"),
+            reference_catalogs,
         )
         if not result["ok"]:
             return {"_agent_error": result["error_message"] or "data selection agent failed"}
@@ -103,29 +106,29 @@ class AgentRuntimeClient(AgentClient):
         return result["data"]
 
     async def _run_data_processing(self, payload: dict) -> dict:
-        """데이터 가공 에이전트 호출.
+        """선별 계획으로 익명화 DB를 조회한 뒤 데이터 가공 에이전트를 호출한다."""
+        try:
+            from app.db.portfolio_agent_session import AsyncSessionLocal as AgentSessionLocal
 
-        가공 대상 행은 Supervisor가 selected_rows에 미리 채워서 넘긴다(CSV 업로드 경로) —
-        비어 있고 PIPELINE_QUERY_SOURCE=database면 여기서 익명화 DB를 직접 조회한다.
-        """
-        if not payload.get("selected_rows") and settings.pipeline_query_source.lower() == "database":
-            try:
-                from app.db.portfolio_agent_session import AsyncSessionLocal as AgentSessionLocal
+            from agent_runtime.query import DatabaseQueryExecutor, PrivacyThresholdError
 
-                from agent_runtime.query import DatabaseQueryExecutor
-
-                async with AgentSessionLocal() as db:
-                    payload = {
-                        **payload,
-                        "selected_rows": await DatabaseQueryExecutor(db).execute(
-                            payload.get("selection") or {}
-                        ),
-                    }
-            except Exception as exc:
-                return {
-                    "_agent_error": f"query layer failed: {exc}",
-                    "_failure_code": "INSUFFICIENT_DATA",
+            async with AgentSessionLocal() as db:
+                payload = {
+                    **payload,
+                    "selected_rows": await DatabaseQueryExecutor(db).execute(
+                        payload.get("selection") or {}
+                    ),
                 }
+        except PrivacyThresholdError as exc:
+            return {
+                "_agent_error": str(exc),
+                "_failure_code": "PRIVACY_THRESHOLD_NOT_MET",
+            }
+        except Exception as exc:
+            return {
+                "_agent_error": f"query layer failed: {exc}",
+                "_failure_code": "INSUFFICIENT_DATA",
+            }
 
         from agent_runtime.data_processing.agent import run as run_data_processing
 

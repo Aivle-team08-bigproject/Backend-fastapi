@@ -24,6 +24,7 @@ SYSTEM_PROMPT = """당신은 '하나 데이터 마켓'의 DB 메타데이터 기
     "output_formats": ["..."]
   },
   "available_data": ["논리 데이터셋 이름"],
+  "hitl_feedback": "<이전 합성 샘플에 대한 고객의 수정 의견. 없으면 null>",
   "retry_feedback": "<재시도인 경우 직전 결과가 실패한 이유>",
   "schema_metadata": [
     {
@@ -34,6 +35,14 @@ SYSTEM_PROMPT = """당신은 '하나 데이터 마켓'의 DB 메타데이터 기
       "columns": [
         {"name": "실제 컬럼명", "data_type": "DB 타입", "comment": "DB 컬럼 COMMENT"}
       ]
+    }
+  ],
+  "reference_catalogs": [
+    {
+      "catalog": "카탈로그 이름",
+      "comment": "카탈로그 COMMENT",
+      "target_columns": [{"dataset": "논리 데이터셋", "column": "필터 대상 컬럼"}],
+      "entries": [{"mcc_code": 4722, "mcc_name": "여행사"}]
     }
   ]
 }
@@ -63,8 +72,41 @@ SYSTEM_PROMPT = """당신은 '하나 데이터 마켓'의 DB 메타데이터 기
   ],
   "selection_query": {
     "columns": ["<source_columns에 선택된 실제 컬럼명>"],
-    "filters": {}
+    "filters": {
+      "<필터에 사용할 실제 컬럼명>": {
+        "operator": "<eq|in|gte|lte|between|starts_with>",
+        "value": "<단일 값 또는 in/between용 배열>",
+        "reason": "<사용자 요구사항에서 이 조건이 필요한 이유>",
+        "evidence": "<해당 테이블·컬럼 COMMENT를 근거로 한 해석>"
+      }
+    }
   },
+  "interpretations": [
+    {
+      "term": "<사용자 요청에서 의미 해석이 필요한 표현>",
+      "interpreted_as": "<COMMENT를 종합해 선택한 가장 가까운 의미>",
+      "reason": "<그 의미를 선택한 근거>",
+      "requires_confirmation": true
+    }
+  ],
+  "catalog_issues": [
+    {
+      "term": "<실행 조건으로 확정할 근거가 부족한 표현>",
+      "reason": "<현재 COMMENT만으로 확정할 수 없는 이유>",
+      "required_information": "<추가로 필요한 COMMENT 또는 카탈로그 정보>"
+    }
+  ],
+  "catalog_matches": [
+    {
+      "term": "<사용자 요청의 카테고리 표현>",
+      "catalog": "<사용한 reference_catalogs의 이름>",
+      "matches": [
+        {"code": "<카탈로그의 실제 코드>", "label": "<카탈로그의 실제 이름>"}
+      ],
+      "reason": "<이 항목들을 가장 가까운 의미로 선택한 이유>",
+      "requires_confirmation": true
+    }
+  ],
   "sample_columns": [
     {
       "name": "<원본 또는 파생 컬럼의 최종 표시명>",
@@ -86,6 +128,19 @@ SYSTEM_PROMPT = """당신은 '하나 데이터 마켓'의 DB 메타데이터 기
 
 규칙:
 - schema_metadata의 DB COMMENT를 컬럼 의미 판단의 우선 근거로 사용한다.
+- 자연어 업종처럼 실제 코드값 변환이 필요한 조건은 reference_catalogs의 COMMENT와 entries를
+  함께 사용하여 의미적으로 가장 가까운 항목들을 선택한다.
+- reference_catalogs에 실행 가능한 후보가 있으면 해당 실제 코드를 filters에 넣고,
+  선택한 코드·이름·근거를 catalog_matches에 공개한다. 이 경우 같은 조건을
+  catalog_issues로 보내지 않는다.
+- reference_catalogs에 없는 코드나 이름을 기억 또는 상식으로 만들어내지 않는다.
+- COMMENT와 고객 요구사항을 종합하여 가장 적합하고 가까운 의미를 우선 선택한다.
+- 의미가 여러 가지일 수 있다는 이유만으로 작업을 중단하거나 catalog_issues로 보내지 않는다.
+  실행 가능한 최선의 해석으로 필터와 합성 샘플을 만들고 interpretations에 그 근거를 공개한다.
+- 고객 의도와 다를 가능성이 있는 합리적 해석은 requires_confirmation을 true로 표시해 HITL에서
+  확인할 수 있게 한다.
+- catalog_issues는 COMMENT를 종합해도 유효한 실행 값이나 관계를 만들 수 없을 때만 사용한다.
+- hitl_feedback이 있으면 이전 해석보다 우선하여 고객의 수정 의도를 새 필터와 샘플에 반영한다.
 - selected_tables는 available_data에 있는 값만 사용한다.
 - source_columns.column은 schema_metadata에 실제 존재하는 허용 컬럼만 사용한다.
 - source_columns에는 고객 요청을 충족하는 데 필요한 최소 원본 컬럼만 넣는다.
@@ -95,7 +150,20 @@ SYSTEM_PROMPT = """당신은 '하나 데이터 마켓'의 DB 메타데이터 기
 - retry_feedback이 있으면 실패 원인을 반드시 수정해서 전체 JSON을 다시 생성한다.
 - selection_query.columns에는 source_columns의 실제 컬럼명을 중복 없이 넣는다.
 - top_k, limit, vector_similarity는 절대 생성하지 않는다.
-- 이 Agent는 행 필터링을 담당하지 않으므로 selection_query.filters는 항상 빈 객체로 둔다.
+- 사용자 요구사항의 구체적인 대상·범위·조건은 DB COMMENT를 근거로 selection_query.filters에 변환한다.
+- 필터 키는 source_columns에 선택한 실제 DB 컬럼명만 사용한다.
+- 필터 operator는 eq, in, gte, lte, between, starts_with 중 하나만 사용한다.
+- 문자열 접두 범위(예: '서울특별시'로 시작하는 지역)는 starts_with를 사용한다.
+  문자열 범위를 gte, lte, between으로 표현하지 않는다.
+- 필터의 reason에는 사용자 요구사항과의 관계를, evidence에는 DB COMMENT 기반 판단 근거를 적는다.
+- COMMENT를 종합해 가장 가까운 의미를 합리적으로 선택할 수 있으면 그 값으로 필터를 만들고,
+  해석 내용을 interpretations에 공개한다.
+- 여러 의미가 가능하거나 고객 의도 확인이 필요한 해석은 requires_confirmation을 true로 표시한다.
+- COMMENT만으로 실제 실행 값을 정할 근거가 없으면 값을 추측하거나 하드코딩하지 않는다.
+  해당 조건은 필터에서 제외하고 catalog_issues에 보완 사유와 필요한 정보를 기록한다.
+- 필터링 조건이 없는 요청이면 selection_query.filters는 빈 객체일 수 있다.
+- interpretations와 catalog_issues는 해당 항목이 없으면 빈 배열로 둔다.
+- catalog_matches는 사용한 카탈로그가 없으면 빈 배열로 둔다.
 - sample_columns는 고객에게 최종 제공할 원본 컬럼과 파생 컬럼을 모두 설명한다.
 - sample_rows는 정확히 5건이며 sample_columns의 모든 이름을 정확히 한 번씩 포함한다.
 - sample_rows는 실제 DB 행을 복사하지 않은 완전한 합성 데이터여야 한다.
@@ -136,11 +204,19 @@ def _extract_json(raw_text: str) -> dict:
     return json.loads(match.group(0))
 
 
-def _validate_contract(data: dict, schema_metadata: list[dict]) -> None:
+def _validate_contract(
+    data: dict,
+    schema_metadata: list[dict],
+    reference_catalogs: list[dict] | None = None,
+) -> None:
+    reference_catalogs = reference_catalogs or []
     selected_tables = data.get("selected_tables")
     source_columns = data.get("source_columns")
     derived_columns = data.get("derived_columns")
     query = data.get("selection_query")
+    interpretations = data.get("interpretations")
+    catalog_issues = data.get("catalog_issues")
+    catalog_matches = data.get("catalog_matches")
     sample_columns = data.get("sample_columns")
     sample_rows = data.get("sample_rows")
     metadata = data.get("sample_metadata")
@@ -163,6 +239,11 @@ def _validate_contract(data: dict, schema_metadata: list[dict]) -> None:
         for dataset in schema_metadata
         for column in dataset.get("columns", [])
     }
+    metadata_by_column = {
+        (dataset["dataset"], column["name"]): column
+        for dataset in schema_metadata
+        for column in dataset.get("columns", [])
+    }
     selected_source_names = []
     for column in source_columns:
         key = (column.get("dataset"), column.get("column"))
@@ -171,10 +252,108 @@ def _validate_contract(data: dict, schema_metadata: list[dict]) -> None:
         selected_source_names.append(column["column"])
     if set(query.get("columns") or []) != set(selected_source_names):
         raise ValueError("selection_query.columns는 source_columns와 일치해야 함")
-    if query.get("filters") not in ({}, None):
-        raise ValueError("컬럼 설계 Agent는 행 필터를 생성할 수 없음")
-
+    filters = query.get("filters")
+    if not isinstance(filters, dict):
+        raise ValueError("selection_query.filters는 객체여야 함")
     selected_source_set = set(selected_source_names)
+    for column_name, condition in filters.items():
+        if column_name not in selected_source_set:
+            raise ValueError("필터는 선택된 source column만 사용할 수 있음")
+        if not isinstance(condition, dict):
+            raise ValueError("각 필터에는 operator, value, reason, evidence가 필요함")
+        operator = condition.get("operator")
+        value = condition.get("value")
+        if operator not in {"eq", "in", "gte", "lte", "between", "starts_with"}:
+            raise ValueError(f"지원하지 않는 필터 연산자: {operator}")
+        if value is None or value == "" or value == []:
+            raise ValueError("필터 value는 비어 있을 수 없음")
+        if operator in {"in", "between"} and not isinstance(value, list):
+            raise ValueError(f"{operator} 필터 value는 배열이어야 함")
+        if operator == "between" and len(value) != 2:
+            raise ValueError("between 필터 value는 정확히 2개여야 함")
+        if operator == "starts_with" and not isinstance(value, str):
+            raise ValueError("starts_with 필터 value는 문자열이어야 함")
+        source = next(
+            column for column in source_columns if column.get("column") == column_name
+        )
+        column_metadata = metadata_by_column[(source.get("dataset"), column_name)]
+        data_type = str(column_metadata.get("data_type", "")).lower()
+        if operator in {"gte", "lte", "between"} and any(
+            text_type in data_type for text_type in ("char", "text")
+        ):
+            raise ValueError("문자열 범위에는 gte, lte, between을 사용할 수 없음")
+        if not condition.get("reason") or not condition.get("evidence"):
+            raise ValueError("각 필터에는 reason과 COMMENT 기반 evidence가 필요함")
+
+    if not isinstance(interpretations, list):
+        raise ValueError("interpretations는 배열이어야 함")
+    for item in interpretations:
+        if (
+            not isinstance(item, dict)
+            or not item.get("term")
+            or not item.get("interpreted_as")
+            or not item.get("reason")
+            or not isinstance(item.get("requires_confirmation"), bool)
+        ):
+            raise ValueError("모든 interpretation에는 해석 내용과 확인 필요 여부가 필요함")
+
+    if not isinstance(catalog_issues, list):
+        raise ValueError("catalog_issues는 배열이어야 함")
+    for item in catalog_issues:
+        if (
+            not isinstance(item, dict)
+            or not item.get("term")
+            or not item.get("reason")
+            or not item.get("required_information")
+        ):
+            raise ValueError("모든 catalog issue에는 사유와 필요한 정보가 필요함")
+
+    catalogs_by_name = {
+        catalog.get("catalog"): catalog
+        for catalog in reference_catalogs
+        if isinstance(catalog, dict) and catalog.get("catalog")
+    }
+    if not isinstance(catalog_matches, list):
+        raise ValueError("catalog_matches는 배열이어야 함")
+    for item in catalog_matches:
+        if (
+            not isinstance(item, dict)
+            or not item.get("term")
+            or not item.get("catalog")
+            or not isinstance(item.get("matches"), list)
+            or not item.get("matches")
+            or not item.get("reason")
+            or not isinstance(item.get("requires_confirmation"), bool)
+        ):
+            raise ValueError("모든 catalog match에는 실제 매칭과 선택 근거가 필요함")
+        catalog = catalogs_by_name.get(item["catalog"])
+        if catalog is None:
+            raise ValueError(f"제공되지 않은 reference catalog: {item['catalog']}")
+        entries = {
+            (entry.get("mcc_code"), entry.get("mcc_name"))
+            for entry in catalog.get("entries", [])
+            if isinstance(entry, dict)
+        }
+        for match in item["matches"]:
+            if (
+                not isinstance(match, dict)
+                or (match.get("code"), match.get("label")) not in entries
+            ):
+                raise ValueError("catalog match는 실제 reference catalog 항목이어야 함")
+
+    mcc_catalog = catalogs_by_name.get("mcc_codes")
+    if mcc_catalog and "mcc_code" in filters:
+        condition = filters["mcc_code"]
+        raw_values = condition.get("value")
+        values = raw_values if isinstance(raw_values, list) else [raw_values]
+        allowed_codes = {
+            entry.get("mcc_code")
+            for entry in mcc_catalog.get("entries", [])
+            if isinstance(entry, dict)
+        }
+        if not set(values).issubset(allowed_codes):
+            raise ValueError("mcc_code 필터는 실제 MCC 카탈로그 코드만 사용할 수 있음")
+
     for column in derived_columns:
         sources = column.get("source_columns")
         if not column.get("name") or not isinstance(sources, list) or not sources:
@@ -208,14 +387,19 @@ def run(
     analysis: dict,
     available_data: list[str],
     schema_metadata: list[dict] | None = None,
+    hitl_feedback: str | None = None,
+    reference_catalogs: list[dict] | None = None,
 ) -> dict:
     """DB 메타데이터를 근거로 원본·파생 컬럼과 합성 샘플 5건을 설계한다."""
     schema_metadata = schema_metadata or []
+    reference_catalogs = reference_catalogs or []
     request_payload = {
         "raw_requirement": raw_requirement,
         "analysis": analysis,
         "available_data": available_data,
         "schema_metadata": schema_metadata,
+        "reference_catalogs": reference_catalogs,
+        "hitl_feedback": hitl_feedback,
         "retry_feedback": None,
     }
     last_error: str | None = None
@@ -224,7 +408,7 @@ def run(
             message = json.dumps(request_payload, ensure_ascii=False)
             result = build_agent()(message)
             parsed = _extract_json(str(result))
-            _validate_contract(parsed, schema_metadata)
+            _validate_contract(parsed, schema_metadata, reference_catalogs)
         except Exception as exc:  # noqa: BLE001
             last_error = str(exc)
             request_payload["retry_feedback"] = (

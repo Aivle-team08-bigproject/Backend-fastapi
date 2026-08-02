@@ -20,11 +20,13 @@ from app.domains.pipeline.model import (
     FailureCode,
     PipelineRun,
     PipelineRunStatus,
+    ReviewDecision,
     StageName,
     StageRun,
     StageRunStatus,
 )
 from app.domains.pipeline.validation import validate_stage_output
+from app.domains.pipeline.plan_integrity import verify_selection_plan
 
 # Supervisor가 순서대로 진행시키는 단계. DATA_RETRIEVAL은 별도 단계가 아니라
 # DATA_PROCESSING 안에서 query 레이어가 담당한다.
@@ -122,36 +124,62 @@ async def build_stage_payload(db: AsyncSession, stage: StageRun) -> dict:
         analysis = completed.get(StageName.REQUIREMENT_ANALYSIS.value)
         if analysis is None:
             raise StageDispatchError("requirement analysis output is missing")
-        return {
+        payload = {
             "raw_requirement": raw_requirement,
             "analysis": analysis,
             "available_data": AVAILABLE_DATA,
         }
+        if feedback := await _retry_feedback(db, stage):
+            payload["hitl_feedback"] = feedback
+        return payload
 
     if stage_name == StageName.DATA_PROCESSING:
         analysis = completed.get(StageName.REQUIREMENT_ANALYSIS.value)
-        selection = completed.get(StageName.DATA_SELECTION.value)
-        if analysis is None or selection is None:
-            raise StageDispatchError("requirement analysis or data selection output is missing")
+        approval = (stage.input_payload or {}).get("approved_selection")
+        if analysis is None:
+            raise StageDispatchError("requirement analysis output is missing")
+        if not isinstance(approval, dict):
+            raise StageDispatchError("approved selection plan is missing")
+        selection = approval.get("plan")
+        expected_sha256 = approval.get("sha256")
+        if not isinstance(selection, dict) or not isinstance(expected_sha256, str):
+            raise StageDispatchError("approved selection plan is invalid")
+        try:
+            verify_selection_plan(selection, expected_sha256)
+        except ValueError as exc:
+            raise StageDispatchError(str(exc)) from exc
         payload = {
             "raw_requirement": raw_requirement,
             "analysis": analysis,
             "selection": selection,
+            "approval_audit": {
+                "stage_run_id": approval.get("stage_run_id"),
+                "sha256": expected_sha256,
+                "approved_at": approval.get("approved_at"),
+                "reviewer_id": approval.get("reviewer_id"),
+                "reviewer_name": approval.get("reviewer_name"),
+            },
         }
-        # CSV 업로드 경로: service.dispatch_uploaded_csv가 stage.input_payload["csv"]에
-        # 업로드 메타데이터를 넣어둔다. 없으면 agent_client가 익명화 DB를 직접 조회한다.
-        csv_meta = (stage.input_payload or {}).get("csv") or {}
-        storage_key = csv_meta.get("storage_key")
-        if storage_key:
-            from agent_runtime.query import CsvQueryExecutor
-            from app.worker.file_storage import read_csv_rows
-
-            payload["selected_rows"] = CsvQueryExecutor().execute(
-                read_csv_rows(storage_key), selection
-            )
         return payload
 
     raise StageDispatchError(f"unsupported stage: {stage.stage_code}")
+
+
+async def _retry_feedback(db: AsyncSession, stage: StageRun) -> str | None:
+    """직전 선별 산출물에 대한 HITL 수정 의견을 재시도 Agent에 전달한다."""
+    if stage.retry_of_id is None:
+        return None
+    from app.domains.pipeline.model import Review
+
+    return await db.scalar(
+        select(Review.feedback)
+        .where(
+            Review.stage_run_id == stage.retry_of_id,
+            Review.decision == ReviewDecision.CHANGES_REQUESTED.value,
+        )
+        .order_by(Review.created_at.desc(), Review.id.desc())
+        .limit(1)
+    )
 
 
 async def _raw_requirement(db: AsyncSession, run: PipelineRun) -> str:
@@ -267,6 +295,7 @@ def rollback_target(failure_code: str | None) -> StageName:
         FailureCode.OUTLIER_DETECTED: StageName.DATA_SELECTION,
         FailureCode.FORMAT_INVALID: StageName.DATA_PROCESSING,
         FailureCode.PROCESSING_RULE_INVALID: StageName.DATA_PROCESSING,
+        FailureCode.PRIVACY_THRESHOLD_NOT_MET: StageName.DATA_SELECTION,
     }
     if not failure_code:
         return StageName.REQUIREMENT_ANALYSIS

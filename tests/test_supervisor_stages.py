@@ -22,6 +22,10 @@ from app.domains.pipeline.supervisor import (
     rollback_target,
     run_stage,
 )
+from app.domains.pipeline.plan_integrity import (
+    selection_plan_sha256,
+    snapshot_selection_plan,
+)
 
 
 NOW = datetime.now(timezone.utc)
@@ -64,10 +68,17 @@ def _stage(stage_code: str, status: str, stage_id: int, attempt_no: int = 1, **o
 class FakeDb:
     """next_pending_stage / build_stage_payload가 쓰는 읽기 경로만 흉내낸다."""
 
-    def __init__(self, run: PipelineRun, stages: list[StageRun], raw_requirement="서울 결제 데이터"):
+    def __init__(
+        self,
+        run: PipelineRun,
+        stages: list[StageRun],
+        raw_requirement="서울 결제 데이터",
+        review_feedback: str | None = None,
+    ):
         self.run = run
         self.stages = stages
         self.raw_requirement = raw_requirement
+        self.review_feedback = review_feedback
 
     async def get(self, model, object_id):
         if model is PipelineRun:
@@ -89,6 +100,8 @@ class FakeDb:
         return _Scalars(rows)
 
     async def scalar(self, statement):
+        if "reviews.feedback" in str(statement):
+            return self.review_feedback
         return self.raw_requirement
 
 
@@ -204,6 +217,35 @@ def test_data_selection_payload_reuses_completed_analysis_output():
     assert payload["available_data"]
 
 
+def test_data_selection_retry_carries_hitl_feedback():
+    analysis = {"usage_purpose": "research", "categories": {"지역": "수도권"}}
+    stages = [
+        _stage(
+            "REQUIREMENT_ANALYSIS",
+            StageRunStatus.COMPLETED.value,
+            10,
+            output_payload=analysis,
+        ),
+        _stage(
+            "DATA_SELECTION",
+            StageRunStatus.PENDING.value,
+            12,
+            attempt_no=2,
+            retry_of_id=11,
+        ),
+    ]
+    db = FakeDb(
+        _run(),
+        stages,
+        review_feedback="수도권은 서울뿐 아니라 경기와 인천도 포함해 주세요.",
+    )
+
+    payload = asyncio.run(build_stage_payload(db, stages[1]))
+
+    assert payload["analysis"] == analysis
+    assert payload["hitl_feedback"] == "수도권은 서울뿐 아니라 경기와 인천도 포함해 주세요."
+
+
 def test_data_processing_payload_ignores_stages_that_are_not_completed():
     """롤백된 이전 시도의 산출물이 새 시도 payload로 새지 않아야 한다."""
     stages = [
@@ -218,8 +260,98 @@ def test_data_processing_payload_ignores_stages_that_are_not_completed():
     ]
     db = FakeDb(_run(), stages)
 
-    with pytest.raises(StageDispatchError, match="requirement analysis or data selection"):
+    with pytest.raises(StageDispatchError, match="requirement analysis output"):
         asyncio.run(build_stage_payload(db, stages[2]))
+
+
+def test_data_processing_uses_only_hash_verified_approved_selection():
+    analysis = {"usage_purpose": "research"}
+    selection_output = {
+        "selected_tables": [{"table": "member_pseudonymized"}],
+        "source_columns": [{"column": "age_band"}],
+        "derived_columns": [{"name": "고객수"}],
+        "selection_query": {
+            "columns": ["age_band"],
+            "filters": {"age_band": {"operator": "eq", "value": "30대"}},
+        },
+        "interpretations": [],
+        "catalog_matches": [],
+        "catalog_issues": [],
+    }
+    approved_plan = snapshot_selection_plan(selection_output)
+    processing = _stage(
+        "DATA_PROCESSING",
+        StageRunStatus.PENDING.value,
+        12,
+        input_payload={
+            "approved_selection": {
+                "stage_run_id": 11,
+                "plan": approved_plan,
+                "sha256": selection_plan_sha256(approved_plan),
+                "approved_at": NOW.isoformat(),
+                "reviewer_id": 3,
+                "reviewer_name": "검토자",
+            }
+        },
+    )
+    stages = [
+        _stage(
+            "REQUIREMENT_ANALYSIS",
+            StageRunStatus.COMPLETED.value,
+            10,
+            output_payload=analysis,
+        ),
+        _stage(
+            "DATA_SELECTION",
+            StageRunStatus.COMPLETED.value,
+            11,
+            output_payload={"selection_query": {"filters": {"tampered": "value"}}},
+        ),
+        processing,
+    ]
+    db = FakeDb(_run(), stages)
+
+    payload = asyncio.run(build_stage_payload(db, processing))
+
+    assert payload["selection"] == approved_plan
+    assert payload["selection"] != stages[1].output_payload
+    assert payload["approval_audit"]["sha256"] == selection_plan_sha256(approved_plan)
+
+
+def test_data_processing_rejects_tampered_approved_selection():
+    plan = snapshot_selection_plan(
+        {
+            "selected_tables": [{"table": "member_pseudonymized"}],
+            "selection_query": {"columns": ["age_band"], "filters": {}},
+        }
+    )
+    expected_hash = selection_plan_sha256(plan)
+    plan["selection_query"]["filters"] = {"age_band": {"operator": "eq", "value": "40대"}}
+    processing = _stage(
+        "DATA_PROCESSING",
+        StageRunStatus.PENDING.value,
+        12,
+        input_payload={
+            "approved_selection": {
+                "stage_run_id": 11,
+                "plan": plan,
+                "sha256": expected_hash,
+            }
+        },
+    )
+    stages = [
+        _stage(
+            "REQUIREMENT_ANALYSIS",
+            StageRunStatus.COMPLETED.value,
+            10,
+            output_payload={"usage_purpose": "research"},
+        ),
+        processing,
+    ]
+    db = FakeDb(_run(), stages)
+
+    with pytest.raises(StageDispatchError, match="hash mismatch"):
+        asyncio.run(build_stage_payload(db, processing))
 
 
 class RejectingAgentClient:

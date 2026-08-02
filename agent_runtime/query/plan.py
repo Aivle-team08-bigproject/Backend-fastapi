@@ -29,7 +29,6 @@ class SelectionPlan:
         cls,
         selection: dict[str, Any],
         *,
-        available_columns: set[str] | None = None,
         default_limit: int = 1000,
         max_limit: int = 50000,
     ) -> "SelectionPlan":
@@ -55,22 +54,14 @@ class SelectionPlan:
             raise QueryPolicyError(f"query limit must be between 1 and {max_limit}")
 
         allowed = set().union(*(DATASETS[name].allowed_columns for name in datasets))
-        if available_columns is not None:
-            # 업로드 CSV는 사용자가 제공한 격리 데이터이므로 실제 헤더가 허용 목록이다.
-            # 운영 DB 조회에서는 위 정적 registry 허용 목록만 사용한다.
-            allowed = set(available_columns)
         raw_columns = query.get("columns")
         if raw_columns is None:
-            raw_columns = (
-                sorted(allowed)
-                if available_columns is not None
-                else [
-                    name
-                    for dataset in datasets
-                    for name in DATASETS[dataset].default_columns
-                    if name in allowed
-                ]
-            )
+            raw_columns = [
+                name
+                for dataset in datasets
+                for name in DATASETS[dataset].default_columns
+                if name in allowed
+            ]
         if not isinstance(raw_columns, list):
             raise QueryPolicyError("query columns must be a list")
         columns = tuple(dict.fromkeys(resolve_column(str(name), allowed) for name in raw_columns))
@@ -113,10 +104,12 @@ def _normalize_filter(raw: Any) -> tuple[str, Any]:
         operator, value = "in", list(raw)
     else:
         operator, value = "eq", raw
-    if operator not in {"eq", "in", "gte", "lte", "between"}:
+    if operator not in {"eq", "in", "gte", "lte", "between", "starts_with"}:
         raise QueryPolicyError(f"unsupported filter operator: {operator}")
     if operator in {"in", "between"} and not isinstance(value, (list, tuple)):
         raise QueryPolicyError(f"{operator} filter requires a list value")
     if operator == "between" and len(value) != 2:
         raise QueryPolicyError("between filter requires exactly two values")
+    if operator == "starts_with" and not isinstance(value, str):
+        raise QueryPolicyError("starts_with filter requires a string value")
     return operator, value

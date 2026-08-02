@@ -32,8 +32,7 @@ class Settings(BaseSettings):
     worker_status_key_prefix: str = "pipeline:run-status:latest"
     worker_status_ttl_seconds: int = 86400
     upload_root: str = "/app/uploads"
-    csv_upload_max_bytes: int = 50 * 1024 * 1024
-    pipeline_query_source: str = "csv"
+    database_host_override: str | None = None
 
     # --- 개발자 대시보드 ---
     dashboard_usd_to_krw_rate: Decimal = Decimal("1330")

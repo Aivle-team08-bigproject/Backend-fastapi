@@ -13,7 +13,6 @@ bcrypt==4.2.1
 PyJWT==2.10.1  # strands-agents -> mcp가 PyJWT>=2.10.1 요구
 celery[redis]==5.5.3
 redis==5.2.1
-python-multipart==0.0.20
 
 # --- 자동화 파이프라인 (Strands Agents SDK) ---
 strands-agents[openai]==1.48.0
