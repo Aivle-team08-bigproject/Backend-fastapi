@@ -84,14 +84,19 @@ def validate_processing_plan(plan: ProcessingPlan, selection: dict) -> None:
         missing = set(operation.source_columns) - available
         if missing:
             raise ProcessingPlanError(
-                f"operation {operation.id} references unavailable columns: {', '.join(sorted(missing))}"
+                f"operation {operation.id} references unavailable columns: {', '.join(sorted(missing))}; "
+                f"available_before_operation: {', '.join(sorted(available))}; "
+                "move the operation that creates each missing target_column earlier, or remove the reference"
             )
         _validate_operation(operation)
 
         if operation.type == "aggregate":
             group_by = _string_list(operation.parameters.get("group_by"), "aggregate.group_by")
             if set(group_by) - available:
-                raise ProcessingPlanError("aggregate group_by references unavailable columns")
+                raise ProcessingPlanError(
+                    "aggregate group_by references unavailable columns; "
+                    "group_by may use only source columns or targets created by earlier operations"
+                )
             metrics = operation.parameters.get("metrics")
             if not isinstance(metrics, list) or not metrics:
                 raise ProcessingPlanError("aggregate.metrics must be a non-empty list")
@@ -109,7 +114,10 @@ def validate_processing_plan(plan: ProcessingPlan, selection: dict) -> None:
         elif operation.type == "select_columns":
             columns = _string_list(operation.parameters.get("columns"), "select_columns.columns")
             if set(columns) - available:
-                raise ProcessingPlanError("select_columns references unavailable columns")
+                raise ProcessingPlanError(
+                    "select_columns references unavailable columns; "
+                    "columns may use only source columns or targets created by earlier operations"
+                )
             available = set(columns)
         elif operation.target_column:
             available.add(operation.target_column)
