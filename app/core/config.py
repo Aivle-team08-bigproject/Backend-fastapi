@@ -4,11 +4,7 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
 class Settings(BaseSettings):
-    """환경변수로 주입되는 앱 설정.
-
-    ARCHITECTURE.md의 "core/ 앱 설정·부트스트랩 (환경변수로 모든 주소 주입)" 원칙에 따라
-    이 파일 하나만 보면 어떤 환경변수가 필요한지 전부 알 수 있게 한다.
-    """
+    """환경변수로 주입되는 앱 설정."""
 
     model_config = SettingsConfigDict(
         # 로컬 팀 환경에서 기존 `env` 파일과 표준 `.env` 파일을 모두 허용한다.
@@ -69,13 +65,6 @@ class Settings(BaseSettings):
         "http://localhost:3000",
         "http://127.0.0.1:3000",
     ]
-
-    # --- 최초 관리자 계정 부트스트랩 ---
-    bootstrap_admin_id: str = "DEMO-ADMIN-001"
-    bootstrap_admin_password: str
-    bootstrap_admin_name: str = "최초 관리자"
-    bootstrap_admin_department: str = "IT관리팀"
-    bootstrap_admin_email: str = "admin@company.com"
 
     # --- 회원가입 ---
     # 회사 직원만 가입할 수 있도록 이메일 도메인을 제한한다. 콤마로 여러 도메인을 나열할 수 있고,
