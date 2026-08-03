@@ -110,7 +110,7 @@ transactions = Table(
 
 # K는 익명화 배치(scripts/anon_batch/fill_anon.py)의 값과 반드시 일치시킨다.
 # 데이터 규모가 커지면 상향할 수 있도록 환경변수로 뺀다.
-K_ANONYMITY = int(os.getenv("QUERY_K_ANONYMITY", "3"))
+K_ANONYMITY = max(5, int(os.getenv("QUERY_K_ANONYMITY", "5")))
 
 # 조합될수록 개인 특정에 가까워지는 인적 속성.
 PERSON_ATTRIBUTES = frozenset({

@@ -17,6 +17,7 @@ from sqlalchemy import create_engine, text
 
 from app.core.config import settings
 from app.domains.pipeline import supervisor
+from agent_runtime.data_processing.plan import processing_plan_sha256
 from app.worker.celery_app import celery_app
 from tests.test_auth_flow import _login_as_admin
 
@@ -31,9 +32,11 @@ class StubAgents:
 
     def __init__(self):
         self.calls: list[str] = []
+        self.payloads: list[dict] = []
 
     async def run(self, agent_name: str, model_name: str, payload: dict) -> dict:
         self.calls.append(agent_name)
+        self.payloads.append(payload)
 
         if agent_name == "requirement-analysis-agent":
             return {
@@ -95,6 +98,9 @@ class StubAgents:
                     "columns": ["transaction_id", "merchant_region"],
                     "filters": {},
                 },
+                "interpretations": [],
+                "catalog_issues": [],
+                "catalog_matches": [],
                 "sample_columns": columns,
                 "sample_rows": [
                     {"merchant_region": "서울", "결제건수": i}
@@ -104,7 +110,30 @@ class StubAgents:
             }
 
         if agent_name == "data-processing-agent":
+            processing_plan = {
+                "plan_version": "1.0",
+                "objective": "지역별 결제 집계",
+                "operations": [
+                    {
+                        "id": "op-1",
+                        "type": "deduplicate",
+                        "source_columns": ["지역", "결제건수"],
+                        "target_column": None,
+                        "parameters": {},
+                        "reason": "중복 결과 제거",
+                    }
+                ],
+                "output": {"columns": ["지역", "결제건수"], "formats": ["csv"]},
+                "quality_checks": [],
+                "explanation": "테스트 계획",
+            }
             return {
+                "processing_plan": processing_plan,
+                "processing_plan_sha256": processing_plan_sha256(processing_plan),
+                "execution_audit": {
+                    "approved_selection_stage_run_id": payload["approval_audit"]["stage_run_id"],
+                    "approved_selection_sha256": payload["approval_audit"]["sha256"],
+                },
                 "processed_columns": ["지역", "결제건수"],
                 "api_result": {"items": [], "meta": {}},
                 "csv_columns": ["지역", "결제건수"],
@@ -194,6 +223,26 @@ def test_full_approval_path_walks_every_stage_and_completes(client, stub_agents)
     assert _run_row(run_id)[0] == "WAITING_SAMPLE_REVIEW"
     assert stub_agents.calls[-1] == "data-selection-agent"
 
+    sample_response = client.get(f"/api/v1/runs/{run_id}/sample-preview")
+    assert sample_response.status_code == 200, sample_response.text
+    sample = sample_response.json()
+    assert sample["run_id"] == run_id
+    assert sample["stage"] == "DATA_SELECTION"
+    assert sample["attempt_no"] == 1
+    assert [column["name"] for column in sample["columns"]] == [
+        "merchant_region",
+        "결제건수",
+    ]
+    assert sample["rows"] == [
+        {"merchant_region": "서울", "결제건수": i}
+        for i in range(1, 6)
+    ]
+    assert sample["metadata"] == {
+        "is_synthetic": True,
+        "sample_count": 5,
+        "notice": None,
+    }
+
     # 2차 승인 -> 데이터 가공이 돌고 최종 게이트에서 멈춘다.
     response = client.post(f"/api/v1/runs/{run_id}/review", json={"approved": True}, headers=headers)
     assert response.status_code == 200, response.text
@@ -249,13 +298,12 @@ def test_rejection_rolls_back_and_creates_a_new_attempt(client, stub_agents):
     client.post(f"/api/v1/runs/{run_id}/review", json={"approved": True}, headers=headers)
     assert _run_row(run_id)[0] == "WAITING_SAMPLE_REVIEW"
 
-    # INSUFFICIENT_DATA 반려 -> DATA_SELECTION으로 되돌아가 재실행된다.
+    # 샘플 해석 수정 요청 -> 요구사항 분석은 유지하고 DATA_SELECTION만 재실행된다.
     response = client.post(
         f"/api/v1/runs/{run_id}/review",
         json={
             "approved": False,
-            "feedback": "선별된 데이터가 부족합니다.",
-            "failure_code": "INSUFFICIENT_DATA",
+            "feedback": "수도권은 서울뿐 아니라 경기와 인천도 포함해 주세요.",
         },
         headers=headers,
     )
@@ -275,8 +323,14 @@ def test_rejection_rolls_back_and_creates_a_new_attempt(client, stub_agents):
     # 되돌아간 단계가 다시 실행되어 같은 게이트에 멈춘다.
     assert _run_row(run_id)[0] == "WAITING_SAMPLE_REVIEW"
     assert second_attempt["DATA_SELECTION"] == "COMPLETED"
+    sample_response = client.get(f"/api/v1/runs/{run_id}/sample-preview")
+    assert sample_response.status_code == 200, sample_response.text
+    assert sample_response.json()["attempt_no"] == 2
     assert stub_agents.calls == [
         "requirement-analysis-agent",
         "data-selection-agent",
         "data-selection-agent",
     ]
+    assert stub_agents.payloads[-1]["hitl_feedback"] == (
+        "수도권은 서울뿐 아니라 경기와 인천도 포함해 주세요."
+    )

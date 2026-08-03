@@ -15,7 +15,7 @@ import asyncio
 from collections import Counter
 
 from agent_runtime.data_selection.agent import run as run_data_selection
-from agent_runtime.query.metadata import load_dataset_metadata
+from agent_runtime.query.metadata import load_dataset_metadata, load_reference_catalogs
 from agent_runtime.requirements_analysis.agent import run as run_requirements_analysis
 from app.db.hanacard_agent_session import AsyncSessionLocal
 
@@ -47,9 +47,12 @@ def main() -> None:
 
     async def load_metadata():
         async with AsyncSessionLocal() as db:
-            return await load_dataset_metadata(db, AVAILABLE_DATA)
+            return (
+                await load_dataset_metadata(db, AVAILABLE_DATA),
+                await load_reference_catalogs(db),
+            )
 
-    schema_metadata = asyncio.run(load_metadata())
+    schema_metadata, reference_catalogs = asyncio.run(load_metadata())
 
     print("=== 요구사항 분석 결과 (데이터 선별 입력으로 고정 재사용) ===")
     print(analysis_payload)
@@ -62,6 +65,7 @@ def main() -> None:
             analysis_payload,
             AVAILABLE_DATA,
             schema_metadata,
+            reference_catalogs=reference_catalogs,
         )
         results.append(result)
         print(result["data"] if result["ok"] else f"실패: {result['error_message']}")

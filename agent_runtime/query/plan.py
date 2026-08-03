@@ -45,24 +45,6 @@ class SelectionPlan:
         """
         return cls._build(
             selection,
-            available_columns=None,
-            default_limit=default_limit,
-            max_limit=max_limit,
-        )
-
-    @classmethod
-    def from_csv_output(
-        cls,
-        selection: dict[str, Any],
-        *,
-        available_columns: set[str],
-        default_limit: int = 1000,
-        max_limit: int = 50000,
-    ) -> "SelectionPlan":
-        """업로드 CSV용. 사용자가 제공한 격리 데이터라 실제 헤더가 허용 목록이 된다."""
-        return cls._build(
-            selection,
-            available_columns=set(available_columns),
             default_limit=default_limit,
             max_limit=max_limit,
         )
@@ -72,7 +54,6 @@ class SelectionPlan:
         cls,
         selection: dict[str, Any],
         *,
-        available_columns: set[str] | None,
         default_limit: int,
         max_limit: int,
     ) -> "SelectionPlan":
@@ -100,22 +81,14 @@ class SelectionPlan:
             raise QueryPolicyError(f"query limit must be between 1 and {max_limit}")
 
         allowed = set().union(*(DATASETS[name].allowed_columns for name in datasets))
-        if available_columns is not None:
-            # 업로드 CSV는 사용자가 제공한 격리 데이터이므로 실제 헤더가 허용 목록이다.
-            # 운영 DB 조회에서는 위 정적 registry 허용 목록만 사용한다.
-            allowed = set(available_columns)
         raw_columns = query.get("columns")
         if raw_columns is None:
-            raw_columns = (
-                sorted(allowed)
-                if available_columns is not None
-                else [
-                    name
-                    for dataset in datasets
-                    for name in DATASETS[dataset].default_columns
-                    if name in allowed
-                ]
-            )
+            raw_columns = [
+                name
+                for dataset in datasets
+                for name in DATASETS[dataset].default_columns
+                if name in allowed
+            ]
         if not isinstance(raw_columns, list):
             raise QueryPolicyError("query columns must be a list")
         columns = tuple(dict.fromkeys(resolve_column(str(name), allowed) for name in raw_columns))
@@ -129,17 +102,16 @@ class SelectionPlan:
 
         # [규칙 A] 인적 속성 2개 이상 + 개별 식별자 동시 선택 금지.
         # 함께 뽑으면 조합의 그룹 크기가 항상 1이 되어 규칙 B(executors.py)가
-        # 무력화된다. CSV는 사용자가 올린 격리 데이터라 적용 대상이 아니다.
-        if available_columns is None:
-            person_attrs = sorted(c for c in columns if c in PERSON_ATTRIBUTES)
-            identifiers = sorted(c for c in columns if c in ROW_IDENTIFIERS)
-            if len(person_attrs) >= 2 and identifiers:
-                raise QueryPolicyError(
-                    "인적 속성 여러 개와 개별 식별자를 함께 선택할 수 없습니다. "
-                    f"인적속성={person_attrs}, 식별자={identifiers}. "
-                    "식별자를 빼고 집단 단위로 조회하거나, 인적 속성을 1개 이하로 줄이세요. "
-                    "거래시각·카드발급월·가맹점명처럼 값이 잘게 나뉘는 컬럼도 식별자로 취급합니다."
-                )
+        # 무력화된다. 현재 조회 경로는 운영 DB 전용이므로 항상 적용한다.
+        person_attrs = sorted(c for c in columns if c in PERSON_ATTRIBUTES)
+        identifiers = sorted(c for c in columns if c in ROW_IDENTIFIERS)
+        if len(person_attrs) >= 2 and identifiers:
+            raise QueryPolicyError(
+                "인적 속성 여러 개와 개별 식별자를 함께 선택할 수 없습니다. "
+                f"인적속성={person_attrs}, 식별자={identifiers}. "
+                "식별자를 빼고 집단 단위로 조회하거나, 인적 속성을 1개 이하로 줄이세요. "
+                "거래시각·카드발급월·가맹점명처럼 값이 잘게 나뉘는 컬럼도 식별자로 취급합니다."
+            )
 
         return cls(datasets=datasets, columns=columns, filters=filters, limit=limit)
 
@@ -173,10 +145,12 @@ def _normalize_filter(raw: Any) -> tuple[str, Any]:
         operator, value = "in", list(raw)
     else:
         operator, value = "eq", raw
-    if operator not in {"eq", "in", "gte", "lte", "between"}:
+    if operator not in {"eq", "in", "gte", "lte", "between", "starts_with"}:
         raise QueryPolicyError(f"unsupported filter operator: {operator}")
     if operator in {"in", "between"} and not isinstance(value, (list, tuple)):
         raise QueryPolicyError(f"{operator} filter requires a list value")
     if operator == "between" and len(value) != 2:
         raise QueryPolicyError("between filter requires exactly two values")
+    if operator == "starts_with" and not isinstance(value, str):
+        raise QueryPolicyError("starts_with filter requires a string value")
     return operator, value
