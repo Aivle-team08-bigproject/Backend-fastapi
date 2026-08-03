@@ -148,7 +148,8 @@ NeonDB에서 RDS PostgreSQL 또는 Aurora PostgreSQL로 이전하는 신규 운�
 2. 애플리케이션용 DB 사용자와 마이그레이션·프로비저닝용 DB 사용자를 분리하고, 접속 정보와
    `JWT_SECRET` 등 비밀값을 AWS Secrets Manager에 저장한다.
 3. EC2에 Docker와 AWS Systems Manager Agent를 준비한 뒤, Secrets Manager 값을 환경변수로
-   주입해 백엔드 저장소와 이미지를 배포한다.
+   주입해 백엔드 저장소와 이미지를 배포한다. 운영용 컨테이너에는 개발용 `.env` 전체를
+   주입하지 않고, 각 서비스에 필요한 Secret만 전달한다.
 4. EC2에서 마이그레이션 전용 DB URL을 사용해 스키마와 기본 데이터를 준비한다.
 
 ```bash
@@ -177,6 +178,10 @@ python -m app.ops.provision_admin \
 명령은 활성 부서만 선택하고, 관리자 계정이 이미 존재하면 중단한다. 비밀번호는 프롬프트로
 입력하며 비워두면 임시 비밀번호를 한 번 출력하고 `must_change_password`를 활성화한다.
 비밀번호를 명령행 인자나 로그에 기록하지 말고, 실행 후 임시 비밀번호를 안전하게 폐기한다.
+
+개발용 `docker-compose.yml`은 편의를 위해 `.env`를 전체 주입할 수 있지만, AWS 운영 환경에서는
+이 방식을 사용하지 않는다. `HANACARD_MIGRATION_DATABASE_URL`은 일반 `api`·`celery-worker`
+컨테이너에 상시 주입하지 않고, SSM에서 운영 명령을 실행하는 순간에만 제한적으로 전달한다.
 
 ## 관리자 비밀번호 복구
 
