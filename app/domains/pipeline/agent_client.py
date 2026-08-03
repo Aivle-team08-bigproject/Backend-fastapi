@@ -26,8 +26,6 @@ class AgentRuntimeClient(AgentClient):
             return await self._run_requirement_analysis(payload)
         if agent_name == "data-selection-agent":
             return await self._run_data_selection(payload)
-        if agent_name == "data-retrieval-agent":
-            return await self._run_data_retrieval(payload)
         if agent_name == "data-processing-agent":
             return await self._run_data_processing(payload)
         raise ValueError(f"unknown agent: {agent_name}")
@@ -93,20 +91,23 @@ class AgentRuntimeClient(AgentClient):
             return {"_agent_error": result["error_message"] or "data selection agent failed"}
         return result["data"]
 
-    async def _run_data_retrieval(self, payload: dict) -> dict:
-        """선별된 CSV를 검증하고 메타데이터만 돌려준다 — 원본 행은 절대 반환하지 않는다."""
-        from agent_runtime.data_retrieval.agent import run as run_data_retrieval
-
-        result = await asyncio.to_thread(run_data_retrieval, payload)
-        if not result["ok"]:
-            return {
-                "_agent_error": result["error_message"] or "data retrieval worker failed",
-                "_failure_code": result.get("failure_code", "INSUFFICIENT_DATA"),
-            }
-        return result["data"]
-
     async def _run_data_processing(self, payload: dict) -> dict:
-        """선별 계획으로 익명화 DB를 조회한 뒤 데이터 가공 에이전트를 호출한다."""
+        """LLM이 가공 계획을 설계한 뒤 실제 행은 결정론적 executor로만 처리한다."""
+        try:
+            from agent_runtime.data_processing.config import settings as processing_settings
+            from agent_runtime.data_processing.planning_agent import create_processing_plan
+
+            processing_plan = await asyncio.to_thread(create_processing_plan, payload)
+            planning_audit = {
+                "provider": processing_settings.data_processing_model_provider,
+                "model_id": processing_settings.data_processing_model_id,
+            }
+        except Exception as exc:
+            return {
+                "_agent_error": f"processing plan agent failed: {exc}",
+                "_failure_code": "PROCESSING_RULE_INVALID",
+            }
+
         try:
             from app.db.portfolio_agent_session import AsyncSessionLocal as AgentSessionLocal
 
@@ -115,6 +116,8 @@ class AgentRuntimeClient(AgentClient):
             async with AgentSessionLocal() as db:
                 payload = {
                     **payload,
+                    "processing_plan": processing_plan,
+                    "processing_agent": planning_audit,
                     "selected_rows": await DatabaseQueryExecutor(db).execute(
                         payload.get("selection") or {}
                     ),

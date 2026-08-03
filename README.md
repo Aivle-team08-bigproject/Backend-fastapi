@@ -166,9 +166,8 @@ SQL 문자열을 직접 실행하지 않고 등록된 데이터셋·컬럼·필�
 
 - `agent_runtime/requirements_analysis`: 요구사항 구조화
 - `agent_runtime/data_selection`: 데이터셋·원본/파생 컬럼과 합성 샘플 설계
-- `agent_runtime/query`: CSV 또는 익명화 DB의 검증된 조회 계층
-- `agent_runtime/data_processing`: 결정론적 가공·익명화
-- `agent_runtime/data_retrieval`: 허용 경로의 CSV 검증과 메타데이터 생성
+- `agent_runtime/query`: 익명화 DB의 검증된 조회 계층
+- `agent_runtime/data_processing`: LLM 가공 계획 설계와 검증된 결정론적 Tool 실행
 
 요구사항 분석과 데이터 선별은 현재 DeepSeek의 OpenAI 호환 API를 사용한다.
 
