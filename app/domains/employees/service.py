@@ -24,10 +24,9 @@ from app.domains.employees.model import (
 )
 from app.domains.employees.schema import ApproveSignupRequest, CreateEmployeeRequest
 
-# 회원가입 시점에 동의받는 약관 버전. 실제 약관 문서를 별도로 관리하게 되면
-# 그 컨텐츠의 버전과 맞춰서 갱신한다.
-TERMS_VERSION = "2026-01"
-PRIVACY_VERSION = "2026-01"
+# 회원가입 시점에 동의받는 약관 버전. Frontend 공개 문서와 반드시 일치시킨다.
+TERMS_VERSION = "TERMS-2026-08"
+PRIVACY_VERSION = "PRIVACY-2026-08"
 
 async def _find_employee(db: AsyncSession, employee_code: str) -> Employee:
     result = await db.execute(

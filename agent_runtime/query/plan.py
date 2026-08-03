@@ -3,7 +3,13 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any
 
-from agent_runtime.query.registry import DATASETS, resolve_column
+from agent_runtime.query.registry import (
+    DATASETS,
+    PERSON_ATTRIBUTES,
+    ROW_IDENTIFIERS,
+    canonical_dataset,
+    resolve_column,
+)
 
 
 class QueryPolicyError(ValueError):
@@ -32,10 +38,31 @@ class SelectionPlan:
         default_limit: int = 1000,
         max_limit: int = 50000,
     ) -> "SelectionPlan":
+        """운영 DB 조회용. 허용 컬럼은 정적 registry만 사용한다.
+
+        available_columns를 아예 받지 않는다 — 이 인자가 넘어오면 정적
+        화이트리스트가 통째로 대체되므로, DB 경로에서는 넘길 수 없어야 한다.
+        """
+        return cls._build(
+            selection,
+            default_limit=default_limit,
+            max_limit=max_limit,
+        )
+
+    @classmethod
+    def _build(
+        cls,
+        selection: dict[str, Any],
+        *,
+        default_limit: int,
+        max_limit: int,
+    ) -> "SelectionPlan":
         selected = selection.get("selected_tables")
         if not isinstance(selected, list) or not selected:
             raise QueryPolicyError("selected_tables must be a non-empty list")
-        datasets = tuple(dict.fromkeys(_dataset_name(item) for item in selected))
+        datasets = tuple(
+            dict.fromkeys(canonical_dataset(_dataset_name(item)) for item in selected)
+        )
         unknown = [name for name in datasets if name not in DATASETS]
         if unknown:
             raise QueryPolicyError(f"unknown datasets: {', '.join(unknown)}")
@@ -72,6 +99,20 @@ class SelectionPlan:
             raise QueryPolicyError("no allowed columns were selected")
 
         filters = _parse_filters(query.get("filters") or {}, allowed)
+
+        # [규칙 A] 인적 속성 2개 이상 + 개별 식별자 동시 선택 금지.
+        # 함께 뽑으면 조합의 그룹 크기가 항상 1이 되어 규칙 B(executors.py)가
+        # 무력화된다. 현재 조회 경로는 운영 DB 전용이므로 항상 적용한다.
+        person_attrs = sorted(c for c in columns if c in PERSON_ATTRIBUTES)
+        identifiers = sorted(c for c in columns if c in ROW_IDENTIFIERS)
+        if len(person_attrs) >= 2 and identifiers:
+            raise QueryPolicyError(
+                "인적 속성 여러 개와 개별 식별자를 함께 선택할 수 없습니다. "
+                f"인적속성={person_attrs}, 식별자={identifiers}. "
+                "식별자를 빼고 집단 단위로 조회하거나, 인적 속성을 1개 이하로 줄이세요. "
+                "거래시각·카드발급월·가맹점명처럼 값이 잘게 나뉘는 컬럼도 식별자로 취급합니다."
+            )
+
         return cls(datasets=datasets, columns=columns, filters=filters, limit=limit)
 
 

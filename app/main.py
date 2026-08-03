@@ -5,13 +5,11 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from app.common.session_activity_middleware import SessionActivityMiddleware
 from app.api.router import api_router
-from app.core.bootstrap import ensure_bootstrap_admin
 from app.core.config import settings
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    await ensure_bootstrap_admin()
     yield
 
 
