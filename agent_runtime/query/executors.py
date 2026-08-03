@@ -4,18 +4,27 @@ from collections.abc import Iterable, Mapping
 from decimal import Decimal
 from typing import Any
 
-from sqlalchemy import ColumnElement, Select, select
+from sqlalchemy import ColumnElement, Select, distinct, func, select, tuple_
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from agent_runtime.query.plan import FilterCondition, QueryPolicyError, SelectionPlan
-from agent_runtime.query.registry import DATASETS, cards, customers, merchants, transactions
-
+from agent_runtime.query.registry import (
+    DATASETS,
+    K_ANONYMITY,
+    PERSON_ATTRIBUTES,
+    QUASI_IDENTIFIERS,
+    cards,
+    customers,
+    mcc_codes,
+    merchants,
+    transactions,
+)
 
 class CsvQueryExecutor:
     def execute(self, rows: Iterable[Mapping[str, Any]], selection: dict[str, Any]) -> list[dict[str, Any]]:
         materialized = [dict(row) for row in rows]
         available = set().union(*(row.keys() for row in materialized)) if materialized else set()
-        plan = SelectionPlan.from_agent_output(selection, available_columns=available)
+        plan = SelectionPlan.from_csv_output(selection, available_columns=available)
         selected = []
         for row in materialized:
             if all(_matches(row.get(item.column), item) for item in plan.filters):
@@ -38,25 +47,72 @@ class DatabaseQueryExecutor:
     @staticmethod
     def build_statement(plan: SelectionPlan) -> Select:
         source, available_tables = _joined_source(plan.datasets)
-        columns = []
         column_map = {}
         for table in available_tables:
             for column in table.c:
                 if column.name not in column_map:
                     column_map[column.name] = column
+
+        columns = []
         for name in plan.columns:
             column = column_map.get(name)
             if column is None:
                 raise QueryPolicyError(f"column is unavailable for selected join: {name}")
             columns.append(column)
-        statement = select(*columns).select_from(source)
+
+        conditions = []
         for condition in plan.filters:
             column = column_map.get(condition.column)
             if column is None:
                 raise QueryPolicyError(f"filter column is unavailable: {condition.column}")
-            statement = statement.where(_sql_condition(column, condition))
-        return statement.limit(plan.limit)
+            conditions.append(_sql_condition(column, condition))
 
+        person_columns = [c for c in columns if c.name in PERSON_ATTRIBUTES]
+        if len(person_columns) < 2:
+            statement = select(*columns).select_from(source)
+            for condition in conditions:
+                statement = statement.where(condition)
+            return statement.limit(plan.limit)
+
+        # [규칙 B] 인적 속성이 2개 이상이면, 출력에 포함된 모든 차원 조합에
+        # 서로 다른 고객이 K명 이상 있어야 그 행을 반환한다.
+        #
+        # 이전 구현은 두 가지가 틀렸다.
+        #   1) count(*)가 행 수를 세서, 거래를 조인하면 한 사람이 여러 행이 되어
+        #      고객 1명뿐인 조합도 통과했다.
+        #   2) 판정 단위가 인적 속성뿐이라 출력 단위(업종 포함)보다 거칠었다.
+        #      세밀하게 내보내면서 안전성은 뭉뚱그려 판단한 셈이다.
+        #   실측: 12,477행 중 12,477행이 통과해 사실상 아무것도 막지 못했다.
+        #        고객 1~2명인 조합 872개, 그중 1명뿐인 조합이 399개 새어나갔다.
+        #
+        # PostgreSQL은 window에서 COUNT(DISTINCT)를 지원하지 않으므로
+        # GROUP BY + HAVING 서브쿼리로 안전한 조합을 먼저 구하고 세미조인한다.
+        # 행 단위 출력이 유지되어 가공 단계가 받는 형태는 바뀌지 않는다.
+        # LIMIT은 세미조인 바깥에 있어야 필터가 먼저 걸린다.
+        dimension_columns = [c for c in columns if c.name in QUASI_IDENTIFIERS]
+        customer_key = column_map.get("customer_id")
+        if customer_key is None:
+            raise QueryPolicyError(
+                "인적 속성을 여러 개 조회하려면 고객 단위로 집단 크기를 셀 수 있어야 합니다. "
+                "anon_customers를 함께 선택해 다시 요청하세요."
+            )
+
+        safe_combinations = select(*dimension_columns).select_from(source)
+        for condition in conditions:
+            safe_combinations = safe_combinations.where(condition)
+        safe_combinations = (
+            safe_combinations.group_by(*dimension_columns)
+            .having(func.count(distinct(customer_key)) >= K_ANONYMITY)
+            .subquery()
+        )
+
+        statement = select(*columns).select_from(source)
+        for condition in conditions:
+            statement = statement.where(condition)
+        statement = statement.where(
+            tuple_(*dimension_columns).in_(select(*safe_combinations.c))
+        )
+        return statement.limit(plan.limit)
 
 def _joined_source(dataset_names: tuple[str, ...]):
     tables = {DATASETS[name].table for name in dataset_names}
@@ -66,13 +122,23 @@ def _joined_source(dataset_names: tuple[str, ...]):
         if merchants in tables:
             source = source.outerjoin(merchants, transactions.c.merchant_id == merchants.c.merchant_id)
             available.append(merchants)
+        if mcc_codes in tables:
+            # 거래의 mcc_code로 붙인다. 가맹점이 아니라 거래 기준이어야
+            # 해외거래(merchant_id NULL)도 업종명을 얻는다.
+            source = source.join(mcc_codes, transactions.c.mcc_code == mcc_codes.c.mcc_code)
+            available.append(mcc_codes)
         if customers in tables:
             source = source.join(cards, transactions.c.card_number_masked == cards.c.card_number_masked)
             source = source.join(customers, cards.c.customer_id == customers.c.customer_id)
             available.extend([cards, customers])
         return source, available
-    if customers in tables and merchants in tables:
-        raise QueryPolicyError("member and merchant datasets require transaction_pseudonymized for a safe join")
+    if mcc_codes in tables and merchants in tables and customers not in tables:
+        source = merchants.join(mcc_codes, merchants.c.mcc_code == mcc_codes.c.mcc_code)
+        return source, [merchants, mcc_codes]
+    if customers in tables and (merchants in tables or mcc_codes in tables):
+        raise QueryPolicyError(
+            "고객 데이터와 가맹점/업종 데이터를 함께 조회하려면 anon_transactions가 필요합니다"
+        )
     table = next(iter(tables))
     return table, [table]
 
