@@ -139,6 +139,45 @@ celery -A app.worker.celery_app:celery_app worker --loglevel=INFO --concurrency=
 
 두 프로세스는 각각 별도 터미널에서 실행한다.
 
+## AWS 운영 환경 초기 구축
+
+NeonDB에서 RDS PostgreSQL 또는 Aurora PostgreSQL로 이전하는 신규 운영 환경은 다음 순서로
+준비한다.
+
+1. RDS/Aurora를 프라이빗 서브넷에 생성하고 EC2 보안 그룹에서만 DB 포트에 접근하도록 설정한다.
+2. 애플리케이션용 DB 사용자와 마이그레이션·프로비저닝용 DB 사용자를 분리하고, 접속 정보와
+   `JWT_SECRET` 등 비밀값을 AWS Secrets Manager에 저장한다.
+3. EC2에 Docker와 AWS Systems Manager Agent를 준비한 뒤, Secrets Manager 값을 환경변수로
+   주입해 백엔드 저장소와 이미지를 배포한다.
+4. EC2에서 마이그레이션 전용 DB URL을 사용해 스키마와 기본 데이터를 준비한다.
+
+```bash
+alembic upgrade head
+docker compose up -d --build
+curl http://127.0.0.1:8000/health
+```
+
+5. Health check가 성공한 뒤 SSM Session Manager로 EC2에 접속해 최초 관리자 프로비저닝을
+   한 번 실행한다. 애플리케이션 startup에서는 이 작업을 자동 실행하지 않는다.
+
+## 최초 관리자 프로비저닝
+
+애플리케이션 startup에서는 관리자 계정을 자동 생성하지 않는다. 신규 운영 환경에서만
+AWS Systems Manager Session Manager 등으로 운영 EC2에 접속해, 마이그레이션 전용 DB
+사용자와 연결된 환경변수로 다음 명령을 명시적으로 한 번 실행한다.
+
+```bash
+python -m app.ops.provision_admin \
+  --employee-code HANA-ADMIN-001 \
+  --name "운영 관리자" \
+  --email admin@company.com \
+  --department-code IT_ADMIN
+```
+
+명령은 활성 부서만 선택하고, 관리자 계정이 이미 존재하면 중단한다. 비밀번호는 프롬프트로
+입력하며 비워두면 임시 비밀번호를 한 번 출력하고 `must_change_password`를 활성화한다.
+비밀번호를 명령행 인자나 로그에 기록하지 말고, 실행 후 임시 비밀번호를 안전하게 폐기한다.
+
 ## 파이프라인 사용
 
 주요 API 흐름은 다음과 같다.
