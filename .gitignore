@@ -28,3 +28,7 @@ docs/
 # 로컬 AI 도구 설정
 .claude/
 CLAUDE.md
+
+# 로컬 접속 정보 — 절대 커밋 금지
+.env.*
+!.env.example
