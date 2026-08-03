@@ -143,47 +143,10 @@ def validate_stage_output(stage_name: StageName, output: dict) -> dict:
         if errors and failure_code is None:
             failure_code = FailureCode.SCHEMA_INVALID
 
-    if stage_name == StageName.DATA_RETRIEVAL:
-        required = [
-            "source_type",
-            "input_csv_path",
-            "input_sha256",
-            "input_row_count",
-            "source_csv_path",
-            "source_sha256",
-            "encoding",
-            "row_count",
-            "columns",
-            "applied_filters",
-            "unmapped_filters",
-            "raw_rows_stored_in_database",
-        ]
-        errors.extend(_missing(required, output))
-        if not isinstance(output.get("row_count"), int) or output.get("row_count", 0) <= 0:
-            errors.append("row_count must be a positive integer")
-        if not output.get("columns"):
-            errors.append("columns must not be empty")
-        if output.get("raw_rows_stored_in_database") is not False:
-            errors.append("raw rows must not be stored in the supervisor database")
-        if output.get("unmapped_filters"):
-            errors.append("unmapped_filters must be empty")
-        input_count = output.get("input_row_count")
-        selected_count = output.get("row_count")
-        if (
-            isinstance(input_count, int)
-            and isinstance(selected_count, int)
-            and selected_count > input_count
-        ):
-            errors.append("selected row_count must not exceed input_row_count")
-        if errors:
-            raw_code = output.get("_failure_code")
-            try:
-                failure_code = FailureCode(raw_code) if raw_code else FailureCode.INSUFFICIENT_DATA
-            except ValueError:
-                failure_code = FailureCode.INSUFFICIENT_DATA
-
     if stage_name == StageName.DATA_PROCESSING:
         required = [
+            "processing_plan",
+            "processing_plan_sha256",
             "execution_audit",
             "processed_columns",
             "api_result",
@@ -197,6 +160,26 @@ def validate_stage_output(stage_name: StageName, output: dict) -> dict:
         if not output.get("processed_columns"):
             errors.append("processed_columns must not be empty")
             failure_code = FailureCode.PROCESSING_RULE_INVALID
+        if not isinstance(output.get("processing_plan"), dict):
+            errors.append("processing_plan must be a JSON object")
+            failure_code = FailureCode.PROCESSING_RULE_INVALID
+        if not isinstance(output.get("processing_plan_sha256"), str):
+            errors.append("processing_plan_sha256 must be a string")
+            failure_code = FailureCode.PROCESSING_RULE_INVALID
+        elif isinstance(output.get("processing_plan"), dict):
+            try:
+                from agent_runtime.data_processing.plan import (
+                    ProcessingPlan,
+                    processing_plan_sha256,
+                )
+
+                parsed_plan = ProcessingPlan.model_validate(output["processing_plan"])
+                if processing_plan_sha256(parsed_plan) != output["processing_plan_sha256"]:
+                    errors.append("processing_plan_sha256 does not match processing_plan")
+            except ValueError as exc:
+                errors.append(f"processing_plan is invalid: {exc}")
+            if errors:
+                failure_code = FailureCode.PROCESSING_RULE_INVALID
         if errors and failure_code is None:
             raw_code = output.get("_failure_code")
             try:

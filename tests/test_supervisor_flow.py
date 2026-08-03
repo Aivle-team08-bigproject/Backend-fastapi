@@ -17,6 +17,7 @@ from sqlalchemy import create_engine, text
 
 from app.core.config import settings
 from app.domains.pipeline import supervisor
+from agent_runtime.data_processing.plan import processing_plan_sha256
 from app.worker.celery_app import celery_app
 from tests.test_auth_flow import _login_as_admin
 
@@ -109,7 +110,26 @@ class StubAgents:
             }
 
         if agent_name == "data-processing-agent":
+            processing_plan = {
+                "plan_version": "1.0",
+                "objective": "지역별 결제 집계",
+                "operations": [
+                    {
+                        "id": "op-1",
+                        "type": "deduplicate",
+                        "source_columns": ["지역", "결제건수"],
+                        "target_column": None,
+                        "parameters": {},
+                        "reason": "중복 결과 제거",
+                    }
+                ],
+                "output": {"columns": ["지역", "결제건수"], "formats": ["csv"]},
+                "quality_checks": [],
+                "explanation": "테스트 계획",
+            }
             return {
+                "processing_plan": processing_plan,
+                "processing_plan_sha256": processing_plan_sha256(processing_plan),
                 "execution_audit": {
                     "approved_selection_stage_run_id": payload["approval_audit"]["stage_run_id"],
                     "approved_selection_sha256": payload["approval_audit"]["sha256"],

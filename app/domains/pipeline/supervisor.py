@@ -28,8 +28,8 @@ from app.domains.pipeline.model import (
 from app.domains.pipeline.validation import validate_stage_output
 from app.domains.pipeline.plan_integrity import verify_selection_plan
 
-# Supervisor가 순서대로 진행시키는 단계. DATA_RETRIEVAL은 별도 단계가 아니라
-# DATA_PROCESSING 안에서 query 레이어가 담당한다.
+# Supervisor가 순서대로 진행시키는 단계. 데이터 조회는 DATA_PROCESSING 안에서
+# query 레이어가 담당한다.
 STAGE_ORDER: tuple[StageName, ...] = (
     StageName.REQUIREMENT_ANALYSIS,
     StageName.DATA_SELECTION,
