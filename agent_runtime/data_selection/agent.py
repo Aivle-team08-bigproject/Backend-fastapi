@@ -7,6 +7,7 @@ from strands import Agent, tool
 from strands.models.openai import OpenAIModel
 
 from agent_runtime.data_selection.config import settings
+from agent_runtime.observability import build_agent_completion_tool
 
 
 SYSTEM_PROMPT = """당신은 '하나 데이터 마켓'의 DB 메타데이터 기반 컬럼 설계 에이전트다.
@@ -126,6 +127,16 @@ SYSTEM_PROMPT = """당신은 '하나 데이터 마켓'의 DB 메타데이터 기
   }
 }
 
+완료 로깅:
+- 먼저 위의 최종 JSON을 완성하고 모든 필수 키와 값을 자체 점검한다. 그 JSON을 유지한 상태에서
+  `log_agent_completion`을 정확히 한 번 호출한 뒤, 도구 결과와 무관하게 동일한 최종 JSON을
+  반환한다.
+- completed_tasks에는 실제로 수행한 작업을 짧은 문자열 배열로 전달하고, summary에는 결과를
+  한 문장으로 요약한다. 도구 결과가 실패해도 작업 자체를 실패로 처리하지 않는다.
+- `log_agent_completion` 호출과 도구 결과는 최종 응답이 아니다. 도구 결과를 받은 즉시 다음
+  assistant 응답에서 직전에 완성한 동일한 전체 JSON을 다시 출력한다. 도구 호출만 남기고
+  응답을 끝내거나, 도구 결과 객체를 최종 응답으로 반환하지 않는다.
+
 규칙:
 - schema_metadata의 DB COMMENT를 컬럼 의미 판단의 우선 근거로 사용한다.
 - 자연어 업종처럼 실제 코드값 변환이 필요한 조건은 reference_catalogs의 COMMENT와 entries를
@@ -188,7 +199,12 @@ def _build_model() -> OpenAIModel:
 
 
 def build_agent() -> Agent:
-    return Agent(model=_build_model(), tools=[], system_prompt=SYSTEM_PROMPT, callback_handler=None)
+    return Agent(
+        model=_build_model(),
+        tools=[build_agent_completion_tool("data-selection-agent")],
+        system_prompt=SYSTEM_PROMPT,
+        callback_handler=None,
+    )
 
 
 def _extract_json(raw_text: str) -> dict:
