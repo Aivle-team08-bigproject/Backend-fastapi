@@ -30,8 +30,13 @@ from app.domains.pipeline.schema import (
     PipelineRunResponse,
     RunEventResponse,
     RunStageResponse,
+    SamplePreviewResponse,
     StageReviewRequest,
     StageReviewResponse,
+)
+from app.domains.pipeline.plan_integrity import (
+    selection_plan_sha256,
+    snapshot_selection_plan,
 )
 from app.domains.pipeline.supervisor import HITL_GATE, STAGE_ORDER, rollback_target
 from app.worker.tasks import process_pipeline_run
@@ -288,65 +293,77 @@ async def get_pipeline_run(db: AsyncSession, run_id: int) -> PipelineRunResponse
     )
 
 
-async def dispatch_uploaded_csv(
-    db: AsyncSession,
-    run_id: int,
-    upload_metadata: dict,
-) -> str:
+async def get_sample_preview(db: AsyncSession, run_id: int) -> SamplePreviewResponse:
+    """가장 최근에 완료된 데이터 선별 단계의 합성 샘플을 반환한다."""
     run = await db.get(PipelineRun, run_id)
     if run is None:
         raise not_found("PIPELINE_RUN_NOT_FOUND", "파이프라인 실행을 찾을 수 없습니다.")
-    if run.status in {
-        PipelineRunStatus.RUNNING.value,
-        PipelineRunStatus.COMPLETED.value,
-        PipelineRunStatus.CANCELLED.value,
-    }:
+
+    stage = await db.scalar(
+        select(StageRun)
+        .where(
+            StageRun.pipeline_run_id == run.id,
+            StageRun.stage_code == StageName.DATA_SELECTION.value,
+            StageRun.status == StageRunStatus.COMPLETED.value,
+        )
+        .order_by(StageRun.attempt_no.desc(), StageRun.id.desc())
+        .limit(1)
+    )
+    if stage is None:
+        raise not_found(
+            "PIPELINE_SAMPLE_NOT_READY",
+            "데이터 선별 샘플이 아직 준비되지 않았습니다.",
+        )
+
+    output = stage.output_payload or {}
+    columns = output.get("sample_columns")
+    rows = output.get("sample_rows")
+    metadata = output.get("sample_metadata")
+    if (
+        not isinstance(columns, list)
+        or not columns
+        or not isinstance(rows, list)
+        or not isinstance(metadata, dict)
+    ):
         raise DomainException(
             status.HTTP_409_CONFLICT,
-            "PIPELINE_RUN_NOT_UPLOADABLE",
-            "현재 실행 상태에서는 CSV를 업로드할 수 없습니다.",
+            "PIPELINE_SAMPLE_INVALID",
+            "저장된 데이터 선별 결과에 유효한 샘플이 없습니다.",
         )
 
-    celery_task_id = str(uuid4())
-    now = utcnow()
-    run.celery_task_id = celery_task_id
-    run.status = PipelineRunStatus.QUEUED.value
-    run.current_stage = HARDCODED_STAGES[0]
-    run.progress_percent = 0
-    run.started_at = None
-    run.completed_at = None
-    run.updated_at = now
-
-    stages = list(
-        (await db.scalars(select(StageRun).where(StageRun.pipeline_run_id == run.id))).all()
+    interpretations = output.get("interpretations") or []
+    catalog_issues = output.get("catalog_issues") or []
+    catalog_matches = output.get("catalog_matches") or []
+    confirmation_terms = list(
+        dict.fromkeys(
+            str(item["term"])
+            for item in [*interpretations, *catalog_matches]
+            if isinstance(item, dict)
+            and item.get("term")
+            and item.get("requires_confirmation") is True
+        )
     )
-    for stage in stages:
-        stage.status = StageRunStatus.PENDING.value
-        stage.executor_reference = celery_task_id
-        stage.started_at = None
-        stage.completed_at = None
-        stage.error_message = None
-        if stage.stage_code == "DATA_PROCESSING":
-            stage.input_payload = {**(stage.input_payload or {}), "csv": upload_metadata}
-    await db.commit()
-
-    try:
-        process_pipeline_run.apply_async(
-            args=[run.id, upload_metadata["storage_key"]],
-            task_id=celery_task_id,
-        )
-    except Exception as exc:
-        run.status = PipelineRunStatus.FAILED.value
-        run.current_stage = "DISPATCH"
-        run.completed_at = utcnow()
-        run.updated_at = run.completed_at
-        await db.commit()
-        raise DomainException(
-            status.HTTP_503_SERVICE_UNAVAILABLE,
-            "PIPELINE_DISPATCH_FAILED",
-            "CSV 처리 작업을 발행하지 못했습니다.",
-        ) from exc
-    return celery_task_id
+    return SamplePreviewResponse(
+        run_id=run.id,
+        stage=StageName.DATA_SELECTION.value,
+        attempt_no=stage.attempt_no,
+        columns=columns,
+        rows=rows,
+        metadata=metadata,
+        selected_tables=output.get("selected_tables") or [],
+        source_columns=output.get("source_columns") or [],
+        derived_columns=output.get("derived_columns") or [],
+        selection_query=output.get("selection_query") or {},
+        interpretations=interpretations,
+        catalog_issues=catalog_issues,
+        catalog_matches=catalog_matches,
+        review_summary={
+            "requires_confirmation": bool(confirmation_terms),
+            "confirmation_terms": confirmation_terms,
+            "has_catalog_issues": bool(catalog_issues),
+            "catalog_issue_count": len(catalog_issues),
+        },
+    )
 
 
 _REVIEW_TYPE_FOR_GATE = {
@@ -407,9 +424,19 @@ async def submit_stage_review(
     )
 
     if not payload.approved:
-        target = rollback_target(
-            payload.failure_code.value if payload.failure_code else FailureCode.HUMAN_REJECTED.value
-        )
+        if (
+            gate == PipelineRunStatus.WAITING_SAMPLE_REVIEW
+            and payload.failure_code is None
+        ):
+            # 합성 샘플의 의미 해석이 고객 의도와 다르면 승인된 요구사항 분석은
+            # 유지하고, 자연어 feedback을 전달해 선별 단계만 다시 생성한다.
+            target = StageName.DATA_SELECTION
+        else:
+            target = rollback_target(
+                payload.failure_code.value
+                if payload.failure_code
+                else FailureCode.HUMAN_REJECTED.value
+            )
         await _reopen_from(db, run, target, now)
         run.status = PipelineRunStatus.QUEUED.value
         run.current_stage = target.value
@@ -453,6 +480,41 @@ async def submit_stage_review(
         )
 
     next_stage = STAGE_ORDER[STAGE_ORDER.index(reviewed_stage) + 1]
+    if reviewed_stage == StageName.DATA_SELECTION:
+        if stage_run is None:
+            raise DomainException(
+                status.HTTP_409_CONFLICT,
+                "PIPELINE_SELECTION_NOT_FOUND",
+                "승인할 데이터 선별 결과를 찾을 수 없습니다.",
+            )
+        processing_stage = await db.scalar(
+            select(StageRun)
+            .where(
+                StageRun.pipeline_run_id == run.id,
+                StageRun.stage_code == StageName.DATA_PROCESSING.value,
+                StageRun.status == StageRunStatus.PENDING.value,
+            )
+            .order_by(StageRun.attempt_no.desc(), StageRun.id.desc())
+            .limit(1)
+        )
+        if processing_stage is None:
+            raise DomainException(
+                status.HTTP_409_CONFLICT,
+                "PIPELINE_PROCESSING_STAGE_NOT_FOUND",
+                "승인 계획을 연결할 데이터 가공 단계를 찾을 수 없습니다.",
+            )
+        approved_plan = snapshot_selection_plan(stage_run.output_payload or {})
+        processing_stage.input_payload = {
+            **(processing_stage.input_payload or {}),
+            "approved_selection": {
+                "stage_run_id": stage_run.id,
+                "plan": approved_plan,
+                "sha256": selection_plan_sha256(approved_plan),
+                "approved_at": now.isoformat(),
+                "reviewer_id": reviewer.id,
+                "reviewer_name": reviewer.name,
+            },
+        }
     run.status = PipelineRunStatus.QUEUED.value
     run.current_stage = next_stage.value
     run.rollback_to_stage = None

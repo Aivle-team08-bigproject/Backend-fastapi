@@ -7,8 +7,7 @@
 상태 쓰기 주체는 이 Worker다 — status_recorder.record_status가 DB에 쓰고, 그 다음
 프론트 화면 갱신용으로 Redis에 발행한다(FastAPI SSE가 구독).
 
-process_pipeline_run의 이름과 인자(run_id, input_storage_key)는 기존 호출부
-(app/domains/pipeline/service.py)와의 계약이라 유지한다.
+process_pipeline_run은 run_id를 받아 다음 실행 단계를 발행한다.
 """
 
 import asyncio
@@ -155,13 +154,8 @@ async def _run_stage(stage_id: int, celery_task_id: str) -> dict:
 
 
 @celery_app.task(bind=True, name="pipeline.process_run")
-def process_pipeline_run(self, run_id: int, input_storage_key: str | None = None) -> dict:
-    """Supervisor — 다음 단계를 정해서 단계 worker를 발행한다.
-
-    input_storage_key는 CSV 업로드 경로에서 넘어오지만 여기서는 쓰지 않는다.
-    업로드 메타데이터는 이미 DATA_PROCESSING 단계의 input_payload["csv"]에 저장돼 있고
-    Supervisor가 payload를 조립할 때 그걸 읽는다. 인자는 기존 호출 계약 유지용이다.
-    """
+def process_pipeline_run(self, run_id: int) -> dict:
+    """Supervisor — 다음 단계를 정해서 단계 worker를 발행한다."""
     dispatched = _run_async(_dispatch(run_id))
     run_pipeline_stage.apply_async(
         args=[dispatched["stage_id"], dispatched["celery_task_id"]]

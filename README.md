@@ -95,8 +95,6 @@ REQUIREMENTS_ANALYSIS_MODEL_PROVIDER=deepseek
 REQUIREMENTS_ANALYSIS_MODEL_ID=deepseek-v4-flash
 DATA_SELECTION_MODEL_PROVIDER=deepseek
 DATA_SELECTION_MODEL_ID=deepseek-v4-flash
-
-PIPELINE_QUERY_SOURCE=csv
 ```
 
 앱의 전체 설정과 기본값은 `app/core/config.py`, 에이전트 모델 설정은
@@ -205,19 +203,15 @@ python -m app.ops.reset_admin_password \
 
 1. `POST /api/v1/data-requests` — 요청 생성 및 Celery 작업 등록
 2. `GET /api/v1/runs/{run_id}` — 실행 상태와 단계별 결과 조회
-3. `POST /api/v1/runs/{run_id}/review` — 현재 단계 승인 또는 반려
-4. `GET /api/v1/runs/{run_id}/events` — 진행 상태 SSE 구독
+3. `GET /api/v1/runs/{run_id}/sample-preview` — 최신 선별 단계의 합성 샘플 5건 조회
+4. `POST /api/v1/runs/{run_id}/review` — 현재 단계 승인 또는 반려
+5. `GET /api/v1/runs/{run_id}/events` — 진행 상태 SSE 구독
 
-`PIPELINE_QUERY_SOURCE=csv`이면 데이터 선별 승인 후 CSV를 업로드한다.
-
-- `POST /api/v1/runs/{run_id}/input-csv` — CSV 업로드
-- `GET /api/v1/runs/{run_id}/result.csv` — 가공 결과 다운로드
-
-API와 Worker는 Compose의 `uploaded_data` 볼륨을 공유한다.
-
-`PIPELINE_QUERY_SOURCE=database`이면 업로드 없이 `agent_svc` 계정으로 `anon` 스키마를
-조회한다. 에이전트가 만든 SQL 문자열을 직접 실행하지 않고 등록된 데이터셋·컬럼·필터·조인만
-SQLAlchemy 표현식으로 변환한다.
+샘플 승인 후에는 `agent_svc` 계정으로 익명화 데이터베이스를 조회한다. 에이전트가 만든
+SQL 문자열을 직접 실행하지 않고 등록된 데이터셋·컬럼·필터·조인만 SQLAlchemy 표현식으로
+변환한다. 가공이 완료되면 `GET /api/v1/runs/{run_id}/result.csv`로 최종 결과를
+다운로드할 수 있다. API와 Worker는 결과 파일을 위해 Compose의 `uploaded_data` 볼륨을
+공유한다.
 
 인증이 필요한 검토 API를 포함한 구체적인 요청 본문은 `examples.http`와 Swagger UI에서
 확인한다.
@@ -231,9 +225,8 @@ SQLAlchemy 표현식으로 변환한다.
 
 - `agent_runtime/requirements_analysis`: 요구사항 구조화
 - `agent_runtime/data_selection`: 데이터셋·원본/파생 컬럼과 합성 샘플 설계
-- `agent_runtime/query`: CSV 또는 익명화 DB의 검증된 조회 계층
-- `agent_runtime/data_processing`: 결정론적 가공·익명화
-- `agent_runtime/data_retrieval`: 허용 경로의 CSV 검증과 메타데이터 생성
+- `agent_runtime/query`: 익명화 DB의 검증된 조회 계층
+- `agent_runtime/data_processing`: LLM 가공 계획 설계와 검증된 결정론적 Tool 실행
 
 요구사항 분석과 데이터 선별은 현재 DeepSeek의 OpenAI 호환 API를 사용한다.
 

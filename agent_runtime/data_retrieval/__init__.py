@@ -1,1 +1,0 @@
-"""Deterministic data-retrieval worker."""

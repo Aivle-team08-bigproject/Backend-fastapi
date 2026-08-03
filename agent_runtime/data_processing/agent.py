@@ -10,7 +10,7 @@ def run(payload: dict) -> dict:
     """Process selected rows and return an auditable artifact envelope."""
     try:
         return {"ok": True, "data": process_payload(payload), "error_message": None}
-    except ProcessingError as exc:
+    except (ProcessingError, ValueError) as exc:
         return {
             "ok": False,
             "data": None,

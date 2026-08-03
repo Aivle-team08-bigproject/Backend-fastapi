@@ -64,14 +64,12 @@ class StageRunStatus(str, enum.Enum):
 class StageName(str, enum.Enum):
     """Supervisor가 순서대로 진행시키는 실행 단계.
 
-    stage_runs.stage_code에 저장되는 값과 1:1로 대응한다. DATA_RETRIEVAL은 별도 단계가
-    아니라 DATA_PROCESSING 안에서 query 레이어(agent_runtime/query)가 담당하지만,
-    산출물 검증 계약이 이미 있어서 이름은 남겨둔다.
+    stage_runs.stage_code에 저장되는 값과 1:1로 대응한다. 데이터 조회는 별도 단계가
+    아니라 DATA_PROCESSING 안에서 query 레이어(agent_runtime/query)가 담당한다.
     """
 
     REQUIREMENT_ANALYSIS = "REQUIREMENT_ANALYSIS"
     DATA_SELECTION = "DATA_SELECTION"
-    DATA_RETRIEVAL = "DATA_RETRIEVAL"
     DATA_PROCESSING = "DATA_PROCESSING"
     HITL_REVIEW = "HITL_REVIEW"
 
@@ -89,6 +87,7 @@ class FailureCode(str, enum.Enum):
     DUPLICATED_DATA = "DUPLICATED_DATA"
     OUTLIER_DETECTED = "OUTLIER_DETECTED"
     PROCESSING_RULE_INVALID = "PROCESSING_RULE_INVALID"
+    PRIVACY_THRESHOLD_NOT_MET = "PRIVACY_THRESHOLD_NOT_MET"
     HUMAN_REJECTED = "HUMAN_REJECTED"
 
 
