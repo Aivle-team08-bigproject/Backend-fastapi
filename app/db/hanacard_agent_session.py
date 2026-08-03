@@ -10,12 +10,14 @@ from collections.abc import AsyncGenerator
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
 from app.core.config import settings
+from app.db.pool import engine_kwargs
 
 engine = create_async_engine(
     settings.hanacard_agent_database_url,
     echo=False,
     future=True,
     pool_pre_ping=True,
+    **engine_kwargs(),
 )
 AsyncSessionLocal = async_sessionmaker(engine, expire_on_commit=False, class_=AsyncSession)
 

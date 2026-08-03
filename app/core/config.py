@@ -18,6 +18,22 @@ class Settings(BaseSettings):
     # --- DB ---
     database_url: str = "postgresql+psycopg://appuser:change_me_strong_password@127.0.0.1:5432/appdb"
 
+    # --- DB 커넥션 풀 ---
+    # PostgreSQL 은 커넥션 1개당 OS 프로세스를 1개 띄운다. 우리는 계정 분리 때문에
+    # 엔진이 3개(app_svc 2, agent_svc 1)라, 지정하지 않으면 SQLAlchemy 기본값
+    # (pool_size=5 + max_overflow=10)이 곱해져 프로세스당 45개가 열린다.
+    # API + 워커(--concurrency=2)까지 하면 개발자 1명당 최대 135개다.
+    # Neon(max_connections=901)에서는 안 터지지만 AWS db.t4g.small 은 약 225개라
+    # 두 명만 띄워도 한계다. 기본값은 넉넉히 두고 .env 로 조인다.
+    db_pool_size: int = 5
+    db_max_overflow: int = 5
+    db_pool_timeout: int = 30    # 풀이 다 찼을 때 무한 대기 대신 예외를 낸다
+    db_pool_recycle: int = 1800  # 서버가 끊어버린 유휴 커넥션을 재사용하지 않게
+
+    # Celery prefork 워커에서만 true. 부모가 커넥션을 연 채 fork 하면 자식들이
+    # 같은 소켓을 공유해 요청·응답이 뒤섞인다. 재현이 안 되는 랜덤 오류로 나타난다.
+    db_use_null_pool: bool = False
+
     # --- Celery / Redis 비동기 파이프라인 ---
     celery_broker_url: str = "redis://127.0.0.1:6379/0"
     celery_result_backend: str = "redis://127.0.0.1:6379/1"

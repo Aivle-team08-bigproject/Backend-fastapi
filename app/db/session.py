@@ -3,6 +3,7 @@ from collections.abc import AsyncGenerator
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
 from app.core.config import settings
+from app.db.pool import engine_kwargs
 # 도메인 모델을 import해 metadata에 등록한다.
 from app.domains.employees import model as employee_model  # noqa: F401
 from app.domains.auth.model import session_model  # noqa: F401
@@ -15,6 +16,7 @@ engine = create_async_engine(
     echo=False,
     future=True,
     pool_pre_ping=True,
+    **engine_kwargs(),
 )
 AsyncSessionLocal = async_sessionmaker(engine, expire_on_commit=False, class_=AsyncSession)
 
