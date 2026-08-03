@@ -19,6 +19,9 @@ env
 data/*
 !data/.gitkeep
 
+# Agent completion logs are local test artifacts.
+agent_logs/*.jsonl
+
 # OS가 자동 생성하는 파일
 .DS_Store
 
