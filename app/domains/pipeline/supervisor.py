@@ -211,9 +211,10 @@ async def _completed_outputs(db: AsyncSession, run_id: int) -> dict[str, dict]:
 
 
 async def run_stage(
-    db: AsyncSession,
+    db: AsyncSession | None,
     stage: StageRun,
     agent_client: AgentClient | None = None,
+    payload: dict | None = None,
 ) -> dict:
     """단계 에이전트를 실행하고 산출물을 검증한다.
 
@@ -224,7 +225,10 @@ async def run_stage(
     """
     client = agent_client or AgentRuntimeClient()
     stage_name = StageName(stage.stage_code)
-    payload = await build_stage_payload(db, stage)
+    if payload is None:
+        if db is None:
+            raise ValueError("db is required when stage payload is not provided")
+        payload = await build_stage_payload(db, stage)
 
     try:
         output = await client.run(

@@ -24,6 +24,7 @@ from app.domains.pipeline.supervisor import (
     STAGE_PROGRESS,
     StageDispatchError,
     StageName,
+    build_stage_payload,
     next_pending_stage,
     rollback_target,
     run_stage,
@@ -113,9 +114,16 @@ async def _run_stage(stage_id: int, celery_task_id: str) -> dict:
             progress_percent=max(STAGE_PROGRESS[stage_name] - 10, 0),
             message=f"{stage_name.value} 단계를 시작했습니다.",
         )
+        # 모델 호출이 길어져도 PostgreSQL 트랜잭션이 열린 채 idle 상태로 남지 않게
+        # 입력 payload를 미리 만들고 세션을 닫는다. 결과 저장은 호출 뒤 새 세션에서 한다.
+        stage_payload = await build_stage_payload(db, stage)
+        # rollback은 expire_on_commit=False인 세션에서도 ORM 객체를 만료시켜
+        # 세션 밖에서 stage.stage_code를 읽을 때 DetachedInstanceError를 만든다.
+        await db.commit()
 
-        outcome = await run_stage(db, stage)
+    outcome = await run_stage(None, stage, payload=stage_payload)
 
+    async with AsyncSessionLocal() as db:
         if not outcome["passed"]:
             failure_code = (outcome["validation"] or {}).get("failure_code")
             await record_status(

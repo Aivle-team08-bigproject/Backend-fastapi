@@ -3,7 +3,7 @@ from __future__ import annotations
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from agent_runtime.query.registry import DATASETS
+from agent_runtime.query.registry import DATASETS, canonical_dataset
 
 
 _LOGICAL_NAME_BY_TABLE = {
@@ -17,7 +17,10 @@ async def load_dataset_metadata(
     available_data: list[str] | None = None,
 ) -> list[dict]:
     """Neon의 테이블·컬럼 타입과 COMMENT를 선별 Agent 입력 형태로 반환한다."""
-    requested = set(available_data or DATASETS)
+    requested_order = [
+        canonical_dataset(name) for name in (available_data or DATASETS)
+    ]
+    requested = set(requested_order)
     rows = (
         await session.execute(
             text(
@@ -66,7 +69,7 @@ async def load_dataset_metadata(
                 "comment": row["column_comment"] or "",
             }
         )
-    return [grouped[name] for name in available_data or DATASETS if name in grouped]
+    return [grouped[name] for name in requested_order if name in grouped]
 
 
 async def load_reference_catalogs(session: AsyncSession) -> list[dict]:
