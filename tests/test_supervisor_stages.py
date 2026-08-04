@@ -318,6 +318,54 @@ def test_data_processing_uses_only_hash_verified_approved_selection():
     assert payload["approval_audit"]["sha256"] == selection_plan_sha256(approved_plan)
 
 
+def test_data_processing_retry_carries_final_hitl_feedback_and_approved_selection():
+    analysis = {"usage_purpose": "research"}
+    approved_plan = snapshot_selection_plan(
+        {
+            "selected_tables": [{"table": "member_pseudonymized"}],
+            "source_columns": [{"column": "age_band"}],
+            "selection_query": {"columns": ["age_band"], "filters": {}},
+        }
+    )
+    processing = _stage(
+        "DATA_PROCESSING",
+        StageRunStatus.PENDING.value,
+        13,
+        attempt_no=2,
+        retry_of_id=12,
+        input_payload={
+            "approved_selection": {
+                "stage_run_id": 11,
+                "plan": approved_plan,
+                "sha256": selection_plan_sha256(approved_plan),
+                "approved_at": NOW.isoformat(),
+                "reviewer_id": 3,
+                "reviewer_name": "검토자",
+            }
+        },
+    )
+    stages = [
+        _stage(
+            "REQUIREMENT_ANALYSIS",
+            StageRunStatus.COMPLETED.value,
+            10,
+            output_payload=analysis,
+        ),
+        processing,
+    ]
+    db = FakeDb(
+        _run(),
+        stages,
+        review_feedback="합계 대신 평균 결제 금액으로 다시 만들어 주세요.",
+    )
+
+    payload = asyncio.run(build_stage_payload(db, processing))
+
+    assert payload["selection"] == approved_plan
+    assert payload["approval_audit"]["sha256"] == selection_plan_sha256(approved_plan)
+    assert payload["hitl_feedback"] == "합계 대신 평균 결제 금액으로 다시 만들어 주세요."
+
+
 def test_data_processing_rejects_tampered_approved_selection():
     plan = snapshot_selection_plan(
         {

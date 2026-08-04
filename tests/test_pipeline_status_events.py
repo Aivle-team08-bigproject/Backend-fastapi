@@ -101,3 +101,10 @@ def test_sse_message_format():
     assert _sse_message("status", '{"run_status":"RUNNING"}') == (
         'event: status\ndata: {"run_status":"RUNNING"}\n\n'
     )
+
+
+def test_sse_rejects_missing_bearer_token(client):
+    response = client.get("/api/v1/runs/7/events")
+
+    assert response.status_code == 401
+    assert response.json()["detail"]["code"] == "UNAUTHORIZED"

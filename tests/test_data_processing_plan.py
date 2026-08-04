@@ -147,3 +147,27 @@ def test_planning_agent_never_sends_selected_rows(monkeypatch):
 
     assert planning_agent.create_processing_plan(payload)["objective"] == "월별 결제금액 집계"
     assert "selected_rows" not in captured
+
+
+def test_planning_agent_sends_final_hitl_feedback_without_rows(monkeypatch):
+    captured: dict = {}
+
+    class FakeAgent:
+        def __call__(self, prompt: str) -> str:
+            captured.update(json.loads(prompt))
+            return json.dumps(_plan(), ensure_ascii=False)
+
+    monkeypatch.setattr(planning_agent, "build_agent", lambda: FakeAgent())
+
+    planning_agent.create_processing_plan(
+        {
+            "raw_requirement": "월별 결제 추이",
+            "analysis": {},
+            "selection": _selection(),
+            "hitl_feedback": "월별 합계가 아니라 평균 금액으로 다시 만들어 주세요.",
+            "selected_rows": [{"customer_id": "must-not-leak"}],
+        }
+    )
+
+    assert captured["hitl_feedback"] == "월별 합계가 아니라 평균 금액으로 다시 만들어 주세요."
+    assert "selected_rows" not in captured
