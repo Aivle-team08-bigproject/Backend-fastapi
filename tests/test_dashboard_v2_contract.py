@@ -55,6 +55,35 @@ def test_admin_overview_and_all_scope_are_separate_from_personal_dashboard(
     assert all_tasks.json()["items"][0]["request_no"] == record.request_no
 
 
+def test_priority_list_uses_the_same_actionable_scope_as_priority_cards(
+    client: TestClient,
+    dashboard_factory: DashboardFixtureFactory,
+):
+    actionable = dashboard_factory.create(
+        pipeline_status="WAITING_FINAL_REVIEW",
+        current_stage="DATA_PROCESSING",
+        stage_code="DATA_PROCESSING",
+    )
+    historical = dashboard_factory.create(
+        pipeline_status="RUNNING",
+        current_stage="DATA_PROCESSING",
+        stage_code="DATA_PROCESSING",
+        review_type="FINAL",
+        review_decision="APPROVED",
+    )
+    headers = _login_as_admin(client)
+
+    response = client.get(
+        "/api/v1/dashboard/tasks",
+        params={"scope": "all", "priority": "FINAL", "page_size": 30},
+        headers=headers,
+    )
+
+    assert response.status_code == 200, response.text
+    assert [item["request_no"] for item in response.json()["items"]] == [actionable.request_no]
+    assert historical.request_no not in [item["request_no"] for item in response.json()["items"]]
+
+
 def test_integrated_detail_returns_stages_history_and_artifacts_shape(
     client: TestClient,
     dashboard_factory: DashboardFixtureFactory,
