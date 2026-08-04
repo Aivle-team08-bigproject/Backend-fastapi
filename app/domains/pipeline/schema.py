@@ -44,6 +44,14 @@ class RunEventResponse(BaseModel):
     occurred_at: datetime
 
 
+class RequirementAnalysisResponse(BaseModel):
+    usage_purpose: str
+    requested_data_sentence: str
+    categories: dict
+    delivery_channel: str
+    output_formats: list[str]
+
+
 class PipelineRunResponse(BaseModel):
     run_id: int
     request_no: str
@@ -58,6 +66,7 @@ class PipelineRunResponse(BaseModel):
     updated_at: datetime
     stages: list[RunStageResponse]
     events: list[RunEventResponse]
+    requirement_analysis: RequirementAnalysisResponse | None = None
 
 
 class SamplePreviewColumn(BaseModel):
