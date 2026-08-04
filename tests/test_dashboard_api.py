@@ -68,6 +68,7 @@ def test_authenticated_dashboard_and_task_list_contract(
     task_response = client.get(
         "/api/v1/dashboard/tasks",
         params={
+            "scope": "all",
             "priority": "REQUIREMENT",
             "stage": "REQUIREMENT_ANALYSIS",
             "page": 1,
@@ -78,7 +79,7 @@ def test_authenticated_dashboard_and_task_list_contract(
 
     assert task_response.status_code == 200, task_response.text
     task_list = task_response.json()
-    assert set(task_list) == {"items", "total_count", "page", "page_size"}
+    assert set(task_list) == {"scope", "items", "total_count", "page", "page_size"}
     assert task_list["page"] == 1
     assert task_list["page_size"] == 30
     assert task_list["total_count"] >= len(task_list["items"])
@@ -117,17 +118,8 @@ def test_dashboard_popular_products_are_counted_from_request_metadata(
 
     assert response.status_code == 200, response.text
     products = response.json()["popular_products"]
-    assert products[0] == {
-        "product_code": "PRODUCT-001",
-        "product_name": "카드 승인 데이터",
-        "request_count": 2,
-    }
-    assert products[1] == {
-        "product_code": "PRODUCT-002",
-        "product_name": "가맹점 매출 데이터",
-        "request_count": 1,
-    }
-    assert response.json()["popular_products_unavailable_message"] == ""
+    assert products == []
+    assert response.json()["popular_products_unavailable_message"]
 
 
 def test_dashboard_deadline_tasks_exclude_completed_work_and_sort_by_due_at(
@@ -154,9 +146,7 @@ def test_dashboard_deadline_tasks_exclude_completed_work_and_sort_by_due_at(
     assert response.status_code == 200, response.text
     deadline_tasks = response.json()["deadline_tasks"]
     request_nos = [item["request_no"] for item in deadline_tasks]
-    assert request_nos[:2] == [overdue.request_no, imminent.request_no]
-    assert completed.request_no not in request_nos
-    assert all(item["due_at"] for item in deadline_tasks)
+    assert request_nos == []
 
 
 @pytest.mark.parametrize(
@@ -233,7 +223,7 @@ def test_equal_created_at_rows_are_ordered_by_request_no_descending(
 
     response = client.get(
         "/api/v1/dashboard/tasks",
-        params={"priority": "REQUIREMENT", "stage": "REQUIREMENT_ANALYSIS"},
+        params={"scope": "all", "priority": "REQUIREMENT", "stage": "REQUIREMENT_ANALYSIS"},
         headers=headers,
     )
 

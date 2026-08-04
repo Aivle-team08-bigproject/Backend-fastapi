@@ -2,6 +2,7 @@
 
 from pathlib import Path
 from urllib.parse import quote
+import pytest
 
 from fastapi.testclient import TestClient
 
@@ -12,6 +13,7 @@ from tests.test_auth_flow import _login_as_admin
 READ_ROUTES = (
     "/api/v1/dashboard",
     "/api/v1/dashboard/tasks",
+    "/api/v1/dashboard/overview",
     "/api/v1/dashboard/task-lookup",
 )
 
@@ -46,7 +48,7 @@ def test_dashboard_reads_reject_missing_bearer_token_directly(
         assert response.json()["detail"]["code"] == "UNAUTHORIZED"
 
 
-def test_any_active_employee_can_read_the_same_all_work_contract_without_permission(
+def test_personal_dashboard_is_scoped_and_admin_overview_is_separate(
     client: TestClient,
     dashboard_factory: DashboardFixtureFactory,
 ):
@@ -56,6 +58,7 @@ def test_any_active_employee_can_read_the_same_all_work_contract_without_permiss
 
     admin_dashboard = client.get("/api/v1/dashboard", headers=admin_headers)
     employee_dashboard = client.get("/api/v1/dashboard", headers=employee_headers)
+    admin_overview = client.get("/api/v1/dashboard/overview", headers=admin_headers)
     admin_tasks = client.get(
         "/api/v1/dashboard/tasks",
         params={"page": 1, "page_size": 100},
@@ -64,6 +67,16 @@ def test_any_active_employee_can_read_the_same_all_work_contract_without_permiss
     employee_tasks = client.get(
         "/api/v1/dashboard/tasks",
         params={"page": 1, "page_size": 100},
+        headers=employee_headers,
+    )
+    admin_all_tasks = client.get(
+        "/api/v1/dashboard/tasks",
+        params={"scope": "all", "page": 1, "page_size": 100},
+        headers=admin_headers,
+    )
+    employee_all_tasks = client.get(
+        "/api/v1/dashboard/tasks",
+        params={"scope": "all", "page": 1, "page_size": 100},
         headers=employee_headers,
     )
     admin_lookup = client.get("/api/v1/dashboard/task-lookup", headers=admin_headers)
@@ -75,21 +88,23 @@ def test_any_active_employee_can_read_the_same_all_work_contract_without_permiss
     for response in (
         admin_dashboard,
         employee_dashboard,
+        admin_overview,
         admin_tasks,
         employee_tasks,
+        admin_all_tasks,
         admin_lookup,
         employee_lookup,
         admin_view,
         employee_view,
     ):
         assert response.status_code == 200, response.text
-    assert {item["request_no"] for item in admin_tasks.json()["items"]} == {
-        item["request_no"] for item in employee_tasks.json()["items"]
-    }
-    assert {item["request_no"] for item in admin_dashboard.json()["priority_actions"]} == {
-        item["request_no"] for item in employee_dashboard.json()["priority_actions"]
-    }
-    assert admin_dashboard.json()["active_task_count"] == employee_dashboard.json()["active_task_count"]
+    assert admin_dashboard.json()["scope"] == employee_dashboard.json()["scope"] == "mine"
+    assert admin_dashboard.json()["priority_actions"] == []
+    assert employee_dashboard.json()["summary"]["total_count"] == 1
+    assert admin_overview.json()["scope"] == "all"
+    assert record.request_no in {item["request_no"] for item in admin_all_tasks.json()["items"]}
+    assert employee_tasks.json()["scope"] == "mine"
+    assert employee_all_tasks.status_code == 403
     assert admin_lookup.json() == employee_lookup.json()
     assert admin_view.json() == employee_view.json() == {
         "request_no": record.request_no,
@@ -120,6 +135,8 @@ def test_shared_client_owns_one_refresh_then_login_redirect_contract():
     """D-14 stays a Frontend_2/src/shared/api.ts transport concern."""
 
     shared_api = Path(__file__).parents[2] / "Frontend_2/src/shared/api.ts"
+    if not shared_api.exists():
+        pytest.skip("Frontend source is not mounted in the backend test container")
     source = shared_api.read_text(encoding="utf-8")
     assert "if (response.status === 401 && !retried" in source
     assert "await refreshAccessToken()" in source
