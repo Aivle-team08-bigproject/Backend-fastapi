@@ -77,6 +77,33 @@ def _selection():
     }
 
 
+def _source_result():
+    selection = _selection()
+    return {
+        key: selection[key]
+        for key in (
+            "selected_tables",
+            "source_columns",
+            "selection_query",
+            "interpretations",
+            "catalog_issues",
+            "catalog_matches",
+        )
+    }
+
+
+def _derived_result():
+    return {"derived_columns": _selection()["derived_columns"]}
+
+
+def _sample_result():
+    selection = _selection()
+    return {
+        key: selection[key]
+        for key in ("sample_columns", "sample_rows", "sample_metadata")
+    }
+
+
 def test_column_design_contract_accepts_comment_based_sources_and_derived_columns():
     _validate_contract(_selection(), SCHEMA_METADATA)
 
@@ -288,16 +315,25 @@ def test_column_design_contract_rejects_unknown_mcc_catalog_code():
 
 
 def test_run_retries_empty_derived_columns_three_times_then_fails(monkeypatch):
-    selection = _selection()
-    selection["derived_columns"] = []
-    messages = []
+    messages: dict[str, list[str]] = {"source": [], "derived": [], "sample": []}
 
     class StubAgent:
-        def __call__(self, message):
-            messages.append(message)
-            return __import__("json").dumps(selection, ensure_ascii=False)
+        def __init__(self, step, result):
+            self.step = step
+            self.result = result
 
-    monkeypatch.setattr(selection_agent, "build_agent", lambda: StubAgent())
+        def __call__(self, message):
+            messages[self.step].append(message)
+            return __import__("json").dumps(self.result, ensure_ascii=False)
+
+    def build_agent(prompt):
+        if prompt == selection_agent.SOURCE_COLUMN_SELECTION_PROMPT:
+            return StubAgent("source", _source_result())
+        if prompt == selection_agent.DERIVED_COLUMN_DESIGN_PROMPT:
+            return StubAgent("derived", {"derived_columns": []})
+        return StubAgent("sample", _sample_result())
+
+    monkeypatch.setattr(selection_agent, "build_agent", build_agent)
 
     result = selection_agent.run(
         "고객별 결제 성향을 분석해줘",
@@ -307,22 +343,33 @@ def test_run_retries_empty_derived_columns_three_times_then_fails(monkeypatch):
     )
 
     assert result["ok"] is False
-    assert len(messages) == 3
-    assert "3회 시도 후에도 실패" in result["error_message"]
+    assert len(messages["source"]) == 1
+    assert len(messages["derived"]) == 3
+    assert messages["sample"] == []
+    assert "파생 컬럼 정의 단계가 3회 시도 후에도 실패" in result["error_message"]
     assert "derived_columns는 최소 1개" in result["error_message"]
-    assert '"retry_feedback": "직전 1회차 결과 검증 실패' in messages[1]
+    assert '"retry_feedback": "직전 1회차 파생 컬럼 정의 결과 검증 실패' in messages["derived"][1]
 
 
 def test_run_passes_hitl_feedback_to_model(monkeypatch):
-    selection = _selection()
     messages = []
 
     class StubAgent:
+        def __init__(self, result):
+            self.result = result
+
         def __call__(self, message):
             messages.append(message)
-            return __import__("json").dumps(selection, ensure_ascii=False)
+            return __import__("json").dumps(self.result, ensure_ascii=False)
 
-    monkeypatch.setattr(selection_agent, "build_agent", lambda: StubAgent())
+    def build_agent(prompt):
+        if prompt == selection_agent.SOURCE_COLUMN_SELECTION_PROMPT:
+            return StubAgent(_source_result())
+        if prompt == selection_agent.DERIVED_COLUMN_DESIGN_PROMPT:
+            return StubAgent(_derived_result())
+        return StubAgent(_sample_result())
+
+    monkeypatch.setattr(selection_agent, "build_agent", build_agent)
 
     result = selection_agent.run(
         "수도권 결제를 분석해줘",
@@ -333,4 +380,53 @@ def test_run_passes_hitl_feedback_to_model(monkeypatch):
     )
 
     assert result["ok"] is True
-    assert '"hitl_feedback": "수도권은 서울, 경기, 인천을 의미합니다."' in messages[0]
+    assert len(messages) == 3
+    assert all(
+        '"hitl_feedback": "수도권은 서울, 경기, 인천을 의미합니다."' in message
+        for message in messages
+    )
+    assert '"source_selection"' not in messages[0]
+    assert '"source_selection"' in messages[1]
+    assert '"derived_design"' in messages[2]
+
+
+def test_run_steps_reports_ordered_statuses_and_small_summaries(monkeypatch):
+    class StubAgent:
+        def __init__(self, result):
+            self.result = result
+
+        def __call__(self, message):
+            return __import__("json").dumps(self.result, ensure_ascii=False)
+
+    def build_agent(prompt):
+        if prompt == selection_agent.SOURCE_COLUMN_SELECTION_PROMPT:
+            return StubAgent(_source_result())
+        if prompt == selection_agent.DERIVED_COLUMN_DESIGN_PROMPT:
+            return StubAgent(_derived_result())
+        return StubAgent(_sample_result())
+
+    monkeypatch.setattr(selection_agent, "build_agent", build_agent)
+    events = []
+
+    result = selection_agent.run_steps(
+        "고객별 결제 성향을 분석해줘",
+        {"requested_data_sentence": "고객별 결제 성향 분석"},
+        ["transaction_pseudonymized"],
+        SCHEMA_METADATA,
+        on_step=lambda code, status, metadata: events.append(
+            (code, status, metadata)
+        ),
+    )
+
+    assert result["sample_metadata"]["sample_count"] == 5
+    assert [(code, status) for code, status, _ in events] == [
+        ("SOURCE_COLUMN_SELECTION", "RUNNING"),
+        ("SOURCE_COLUMN_SELECTION", "COMPLETED"),
+        ("DERIVED_COLUMN_DESIGN", "RUNNING"),
+        ("DERIVED_COLUMN_DESIGN", "COMPLETED"),
+        ("SYNTHETIC_SAMPLE_GENERATION", "RUNNING"),
+        ("SYNTHETIC_SAMPLE_GENERATION", "COMPLETED"),
+    ]
+    assert events[1][2] == {"selected_table_count": 1, "source_column_count": 2}
+    assert events[3][2] == {"derived_column_count": 1}
+    assert events[5][2] == {"sample_count": 5}

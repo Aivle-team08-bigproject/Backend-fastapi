@@ -7,6 +7,7 @@ from agent_runtime.query.executors import (
     _minimum_distinct_customers,
 )
 from agent_runtime.query.registry import DATASETS, K_ANONYMITY
+from agent_runtime.query.metadata import canonical_dataset_names
 
 def _selection(**query_overrides):
     return {
@@ -233,6 +234,21 @@ def test_legacy_dataset_names_resolve_to_anon_names():
     )
     assert set(plan.datasets) == {"anon_transactions", "anon_customers"}
     assert all(name in DATASETS for name in plan.datasets)
+
+
+def test_metadata_dataset_names_normalize_aliases_and_preserve_order():
+    assert canonical_dataset_names(
+        [
+            "merchant",
+            "anon_merchants",
+            "transaction_pseudonymized",
+            "member_pseudonymized",
+        ]
+    ) == ["anon_merchants", "anon_transactions", "anon_customers"]
+
+
+def test_metadata_dataset_names_keep_canonical_defaults():
+    assert canonical_dataset_names() == list(DATASETS)
 
 
 def test_db_path_cannot_override_static_whitelist():

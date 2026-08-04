@@ -11,7 +11,12 @@ validation.validate_stage_output이 그걸 REQUIRED_KEY_MISSING 등으로 정상
 """
 
 import asyncio
+from collections.abc import Callable
 from typing import Protocol
+
+SelectionStepCallback = Callable[[str, str, dict | None], None]
+ProcessingStepCallback = Callable[[str, str, dict | None], None]
+
 
 class AgentClient(Protocol):
     async def run(self, agent_name: str, model_name: str, payload: dict) -> dict:
@@ -20,6 +25,14 @@ class AgentClient(Protocol):
 
 class AgentRuntimeClient(AgentClient):
     """agent_runtime/의 실제 에이전트를 호출한다."""
+
+    def __init__(
+        self,
+        selection_step_callback: SelectionStepCallback | None = None,
+        processing_step_callback: ProcessingStepCallback | None = None,
+    ):
+        self.selection_step_callback = selection_step_callback
+        self.processing_step_callback = processing_step_callback
 
     async def run(self, agent_name: str, model_name: str, payload: dict) -> dict:
         if agent_name == "requirement-analysis-agent":
@@ -55,7 +68,7 @@ class AgentRuntimeClient(AgentClient):
 
     async def _run_data_selection(self, payload: dict) -> dict:
         """Neon DB COMMENT 메타데이터를 읽어 컬럼 설계 에이전트에 전달한다."""
-        from agent_runtime.data_selection.agent import run as run_data_selection
+        from agent_runtime.data_selection.agent import run_steps as run_data_selection_steps
         from agent_runtime.query.metadata import (
             load_dataset_metadata,
             load_reference_catalogs,
@@ -79,17 +92,16 @@ class AgentRuntimeClient(AgentClient):
             }
 
         result = await asyncio.to_thread(
-            run_data_selection,
+            run_data_selection_steps,
             payload["raw_requirement"],
             payload.get("analysis", {}),
             available_data,
             schema_metadata,
             payload.get("hitl_feedback"),
             reference_catalogs,
+            self.selection_step_callback,
         )
-        if not result["ok"]:
-            return {"_agent_error": result["error_message"] or "data selection agent failed"}
-        return result["data"]
+        return result
 
     async def _run_data_processing(self, payload: dict) -> dict:
         """LLM이 가공 계획을 설계한 뒤 실제 행은 결정론적 executor로만 처리한다."""
@@ -97,7 +109,9 @@ class AgentRuntimeClient(AgentClient):
             from agent_runtime.data_processing.config import settings as processing_settings
             from agent_runtime.data_processing.planning_agent import create_processing_plan
 
-            processing_plan = await asyncio.to_thread(create_processing_plan, payload)
+            processing_plan = await asyncio.to_thread(
+                create_processing_plan, payload, self.processing_step_callback
+            )
             planning_audit = {
                 "provider": processing_settings.data_processing_model_provider,
                 "model_id": processing_settings.data_processing_model_id,
