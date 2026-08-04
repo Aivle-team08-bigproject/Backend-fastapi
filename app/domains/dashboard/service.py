@@ -733,6 +733,8 @@ async def get_task_detail(
     available_actions: list[str] = []
     if run.status in WAITING_PRIORITY_BY_STATUS:
         available_actions = ["APPROVE", "REQUEST_CHANGES"]
+    elif run.status == "FAILED":
+        available_actions = ["RETRY"]
     elif run.status == "COMPLETED":
         available_actions = ["DOWNLOAD"]
 

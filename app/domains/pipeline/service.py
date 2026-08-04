@@ -485,13 +485,25 @@ async def submit_stage_review(
         raise not_found("PIPELINE_RUN_NOT_FOUND", "파이프라인 실행을 찾을 수 없습니다.")
 
     gate = PipelineRunStatus(run.status)
-    if gate not in _GATE_TO_STAGE:
+    is_failed_retry = gate == PipelineRunStatus.FAILED and payload.retry
+    if gate not in _GATE_TO_STAGE and not is_failed_retry:
         raise DomainException(
             status.HTTP_409_CONFLICT,
             "PIPELINE_RUN_NOT_UNDER_REVIEW",
             "현재 실행 상태는 검토 대기 상태가 아닙니다.",
         )
-    reviewed_stage = _GATE_TO_STAGE[gate]
+    if is_failed_retry:
+        retry_stage_code = run.rollback_to_stage or run.current_stage
+        try:
+            reviewed_stage = StageName(retry_stage_code or "")
+        except ValueError as exc:
+            raise DomainException(
+                status.HTTP_409_CONFLICT,
+                "PIPELINE_RETRY_TARGET_NOT_FOUND",
+                "실패한 작업의 재시작 단계를 확인할 수 없습니다.",
+            ) from exc
+    else:
+        reviewed_stage = _GATE_TO_STAGE[gate]
 
     now = utcnow()
     stage_run = await db.scalar(
@@ -510,12 +522,41 @@ async def submit_stage_review(
             stage_run_id=stage_run.id if stage_run else None,
             reviewer_id=reviewer.id,
             reviewer_name=reviewer.name,
-            review_type=_REVIEW_TYPE_FOR_GATE[gate],
+            review_type=(
+                _REVIEW_TYPE_FOR_GATE[gate]
+                if not is_failed_retry
+                else {
+                    StageName.REQUIREMENT_ANALYSIS: "REQUIREMENT",
+                    StageName.DATA_SELECTION: "SAMPLE",
+                    StageName.DATA_PROCESSING: "FINAL",
+                }[reviewed_stage]
+            ),
             decision=decision.value,
             feedback=payload.feedback,
             created_at=now,
         )
     )
+
+    if is_failed_retry:
+        target = StageName(run.rollback_to_stage or reviewed_stage.value)
+        await _reopen_from(db, run, target, now)
+        run.status = PipelineRunStatus.QUEUED.value
+        run.current_stage = target.value
+        run.progress_percent = 0
+        run.rollback_to_stage = target.value
+        run.error_message = None
+        run.completed_at = None
+        run.updated_at = now
+        celery_task_id = await _redispatch(db, run, now)
+        return StageReviewResponse(
+            run_id=run.id,
+            reviewed_stage=reviewed_stage.value,
+            decision=ReviewDecision.CHANGES_REQUESTED,
+            run_status=PipelineRunStatus.QUEUED,
+            next_stage=target.value,
+            rollback_to_stage=target.value,
+            celery_task_id=celery_task_id,
+        )
 
     if not payload.approved:
         if gate == PipelineRunStatus.WAITING_SAMPLE_REVIEW and payload.failure_code is None:
