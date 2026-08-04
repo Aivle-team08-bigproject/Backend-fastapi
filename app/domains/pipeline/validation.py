@@ -8,6 +8,10 @@ from app.domains.pipeline.model import FailureCode, StageName
 
 
 def validate_stage_output(stage_name: StageName, output: dict) -> dict:
+    runtime_failure = _runtime_failure(stage_name, output)
+    if runtime_failure is not None:
+        return runtime_failure
+
     errors: list[str] = []
     failure_code: FailureCode | None = None
 
@@ -94,7 +98,7 @@ def validate_stage_output(stage_name: StageName, output: dict) -> dict:
         if not isinstance(output.get("catalog_matches"), list):
             errors.append("catalog_matches must be a list")
         if isinstance(derived_columns, list) and isinstance(source_columns, list):
-            source_names = {
+            available_names = {
                 column.get("column")
                 for column in source_columns
                 if isinstance(column, dict) and column.get("column")
@@ -104,11 +108,19 @@ def validate_stage_output(stage_name: StageName, output: dict) -> dict:
                 if (
                     not isinstance(references, list)
                     or not references
-                    or not set(references).issubset(source_names)
+                    or not set(references).issubset(available_names)
                 ):
                     errors.append(
-                        f"derived_columns[{index}] must reference selected source columns"
+                        f"derived_columns[{index}] must reference source or earlier derived columns"
                     )
+                spec = column.get("derivation_spec") if isinstance(column, dict) else None
+                if not isinstance(spec, dict) or spec.get("spec_version") != "1.0":
+                    errors.append(f"derived_columns[{index}] must include derivation_spec version 1.0")
+                name = column.get("name") if isinstance(column, dict) else None
+                if name in available_names:
+                    errors.append(f"derived_columns[{index}].name must be unique")
+                elif name:
+                    available_names.add(name)
         sample_columns = output.get("sample_columns")
         sample_rows = output.get("sample_rows")
         sample_metadata = output.get("sample_metadata")
@@ -208,3 +220,29 @@ def validate_stage_output(stage_name: StageName, output: dict) -> dict:
 
 def _missing(keys: list[str], data: dict) -> list[str]:
     return [f"missing required key: {key}" for key in keys if key not in data]
+
+
+def _runtime_failure(stage_name: StageName, output: dict) -> dict | None:
+    """Agent/Worker 실패를 정상 산출물 스키마 오류로 덮어쓰지 않는다."""
+
+    error = output.get("_agent_error") or output.get("_worker_error")
+    if not error:
+        return None
+
+    default_codes = {
+        StageName.REQUIREMENT_ANALYSIS: FailureCode.REQUIRED_KEY_MISSING,
+        StageName.DATA_SELECTION: FailureCode.SELECTION_RULE_INVALID,
+        StageName.DATA_PROCESSING: FailureCode.PROCESSING_RULE_INVALID,
+        StageName.HITL_REVIEW: FailureCode.SCHEMA_INVALID,
+    }
+    raw_code = output.get("_failure_code")
+    try:
+        failure_code = FailureCode(raw_code) if raw_code else default_codes[stage_name]
+    except ValueError:
+        failure_code = default_codes[stage_name]
+
+    return {
+        "passed": False,
+        "errors": [str(error)],
+        "failure_code": failure_code.value,
+    }

@@ -4,7 +4,7 @@
 
 - 작업 브랜치: `feat/frontend-debt-backend-dashboard`
 - 비교 대상: `origin/kimjounggun` (`f98d707 feat: harden derived processing pipeline`)
-- 자동 merge 충돌만 확인하고 병합을 중단했다. 아직 코드 병합 결과는 없다.
+- `kimjounggun` 에이전트 구현과 현재 브랜치의 Front API 계약을 병합한다.
 - `env_team`은 사용자 로컬 파일이므로 병합·커밋 대상에서 제외한다.
 
 ## 2. 병합 원칙
@@ -93,26 +93,15 @@ rollback_to_stage
 
 기존 Front가 사용하는 `run_status`, `current_stage`, `progress_percent`, `stages`, `events`는 제거하지 않는다.
 
-## 8. 타입 정규화를 별도 유지할 때의 부작용
+## 8. 타입 정규화 제외 결정
 
-### 긍정적 영향
+SQL 타입 정규화 도구는 이번 병합에서 제외한다. Agent 개발 책임과 Query Layer 책임이 중복되는 것을 막고, `kimjounggun`의 Agent 계약을 단일 기준으로 유지하기 위한 결정이다.
 
-- Agent 프롬프트와 무관하게 `DateTime`, `Date`, `Integer`, `Numeric`, `Float`, `Boolean`, `Enum` 필터 값을 DB 타입에 맞게 바인딩한다.
-- 기존 `timestamp with time zone >= character varying` 오류를 재발 방지한다.
-- 잘못된 값은 DB 실행 전 `QueryPolicyError`로 차단되어 Agent가 SQL 타입 세부사항까지 프롬프트에 부담할 필요가 없다.
+대신 Agent/선별 쿼리 계약이 DB 컬럼 타입에 맞는 값을 생성해야 한다. 특히 날짜 필터는 `timestamp with time zone`에 호환되는 timezone 포함 값으로 전달해야 하며, 이 계약을 지키지 않으면 `timestamp with time zone >= character varying` 오류가 다시 발생할 수 있다.
 
-### 확인해야 할 부작용
+## 9. 병합 완료 기준
 
-- `kimjounggun`의 새 가공 Agent가 생성하는 파생 컬럼은 Query Layer의 원본 컬럼 필터 정규화와 직접 충돌하지 않는다.
-- `DateTime` timezone 없는 값은 현재 UTC로 해석한다. Agent가 timezone 없는 날짜를 KST로 의도한 경우 결과 범위가 달라질 수 있으므로, 선별 계약은 가능한 한 `+09:00` offset을 포함해야 한다.
-- `Enum`·`Float` 정규화는 해당 타입 컬럼이 추가될 때 허용값·소수점 정책을 새 컬럼 계약에 함께 정의해야 한다.
-- `Numeric` 값을 `Decimal`로 바인딩하므로 기존에 문자열로 우연히 실행되던 비표준 필터는 실패할 수 있다. 이는 조용한 잘못된 조회 대신 명시적 검증 오류를 반환하는 호환성 변화다.
-- Kim 쪽 Query Layer가 별도 타입 정규화를 추가로 도입하면 변환이 중복될 수 있다. 병합 후 `agent_runtime/query/normalization.py`를 단일 정규화 진입점으로 사용해야 한다.
-
-현재 코드 기준으로는 위 부작용이 Agent 4단계 병합을 막는 수준은 아니며, 날짜 timezone 해석 규칙만 계약에 명시하면 된다.
-
-## 9. 승인 대기 항목
-
-1. SQL 타입 정규화 도구를 Agent 병합과 별도로 유지할지
-
-나머지 항목은 사용자 결정에 따라 확정했다. 타입 정규화가 승인되면 Agent는 `kimjounggun` 기준으로 병합하고, API 계층은 위 확정 계약대로 수동 병합한다.
+- 에이전트 구현은 `kimjounggun` 기준이다.
+- Front 통신 API는 3개 화면 계약을 분리해 유지한다.
+- Agent 로깅과 별도 타입 정규화 코드는 병합하지 않는다.
+- `env_team`은 계속 커밋 대상에서 제외한다.

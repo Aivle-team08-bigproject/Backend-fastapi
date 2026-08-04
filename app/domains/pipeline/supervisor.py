@@ -160,13 +160,15 @@ async def build_stage_payload(db: AsyncSession, stage: StageRun) -> dict:
                 "reviewer_name": approval.get("reviewer_name"),
             },
         }
+        if feedback := await _retry_feedback(db, stage):
+            payload["hitl_feedback"] = feedback
         return payload
 
     raise StageDispatchError(f"unsupported stage: {stage.stage_code}")
 
 
 async def _retry_feedback(db: AsyncSession, stage: StageRun) -> str | None:
-    """직전 선별 산출물에 대한 HITL 수정 의견을 재시도 Agent에 전달한다."""
+    """직전 산출물에 대한 HITL 수정 의견을 재시도 Agent에 전달한다."""
     if stage.retry_of_id is None:
         return None
     from app.domains.pipeline.model import Review
@@ -211,10 +213,12 @@ async def _completed_outputs(db: AsyncSession, run_id: int) -> dict[str, dict]:
 
 
 async def run_stage(
-    db: AsyncSession | None,
+    db: AsyncSession,
     stage: StageRun,
     agent_client: AgentClient | None = None,
-    payload: dict | None = None,
+    requirement_analysis_step_callback=None,
+    selection_step_callback=None,
+    processing_step_callback=None,
 ) -> dict:
     """단계 에이전트를 실행하고 산출물을 검증한다.
 
@@ -224,11 +228,20 @@ async def run_stage(
     반환: {stage_name, passed, output, validation, run_status, progress_percent, artifact}
     """
     client = agent_client or AgentRuntimeClient()
+    if requirement_analysis_step_callback is not None and hasattr(
+        client, "requirement_analysis_step_callback"
+    ):
+        client.requirement_analysis_step_callback = requirement_analysis_step_callback
+    if selection_step_callback is not None and hasattr(
+        client, "selection_step_callback"
+    ):
+        client.selection_step_callback = selection_step_callback
+    if processing_step_callback is not None and hasattr(
+        client, "processing_step_callback"
+    ):
+        client.processing_step_callback = processing_step_callback
     stage_name = StageName(stage.stage_code)
-    if payload is None:
-        if db is None:
-            raise ValueError("db is required when stage payload is not provided")
-        payload = await build_stage_payload(db, stage)
+    payload = await build_stage_payload(db, stage)
 
     try:
         output = await client.run(
@@ -297,6 +310,7 @@ def rollback_target(failure_code: str | None) -> StageName:
         FailureCode.LOW_SIMILARITY_MATCH: StageName.DATA_SELECTION,
         FailureCode.DUPLICATED_DATA: StageName.DATA_SELECTION,
         FailureCode.OUTLIER_DETECTED: StageName.DATA_SELECTION,
+        FailureCode.SELECTION_RULE_INVALID: StageName.DATA_SELECTION,
         FailureCode.FORMAT_INVALID: StageName.DATA_PROCESSING,
         FailureCode.PROCESSING_RULE_INVALID: StageName.DATA_PROCESSING,
         FailureCode.PRIVACY_THRESHOLD_NOT_MET: StageName.DATA_SELECTION,

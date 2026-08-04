@@ -12,15 +12,19 @@ _LOGICAL_NAME_BY_TABLE = {
 }
 
 
+def canonical_dataset_names(available_data: list[str] | None = None) -> list[str]:
+    """기존 별칭과 정식 논리명을 중복 없는 정식 이름 목록으로 통일한다."""
+    requested_names = available_data or list(DATASETS)
+    return list(dict.fromkeys(canonical_dataset(name) for name in requested_names))
+
+
 async def load_dataset_metadata(
     session: AsyncSession,
     available_data: list[str] | None = None,
 ) -> list[dict]:
     """Neon의 테이블·컬럼 타입과 COMMENT를 선별 Agent 입력 형태로 반환한다."""
-    requested_order = [
-        canonical_dataset(name) for name in (available_data or DATASETS)
-    ]
-    requested = set(requested_order)
+    canonical_names = canonical_dataset_names(available_data)
+    requested = set(canonical_names)
     rows = (
         await session.execute(
             text(
@@ -69,7 +73,7 @@ async def load_dataset_metadata(
                 "comment": row["column_comment"] or "",
             }
         )
-    return [grouped[name] for name in requested_order if name in grouped]
+    return [grouped[name] for name in canonical_names if name in grouped]
 
 
 async def load_reference_catalogs(session: AsyncSession) -> list[dict]:
