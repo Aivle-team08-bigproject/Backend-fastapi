@@ -71,6 +71,23 @@ class ProcessingPlanError(ValueError):
 def validate_processing_plan(plan: ProcessingPlan, selection: dict) -> None:
     """승인된 선별 컬럼에서 시작해 모든 operation의 컬럼 계보를 검증한다."""
 
+    available = validate_processing_operations(plan.operations, selection)
+
+    missing_outputs = set(plan.output.columns) - available
+    if missing_outputs:
+        raise ProcessingPlanError(
+            f"processing output references unavailable columns: {', '.join(sorted(missing_outputs))}"
+        )
+    for check in plan.quality_checks:
+        if check.column not in available:
+            raise ProcessingPlanError(f"quality check references unavailable column: {check.column}")
+
+
+def validate_processing_operations(
+    operations: list[ProcessingOperation], selection: dict
+) -> set[str]:
+    """중간 단계 operation까지 승인 컬럼 계보와 실행 계약을 누적 검증한다."""
+
     available = {
         str(column.get("column"))
         for column in selection.get("source_columns") or []
@@ -80,7 +97,7 @@ def validate_processing_plan(plan: ProcessingPlan, selection: dict) -> None:
     if not available:
         raise ProcessingPlanError("approved selection has no executable source columns")
 
-    for operation in plan.operations:
+    for operation in operations:
         missing = set(operation.source_columns) - available
         if missing:
             raise ProcessingPlanError(
@@ -114,14 +131,7 @@ def validate_processing_plan(plan: ProcessingPlan, selection: dict) -> None:
         elif operation.target_column:
             available.add(operation.target_column)
 
-    missing_outputs = set(plan.output.columns) - available
-    if missing_outputs:
-        raise ProcessingPlanError(
-            f"processing output references unavailable columns: {', '.join(sorted(missing_outputs))}"
-        )
-    for check in plan.quality_checks:
-        if check.column not in available:
-            raise ProcessingPlanError(f"quality check references unavailable column: {check.column}")
+    return available
 
 
 def processing_plan_sha256(plan: ProcessingPlan | dict) -> str:

@@ -216,6 +216,8 @@ async def run_stage(
     db: AsyncSession,
     stage: StageRun,
     agent_client: AgentClient | None = None,
+    selection_step_callback=None,
+    processing_step_callback=None,
 ) -> dict:
     """단계 에이전트를 실행하고 산출물을 검증한다.
 
@@ -225,6 +227,14 @@ async def run_stage(
     반환: {stage_name, passed, output, validation, run_status, progress_percent, artifact}
     """
     client = agent_client or AgentRuntimeClient()
+    if selection_step_callback is not None and hasattr(
+        client, "selection_step_callback"
+    ):
+        client.selection_step_callback = selection_step_callback
+    if processing_step_callback is not None and hasattr(
+        client, "processing_step_callback"
+    ):
+        client.processing_step_callback = processing_step_callback
     stage_name = StageName(stage.stage_code)
     payload = await build_stage_payload(db, stage)
 
