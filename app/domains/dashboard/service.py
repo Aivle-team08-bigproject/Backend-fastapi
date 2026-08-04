@@ -35,6 +35,8 @@ from app.domains.dashboard.schema import (
     TaskViewResponse,
     TaskDetailResponse,
     TaskStageDetailResponse,
+    TaskArtifactDetailResponse,
+    TaskHistoryResponse,
     AdminDashboardResponse,
     AssigneeProgressResponse,
     DashboardSummaryResponse,
@@ -46,6 +48,7 @@ from app.domains.dashboard.schema import (
 )
 from app.domains.pipeline.model import (
     AgentMetric,
+    Artifact,
     Client,
     DataRequest,
     EventType,
@@ -700,6 +703,29 @@ async def get_task_detail(
             )
         ).all()
     )
+    artifacts = list(
+        (
+            await db.scalars(
+                select(Artifact)
+                .where(Artifact.pipeline_run_id == run.id)
+                .order_by(Artifact.created_at, Artifact.id)
+            )
+        ).all()
+    )
+    reviews = list(
+        (
+            await db.scalars(
+                select(Review)
+                .where(Review.data_request_id == request.id)
+                .order_by(Review.created_at, Review.id)
+            )
+        ).all()
+    )
+    review_by_stage = {
+        review.stage_run_id: review.decision
+        for review in reviews
+        if review.stage_run_id is not None
+    }
     available_actions: list[str] = []
     if run.status in WAITING_PRIORITY_BY_STATUS:
         available_actions = ["APPROVE", "REQUEST_CHANGES"]
@@ -722,8 +748,28 @@ async def get_task_detail(
             TaskStageDetailResponse(
                 stage_code=stage.stage_code,
                 status=stage.status,
+                progress_percent=(
+                    run.progress_percent
+                    if stage.stage_code == run.current_stage
+                    else 100
+                    if stage.status == "COMPLETED"
+                    else 0
+                ),
                 attempt_no=stage.attempt_no,
                 executor=stage.executor,
+                review_status=review_by_stage.get(stage.id),
+                artifacts=[
+                    TaskArtifactDetailResponse(
+                        artifact_id=artifact.id,
+                        artifact_type=artifact.artifact_type,
+                        storage_key=artifact.storage_key,
+                        mime_type=artifact.mime_type,
+                        size_bytes=artifact.size_bytes,
+                        pii_scan_status=artifact.pii_scan_status,
+                    )
+                    for artifact in artifacts
+                    if artifact.stage_run_id == stage.id
+                ],
                 created_at=stage.created_at,
                 started_at=stage.started_at,
                 completed_at=stage.completed_at,
@@ -732,6 +778,16 @@ async def get_task_detail(
             for stage in stage_runs
         ],
         available_actions=available_actions,
+        history=[
+            TaskHistoryResponse(
+                review_type=review.review_type,
+                decision=review.decision,
+                feedback=review.feedback,
+                reviewer_name=review.reviewer_name,
+                created_at=review.created_at,
+            )
+            for review in reviews
+        ],
     )
 
 
