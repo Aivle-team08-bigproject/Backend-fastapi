@@ -26,6 +26,7 @@ from app.domains.pipeline.plan_integrity import (
     selection_plan_sha256,
     snapshot_selection_plan,
 )
+from app.domains.pipeline.validation import validate_stage_output
 
 
 NOW = datetime.now(timezone.utc)
@@ -318,6 +319,54 @@ def test_data_processing_uses_only_hash_verified_approved_selection():
     assert payload["approval_audit"]["sha256"] == selection_plan_sha256(approved_plan)
 
 
+def test_data_processing_retry_carries_final_hitl_feedback_and_approved_selection():
+    analysis = {"usage_purpose": "research"}
+    approved_plan = snapshot_selection_plan(
+        {
+            "selected_tables": [{"table": "member_pseudonymized"}],
+            "source_columns": [{"column": "age_band"}],
+            "selection_query": {"columns": ["age_band"], "filters": {}},
+        }
+    )
+    processing = _stage(
+        "DATA_PROCESSING",
+        StageRunStatus.PENDING.value,
+        13,
+        attempt_no=2,
+        retry_of_id=12,
+        input_payload={
+            "approved_selection": {
+                "stage_run_id": 11,
+                "plan": approved_plan,
+                "sha256": selection_plan_sha256(approved_plan),
+                "approved_at": NOW.isoformat(),
+                "reviewer_id": 3,
+                "reviewer_name": "검토자",
+            }
+        },
+    )
+    stages = [
+        _stage(
+            "REQUIREMENT_ANALYSIS",
+            StageRunStatus.COMPLETED.value,
+            10,
+            output_payload=analysis,
+        ),
+        processing,
+    ]
+    db = FakeDb(
+        _run(),
+        stages,
+        review_feedback="합계 대신 평균 결제 금액으로 다시 만들어 주세요.",
+    )
+
+    payload = asyncio.run(build_stage_payload(db, processing))
+
+    assert payload["selection"] == approved_plan
+    assert payload["approval_audit"]["sha256"] == selection_plan_sha256(approved_plan)
+    assert payload["hitl_feedback"] == "합계 대신 평균 결제 금액으로 다시 만들어 주세요."
+
+
 def test_data_processing_rejects_tampered_approved_selection():
     plan = snapshot_selection_plan(
         {
@@ -371,6 +420,24 @@ def test_failed_validation_marks_run_failed_and_keeps_failure_code():
     assert outcome["run_status"] == PipelineRunStatus.FAILED
     assert outcome["validation"]["failure_code"] == "REQUIRED_KEY_MISSING"
     assert outcome["artifact"] is None
+    assert outcome["error_message"] == "model unavailable"
+
+
+def test_processing_agent_error_is_not_replaced_by_missing_output_errors():
+    validation = validate_stage_output(
+        StageName.DATA_PROCESSING,
+        {
+            "_agent_error": "operation op-9 references unavailable columns: risk_score",
+            "_failure_code": "PROCESSING_RULE_INVALID",
+        },
+    )
+
+    assert validation == {
+        "passed": False,
+        "errors": ["operation op-9 references unavailable columns: risk_score"],
+        "failure_code": "PROCESSING_RULE_INVALID",
+    }
+    assert all("missing required key" not in error for error in validation["errors"])
 
 
 class ApprovingAgentClient:
@@ -398,6 +465,7 @@ def test_passing_stage_stops_at_its_hitl_gate():
 
 def test_rollback_target_maps_failure_codes_to_stages():
     assert rollback_target("INSUFFICIENT_DATA") == StageName.DATA_SELECTION
+    assert rollback_target("SELECTION_RULE_INVALID") == StageName.DATA_SELECTION
     assert rollback_target("PROCESSING_RULE_INVALID") == StageName.DATA_PROCESSING
     assert rollback_target("HUMAN_REJECTED") == StageName.REQUIREMENT_ANALYSIS
     # 알 수 없는 값과 None은 처음부터 다시 돈다.

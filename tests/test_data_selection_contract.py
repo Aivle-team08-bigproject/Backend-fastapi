@@ -53,6 +53,18 @@ def _selection():
                 "data_type": "number",
                 "source_columns": ["krw_converted_amount"],
                 "derivation": "원화 환산 금액 합계",
+                "derivation_spec": {
+                    "spec_version": "1.0",
+                    "operation": "arithmetic",
+                    "parameters": {
+                        "operator": "add",
+                        "operands": [
+                            {"column": "krw_converted_amount"},
+                            {"literal": 0},
+                        ],
+                    },
+                    "evidence": "원화 환산 금액이라는 DB COMMENT와 고객 요청",
+                },
                 "description": "고객 결제 금액",
             }
         ],
@@ -74,6 +86,33 @@ def _selection():
         ],
         "sample_rows": [{"고객결제금액": value} for value in range(1, 6)],
         "sample_metadata": {"is_synthetic": True, "sample_count": 5},
+    }
+
+
+def _source_result():
+    selection = _selection()
+    return {
+        key: selection[key]
+        for key in (
+            "selected_tables",
+            "source_columns",
+            "selection_query",
+            "interpretations",
+            "catalog_issues",
+            "catalog_matches",
+        )
+    }
+
+
+def _derived_result():
+    return {"derived_columns": _selection()["derived_columns"]}
+
+
+def _sample_result():
+    selection = _selection()
+    return {
+        key: selection[key]
+        for key in ("sample_columns", "sample_rows", "sample_metadata")
     }
 
 
@@ -101,7 +140,7 @@ def test_column_design_contract_rejects_unselected_derived_source():
     selection = _selection()
     selection["derived_columns"][0]["source_columns"] = ["transaction_amount"]
 
-    with pytest.raises(ValueError, match="선택된 source column"):
+    with pytest.raises(ValueError, match="원본 또는 앞에서 정의된 파생 컬럼"):
         _validate_contract(selection, SCHEMA_METADATA)
 
 
@@ -288,16 +327,25 @@ def test_column_design_contract_rejects_unknown_mcc_catalog_code():
 
 
 def test_run_retries_empty_derived_columns_three_times_then_fails(monkeypatch):
-    selection = _selection()
-    selection["derived_columns"] = []
-    messages = []
+    messages: dict[str, list[str]] = {"source": [], "derived": [], "sample": []}
 
     class StubAgent:
-        def __call__(self, message):
-            messages.append(message)
-            return __import__("json").dumps(selection, ensure_ascii=False)
+        def __init__(self, step, result):
+            self.step = step
+            self.result = result
 
-    monkeypatch.setattr(selection_agent, "build_agent", lambda: StubAgent())
+        def __call__(self, message):
+            messages[self.step].append(message)
+            return __import__("json").dumps(self.result, ensure_ascii=False)
+
+    def build_agent(prompt):
+        if prompt == selection_agent.SOURCE_COLUMN_SELECTION_PROMPT:
+            return StubAgent("source", _source_result())
+        if prompt == selection_agent.DERIVED_COLUMN_DESIGN_PROMPT:
+            return StubAgent("derived", {"derived_columns": []})
+        return StubAgent("sample", _sample_result())
+
+    monkeypatch.setattr(selection_agent, "build_agent", build_agent)
 
     result = selection_agent.run(
         "고객별 결제 성향을 분석해줘",
@@ -307,22 +355,33 @@ def test_run_retries_empty_derived_columns_three_times_then_fails(monkeypatch):
     )
 
     assert result["ok"] is False
-    assert len(messages) == 3
-    assert "3회 시도 후에도 실패" in result["error_message"]
+    assert len(messages["source"]) == 1
+    assert len(messages["derived"]) == 3
+    assert messages["sample"] == []
+    assert "파생 컬럼 정의 단계가 3회 시도 후에도 실패" in result["error_message"]
     assert "derived_columns는 최소 1개" in result["error_message"]
-    assert '"retry_feedback": "직전 1회차 결과 검증 실패' in messages[1]
+    assert '"retry_feedback": "직전 1회차 파생 컬럼 정의 결과 검증 실패' in messages["derived"][1]
 
 
 def test_run_passes_hitl_feedback_to_model(monkeypatch):
-    selection = _selection()
     messages = []
 
     class StubAgent:
+        def __init__(self, result):
+            self.result = result
+
         def __call__(self, message):
             messages.append(message)
-            return __import__("json").dumps(selection, ensure_ascii=False)
+            return __import__("json").dumps(self.result, ensure_ascii=False)
 
-    monkeypatch.setattr(selection_agent, "build_agent", lambda: StubAgent())
+    def build_agent(prompt):
+        if prompt == selection_agent.SOURCE_COLUMN_SELECTION_PROMPT:
+            return StubAgent(_source_result())
+        if prompt == selection_agent.DERIVED_COLUMN_DESIGN_PROMPT:
+            return StubAgent(_derived_result())
+        return StubAgent(_sample_result())
+
+    monkeypatch.setattr(selection_agent, "build_agent", build_agent)
 
     result = selection_agent.run(
         "수도권 결제를 분석해줘",
@@ -333,4 +392,101 @@ def test_run_passes_hitl_feedback_to_model(monkeypatch):
     )
 
     assert result["ok"] is True
-    assert '"hitl_feedback": "수도권은 서울, 경기, 인천을 의미합니다."' in messages[0]
+    assert len(messages) == 3
+    assert all(
+        '"hitl_feedback": "수도권은 서울, 경기, 인천을 의미합니다."' in message
+        for message in messages
+    )
+    assert '"source_selection"' not in messages[0]
+    assert '"source_selection"' in messages[1]
+    assert '"derived_design"' in messages[2]
+
+
+def test_run_steps_reports_ordered_statuses_and_small_summaries(monkeypatch):
+    class StubAgent:
+        def __init__(self, result):
+            self.result = result
+
+        def __call__(self, message):
+            return __import__("json").dumps(self.result, ensure_ascii=False)
+
+    def build_agent(prompt):
+        if prompt == selection_agent.SOURCE_COLUMN_SELECTION_PROMPT:
+            return StubAgent(_source_result())
+        if prompt == selection_agent.DERIVED_COLUMN_DESIGN_PROMPT:
+            return StubAgent(_derived_result())
+        return StubAgent(_sample_result())
+
+    monkeypatch.setattr(selection_agent, "build_agent", build_agent)
+    events = []
+
+    result = selection_agent.run_steps(
+        "고객별 결제 성향을 분석해줘",
+        {"requested_data_sentence": "고객별 결제 성향 분석"},
+        ["transaction_pseudonymized"],
+        SCHEMA_METADATA,
+        on_step=lambda code, status, metadata: events.append(
+            (code, status, metadata)
+        ),
+    )
+
+    assert result["sample_metadata"]["sample_count"] == 5
+    assert [(code, status) for code, status, _ in events] == [
+        ("SOURCE_COLUMN_SELECTION", "RUNNING"),
+        ("SOURCE_COLUMN_SELECTION", "COMPLETED"),
+        ("DERIVED_COLUMN_DESIGN", "RUNNING"),
+        ("DERIVED_COLUMN_DESIGN", "COMPLETED"),
+        ("SYNTHETIC_SAMPLE_GENERATION", "RUNNING"),
+        ("SYNTHETIC_SAMPLE_GENERATION", "COMPLETED"),
+    ]
+    assert events[1][2] == {"selected_table_count": 1, "source_column_count": 2}
+    assert events[3][2] == {"derived_column_count": 1}
+    assert events[5][2] == {"sample_count": 5}
+
+
+def test_derived_comparison_symbol_is_normalized_to_executor_contract():
+    selection = _selection()
+    spec = selection["derived_columns"][0]["derivation_spec"]
+    spec["operation"] = "compare"
+    spec["parameters"] = {
+        "operator": ">=",
+        "left": {"column": "krw_converted_amount"},
+        "right": {"literal": 10000},
+    }
+    selection["derived_columns"][0]["data_type"] = "boolean"
+
+    _validate_contract(selection, SCHEMA_METADATA)
+
+    assert spec["parameters"]["operator"] == "gte"
+
+
+def test_selection_failure_keeps_safe_model_response_diagnostics(monkeypatch):
+    class EmptyResult:
+        stop_reason = "max_tokens"
+
+        def __str__(self):
+            return "응답에 JSON이 없습니다"
+
+    monkeypatch.setattr(selection_agent, "build_agent", lambda _prompt: lambda _message: EmptyResult())
+    events = []
+
+    with pytest.raises(selection_agent.SelectionPlanningError) as raised:
+        selection_agent._run_prompt_step(
+            system_prompt="test",
+            request_payload={},
+            validate=lambda _value: None,
+            step_label="파생 컬럼 정의",
+            step_code="DERIVED_COLUMN_DESIGN",
+            on_step=lambda code, status, metadata: events.append((code, status, metadata)),
+        )
+
+    snapshot = raised.value.failure_snapshot
+    assert snapshot["failed_step"] == "DERIVED_COLUMN_DESIGN"
+    assert snapshot["retry_count"] == 3
+    assert snapshot["failure_code"] == "SELECTION_RULE_INVALID"
+    assert snapshot["model_response"] == {
+        "length": len("응답에 JSON이 없습니다"),
+        "excerpt": "응답에 JSON이 없습니다",
+        "finish_reason": "max_tokens",
+    }
+    assert events[-1][1] == "FAILED"

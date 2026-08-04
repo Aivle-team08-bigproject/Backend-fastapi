@@ -36,6 +36,7 @@ from app.domains.pipeline.schema import (
     StageReviewRequest,
     StageReviewResponse,
 )
+from app.domains.pipeline.failure import public_failure
 from app.domains.pipeline.plan_integrity import (
     selection_plan_sha256,
     snapshot_selection_plan,
@@ -276,6 +277,21 @@ async def get_pipeline_run(db: AsyncSession, run_id: int) -> PipelineRunResponse
         if requirement_stage is not None
         else None
     )
+    latest_failed_stage = next(
+        (stage for stage in reversed(stages) if stage.status == StageRunStatus.FAILED.value),
+        None,
+    )
+    run_failure = (
+        public_failure(
+            stage=latest_failed_stage.stage_code,
+            result=latest_failed_stage.output_payload,
+            validation_result=latest_failed_stage.validation_result,
+            rollback_to_stage=run.rollback_to_stage,
+            error_message=latest_failed_stage.error_message or run.error_message,
+        )
+        if latest_failed_stage is not None
+        else None
+    )
     return PipelineRunResponse(
         run_id=run.id,
         request_no=data_request.request_no,
@@ -288,12 +304,21 @@ async def get_pipeline_run(db: AsyncSession, run_id: int) -> PipelineRunResponse
         celery_task_id=run.celery_task_id,
         created_at=run.created_at,
         updated_at=run.updated_at,
+        error_message=run.error_message,
+        failure=run_failure,
         stages=[
             RunStageResponse(
                 stage_code=stage.stage_code,
                 status=stage.status,
                 executor=stage.executor,
                 created_at=stage.created_at,
+                failure=public_failure(
+                    stage=stage.stage_code,
+                    result=stage.output_payload,
+                    validation_result=stage.validation_result,
+                    rollback_to_stage=run.rollback_to_stage,
+                    error_message=stage.error_message,
+                ) if stage.status == StageRunStatus.FAILED.value else None,
             )
             for stage in stages
         ],
@@ -493,13 +518,14 @@ async def submit_stage_review(
     )
 
     if not payload.approved:
-        if (
-            gate == PipelineRunStatus.WAITING_SAMPLE_REVIEW
-            and payload.failure_code is None
-        ):
+        if gate == PipelineRunStatus.WAITING_SAMPLE_REVIEW and payload.failure_code is None:
             # 합성 샘플의 의미 해석이 고객 의도와 다르면 승인된 요구사항 분석은
             # 유지하고, 자연어 feedback을 전달해 선별 단계만 다시 생성한다.
             target = StageName.DATA_SELECTION
+        elif gate == PipelineRunStatus.WAITING_FINAL_REVIEW and payload.failure_code is None:
+            # 최종 산출물 수정 요청은 승인된 요구사항과 선별 계획을 유지하고
+            # 자연어 feedback을 전달해 가공 단계만 다시 실행한다.
+            target = StageName.DATA_PROCESSING
         else:
             target = rollback_target(
                 payload.failure_code.value
@@ -643,7 +669,7 @@ async def _reopen_from(
                 attempt_no=(previous.attempt_no if previous else 0) + 1,
                 status=StageRunStatus.PENDING.value,
                 executor="CELERY",
-                # 업로드된 CSV 메타데이터는 재시도에서도 그대로 써야 한다.
+                # 승인된 선별 계획 등 단계 입력은 재시도에서도 그대로 유지한다.
                 input_payload=dict(previous.input_payload or {}) if previous else {},
                 output_payload={},
                 validation_result={},

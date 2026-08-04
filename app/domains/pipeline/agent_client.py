@@ -11,7 +11,13 @@ validation.validate_stage_output이 그걸 REQUIRED_KEY_MISSING 등으로 정상
 """
 
 import asyncio
+from collections.abc import Callable
 from typing import Protocol
+
+AnalysisStepCallback = Callable[[str, str, dict | None], None]
+SelectionStepCallback = Callable[[str, str, dict | None], None]
+ProcessingStepCallback = Callable[[str, str, dict | None], None]
+
 
 class AgentClient(Protocol):
     async def run(self, agent_name: str, model_name: str, payload: dict) -> dict:
@@ -20,6 +26,16 @@ class AgentClient(Protocol):
 
 class AgentRuntimeClient(AgentClient):
     """agent_runtime/의 실제 에이전트를 호출한다."""
+
+    def __init__(
+        self,
+        requirement_analysis_step_callback: AnalysisStepCallback | None = None,
+        selection_step_callback: SelectionStepCallback | None = None,
+        processing_step_callback: ProcessingStepCallback | None = None,
+    ):
+        self.requirement_analysis_step_callback = requirement_analysis_step_callback
+        self.selection_step_callback = selection_step_callback
+        self.processing_step_callback = processing_step_callback
 
     async def run(self, agent_name: str, model_name: str, payload: dict) -> dict:
         if agent_name == "requirement-analysis-agent":
@@ -37,14 +53,20 @@ class AgentRuntimeClient(AgentClient):
         agent_runtime 쪽 필드명이 validation.py의 검증 스키마와 달라서 여기서 변환한다
         (requested_data_summary -> requested_data_sentence, requested_data_categories ->
         categories, output_format -> output_formats). agent_runtime 쪽 계약은 안 바꾼다.
+
+        내부적으로 요청 분석 -> 요청 구조화 -> 데이터 범주화 3단계를 독립 프롬프트로 순차
+        실행하며, 각 단계 경계마다 requirement_analysis_step_callback으로 진행 상태를
+        알린다 — data-selection/data-processing과 동일한 패턴이다. run_steps()가 던지는
+        예외는 여기서 잡지 않고 그대로 전파한다(_run_data_selection과 동일) — supervisor.py의
+        공통 예외 처리 경로가 "검증 실패 -> FAILED + failure_code"로 처리한다.
         """
-        from agent_runtime.requirements_analysis.agent import run as run_requirements_analysis
+        from agent_runtime.requirements_analysis.agent import run_steps as run_requirements_analysis_steps
 
-        result = await asyncio.to_thread(run_requirements_analysis, payload["raw_requirement"])
-        if not result["ok"]:
-            return {"_agent_error": result["error_message"] or "requirement analysis agent failed"}
-
-        data = result["data"]
+        data = await asyncio.to_thread(
+            run_requirements_analysis_steps,
+            payload["raw_requirement"],
+            self.requirement_analysis_step_callback,
+        )
         return {
             "usage_purpose": data["usage_purpose"],
             "requested_data_sentence": data["requested_data_summary"],
@@ -55,7 +77,7 @@ class AgentRuntimeClient(AgentClient):
 
     async def _run_data_selection(self, payload: dict) -> dict:
         """Neon DB COMMENT 메타데이터를 읽어 컬럼 설계 에이전트에 전달한다."""
-        from agent_runtime.data_selection.agent import run as run_data_selection
+        from agent_runtime.data_selection.agent import run_steps as run_data_selection_steps
         from agent_runtime.query.metadata import (
             load_dataset_metadata,
             load_reference_catalogs,
@@ -78,18 +100,26 @@ class AgentRuntimeClient(AgentClient):
                 "_failure_code": "INSUFFICIENT_DATA",
             }
 
-        result = await asyncio.to_thread(
-            run_data_selection,
-            payload["raw_requirement"],
-            payload.get("analysis", {}),
-            available_data,
-            schema_metadata,
-            payload.get("hitl_feedback"),
-            reference_catalogs,
-        )
-        if not result["ok"]:
-            return {"_agent_error": result["error_message"] or "data selection agent failed"}
-        return result["data"]
+        try:
+            return await asyncio.to_thread(
+                run_data_selection_steps,
+                payload["raw_requirement"],
+                payload.get("analysis", {}),
+                available_data,
+                schema_metadata,
+                payload.get("hitl_feedback"),
+                reference_catalogs,
+                self.selection_step_callback,
+            )
+        except Exception as exc:
+            failure = {
+                "_agent_error": f"selection agent failed: {exc}",
+                "_failure_code": "SELECTION_RULE_INVALID",
+            }
+            failure_snapshot = getattr(exc, "failure_snapshot", None)
+            if isinstance(failure_snapshot, dict):
+                failure["failure_snapshot"] = failure_snapshot
+            return failure
 
     async def _run_data_processing(self, payload: dict) -> dict:
         """LLM이 가공 계획을 설계한 뒤 실제 행은 결정론적 executor로만 처리한다."""
@@ -97,16 +127,22 @@ class AgentRuntimeClient(AgentClient):
             from agent_runtime.data_processing.config import settings as processing_settings
             from agent_runtime.data_processing.planning_agent import create_processing_plan
 
-            processing_plan = await asyncio.to_thread(create_processing_plan, payload)
+            processing_plan = await asyncio.to_thread(
+                create_processing_plan, payload, self.processing_step_callback
+            )
             planning_audit = {
                 "provider": processing_settings.data_processing_model_provider,
                 "model_id": processing_settings.data_processing_model_id,
             }
         except Exception as exc:
-            return {
+            failure = {
                 "_agent_error": f"processing plan agent failed: {exc}",
                 "_failure_code": "PROCESSING_RULE_INVALID",
             }
+            failure_snapshot = getattr(exc, "failure_snapshot", None)
+            if isinstance(failure_snapshot, dict):
+                failure["failure_snapshot"] = failure_snapshot
+            return failure
 
         try:
             from app.db.hanacard_agent_session import AsyncSessionLocal as AgentSessionLocal

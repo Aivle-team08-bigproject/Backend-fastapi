@@ -16,6 +16,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.common.time_utils import utcnow
 from app.domains.pipeline.model import (
+    AnalysisStepStatus,
     Artifact,
     ArtifactType,
     DataRequest,
@@ -25,11 +26,17 @@ from app.domains.pipeline.model import (
     PipelineRun,
     PipelineRunStatus,
     PiiScanStatus,
+    ProcessingStepStatus,
+    SelectionStepStatus,
     StageRun,
     StageRunStatus,
 )
 from app.worker.status_event import PipelineStatusEvent
+from app.domains.pipeline.failure import public_failure, public_step_metadata
 from app.worker.status_publisher import publish_to_screen
+from app.domains.pipeline.analysis_steps import initial_analysis_steps_snapshot
+from app.domains.pipeline.selection_steps import initial_selection_steps_snapshot
+from app.domains.pipeline.processing_steps import initial_processing_steps_snapshot
 
 
 logger = logging.getLogger(__name__)
@@ -80,39 +87,185 @@ async def persist_status_event(db: AsyncSession, event: PipelineStatusEvent) -> 
             .limit(1)
         )
         if stage is not None:
+            event.stage_run_id = stage.id
             stage.status = event.stage_status.value
             stage.executor_reference = event.celery_task_id
+            if event.current_stage == "REQUIREMENT_ANALYSIS":
+                stage_payload = dict(stage.output_payload or {})
+                steps = stage_payload.get("analysis_steps")
+                if not isinstance(steps, dict):
+                    steps = initial_analysis_steps_snapshot()
+                if event.analysis_step is not None:
+                    step_payload = dict(steps[event.analysis_step.value])
+                    step_payload["status"] = event.analysis_step_status.value
+                    if event.analysis_step_status == AnalysisStepStatus.RUNNING:
+                        step_payload["started_at"] = (
+                            step_payload.get("started_at") or now.isoformat()
+                        )
+                        step_payload["completed_at"] = None
+                        step_payload["error_message"] = None
+                    elif event.analysis_step_status == AnalysisStepStatus.COMPLETED:
+                        step_payload["started_at"] = (
+                            step_payload.get("started_at") or now.isoformat()
+                        )
+                        step_payload["completed_at"] = now.isoformat()
+                        step_payload["error_message"] = None
+                    elif event.analysis_step_status == AnalysisStepStatus.FAILED:
+                        step_payload["started_at"] = (
+                            step_payload.get("started_at") or now.isoformat()
+                        )
+                        step_payload["completed_at"] = now.isoformat()
+                        step_payload["error_message"] = event.error_message
+                    step_payload["metadata"] = event.step_metadata
+                    steps[event.analysis_step.value] = step_payload
+                stage_payload["analysis_steps"] = steps
+                stage.output_payload = stage_payload
+            if event.current_stage == "DATA_SELECTION":
+                stage_payload = dict(stage.output_payload or {})
+                steps = stage_payload.get("selection_steps")
+                if not isinstance(steps, dict):
+                    steps = initial_selection_steps_snapshot()
+                if event.selection_step is not None:
+                    step_payload = dict(steps[event.selection_step.value])
+                    step_payload["status"] = event.selection_step_status.value
+                    if event.selection_step_status == SelectionStepStatus.RUNNING:
+                        step_payload["started_at"] = (
+                            step_payload.get("started_at") or now.isoformat()
+                        )
+                        step_payload["completed_at"] = None
+                        step_payload["error_message"] = None
+                    elif event.selection_step_status == SelectionStepStatus.COMPLETED:
+                        step_payload["started_at"] = (
+                            step_payload.get("started_at") or now.isoformat()
+                        )
+                        step_payload["completed_at"] = now.isoformat()
+                        step_payload["error_message"] = None
+                    elif event.selection_step_status == SelectionStepStatus.FAILED:
+                        step_payload["started_at"] = (
+                            step_payload.get("started_at") or now.isoformat()
+                        )
+                        step_payload["completed_at"] = now.isoformat()
+                        step_payload["error_message"] = event.error_message
+                    step_payload["metadata"] = event.step_metadata
+                    steps[event.selection_step.value] = step_payload
+                stage_payload["selection_steps"] = steps
+                stage.output_payload = stage_payload
+            if event.current_stage == "DATA_PROCESSING":
+                stage_payload = dict(stage.output_payload or {})
+                steps = stage_payload.get("processing_steps")
+                if not isinstance(steps, dict):
+                    steps = initial_processing_steps_snapshot()
+                if event.processing_step is not None:
+                    step_payload = dict(steps[event.processing_step.value])
+                    step_payload["status"] = event.processing_step_status.value
+                    if event.processing_step_status == ProcessingStepStatus.RUNNING:
+                        step_payload["started_at"] = (
+                            step_payload.get("started_at") or now.isoformat()
+                        )
+                        step_payload["completed_at"] = None
+                        step_payload["error_message"] = None
+                    elif event.processing_step_status == ProcessingStepStatus.COMPLETED:
+                        step_payload["started_at"] = (
+                            step_payload.get("started_at") or now.isoformat()
+                        )
+                        step_payload["completed_at"] = now.isoformat()
+                        step_payload["error_message"] = None
+                    elif event.processing_step_status == ProcessingStepStatus.FAILED:
+                        step_payload["started_at"] = (
+                            step_payload.get("started_at") or now.isoformat()
+                        )
+                        step_payload["completed_at"] = now.isoformat()
+                        step_payload["error_message"] = event.error_message
+                    step_payload["metadata"] = event.step_metadata
+                    steps[event.processing_step.value] = step_payload
+                stage_payload["processing_steps"] = steps
+                stage.output_payload = stage_payload
             if event.validation_result is not None:
                 stage.validation_result = event.validation_result
             if event.stage_status == StageRunStatus.RUNNING:
                 stage.started_at = stage.started_at or now
             elif event.stage_status == StageRunStatus.COMPLETED:
-                stage.output_payload = event.result or {}
+                result = dict(event.result or {})
+                if event.current_stage == "REQUIREMENT_ANALYSIS":
+                    result["analysis_steps"] = stage.output_payload.get(
+                        "analysis_steps", initial_analysis_steps_snapshot()
+                    )
+                elif event.current_stage == "DATA_SELECTION":
+                    result["selection_steps"] = stage.output_payload.get(
+                        "selection_steps", initial_selection_steps_snapshot()
+                    )
+                elif event.current_stage == "DATA_PROCESSING":
+                    result["processing_steps"] = stage.output_payload.get(
+                        "processing_steps", initial_processing_steps_snapshot()
+                    )
+                stage.output_payload = result
                 stage.completed_at = now
             elif event.stage_status == StageRunStatus.FAILED:
-                stage.output_payload = event.result or {}
+                result = dict(event.result or {})
+                if event.current_stage == "REQUIREMENT_ANALYSIS":
+                    result["analysis_steps"] = stage.output_payload.get(
+                        "analysis_steps", initial_analysis_steps_snapshot()
+                    )
+                elif event.current_stage == "DATA_SELECTION":
+                    result["selection_steps"] = stage.output_payload.get(
+                        "selection_steps", initial_selection_steps_snapshot()
+                    )
+                elif event.current_stage == "DATA_PROCESSING":
+                    result["processing_steps"] = stage.output_payload.get(
+                        "processing_steps", initial_processing_steps_snapshot()
+                    )
+                stage.output_payload = result
                 stage.error_message = event.error_message
                 stage.completed_at = now
 
-    db.add(
-        PipelineEvent(
-            pipeline_run_id=run.id,
-            stage_run_id=stage.id if stage else None,
-            event_type=EventType.FAILED.value
-            if event.run_status == PipelineRunStatus.FAILED
-            else EventType.PROGRESS.value,
-            severity="ERROR" if event.run_status == PipelineRunStatus.FAILED else "INFO",
-            message=event.message,
-            payload={
-                "stage": event.current_stage,
-                "status": event.run_status.value,
-                "progress_percent": event.progress_percent,
-                "result": event.result,
-                "error_message": event.error_message,
-            },
-            occurred_at=now,
-        )
+    is_failed_event = (
+        event.run_status == PipelineRunStatus.FAILED
+        or event.analysis_step_status == AnalysisStepStatus.FAILED
+        or event.selection_step_status == SelectionStepStatus.FAILED
+        or event.processing_step_status == ProcessingStepStatus.FAILED
     )
+    pipeline_event = PipelineEvent(
+        pipeline_run_id=run.id,
+        stage_run_id=stage.id if stage else None,
+        event_type=EventType.FAILED.value if is_failed_event else EventType.PROGRESS.value,
+        severity="ERROR" if is_failed_event else "INFO",
+        message=event.message,
+        payload={
+            "stage": event.current_stage,
+            "status": event.run_status.value,
+            "analysis_step": event.analysis_step.value
+            if event.analysis_step
+            else None,
+            "analysis_step_status": event.analysis_step_status.value
+            if event.analysis_step_status
+            else None,
+            "selection_step": event.selection_step.value
+            if event.selection_step
+            else None,
+            "selection_step_status": event.selection_step_status.value
+            if event.selection_step_status
+            else None,
+            "processing_step": event.processing_step.value
+            if event.processing_step
+            else None,
+            "processing_step_status": event.processing_step_status.value
+            if event.processing_step_status
+            else None,
+            "attempt_no": event.attempt_no,
+            "stage_run_id": event.stage_run_id,
+            "step_metadata": public_step_metadata(event.step_metadata),
+            "progress_percent": event.progress_percent,
+            # 상세 산출물과 실패 후보 계획은 StageRun에만 저장한다.
+            "error_message": event.error_message,
+            "failure": event.failure,
+            "rollback_to_stage": event.rollback_to_stage,
+        },
+        occurred_at=now,
+    )
+    db.add(pipeline_event)
+    # Redis/SSE에 DB 이벤트의 실제 PK를 넣기 위해 commit 전에 ID를 확정한다.
+    await db.flush()
+    event.event_id = pipeline_event.id
     # HITL 도입 후 가공 단계가 끝나면 run은 COMPLETED가 아니라 WAITING_FINAL_REVIEW로
     # 멈춘다. 그래도 결과 파일은 이미 저장돼 있으므로 상태와 무관하게 Artifact를 남긴다
     # (storage_key 중복 검사로 멱등).
@@ -153,23 +306,47 @@ async def record_status(
     error_message: str | None = None,
     validation_result: dict | None = None,
     rollback_to_stage: str | None = None,
+    analysis_step=None,
+    analysis_step_status=None,
+    selection_step=None,
+    selection_step_status=None,
+    processing_step=None,
+    processing_step_status=None,
+    attempt_no: int | None = None,
+    step_metadata: dict | None = None,
 ) -> PipelineStatusEvent | None:
     """상태를 DB에 쓰고, 성공하면 화면 갱신용으로 발행한다.
 
     run을 못 찾거나 celery_task_id가 안 맞으면 아무것도 발행하지 않고 None을 돌려준다.
     """
+    failure = public_failure(
+        stage=current_stage,
+        result=result,
+        validation_result=validation_result,
+        rollback_to_stage=rollback_to_stage,
+        error_message=error_message,
+    )
     event = PipelineStatusEvent(
         run_id=run_id,
         celery_task_id=celery_task_id,
         run_status=run_status,
         current_stage=current_stage,
         stage_status=stage_status,
+        analysis_step=analysis_step,
+        analysis_step_status=analysis_step_status,
+        selection_step=selection_step,
+        selection_step_status=selection_step_status,
+        processing_step=processing_step,
+        processing_step_status=processing_step_status,
+        attempt_no=attempt_no,
+        step_metadata=step_metadata,
         progress_percent=progress_percent,
         message=message,
         result=result,
         error_message=error_message,
         validation_result=validation_result,
         rollback_to_stage=rollback_to_stage,
+        failure=failure,
         occurred_at=utcnow(),
     )
     if not await persist_status_event(db, event):
