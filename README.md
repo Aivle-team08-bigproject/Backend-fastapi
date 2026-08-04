@@ -207,6 +207,19 @@ python -m app.ops.reset_admin_password \
 4. `POST /api/v1/runs/{run_id}/review` — 현재 단계 승인 또는 반려
 5. `GET /api/v1/runs/{run_id}/events` — 진행 상태 SSE 구독
 
+SSE 엔드포인트는 일반 보호 API와 동일한 Bearer access token 인증을 사용한다. 브라우저의
+기본 `EventSource`는 `Authorization` 헤더를 지정할 수 없으므로 프론트엔드는 fetch 기반
+SSE 클라이언트로 연결해야 한다.
+
+```javascript
+await fetchEventSource(`/api/v1/runs/${runId}/events`, {
+  headers: { Authorization: `Bearer ${accessToken}` },
+  onmessage(event) {
+    if (event.event === "status") updateProgress(JSON.parse(event.data));
+  },
+});
+```
+
 샘플 승인 후에는 `agent_svc` 계정으로 익명화 데이터베이스를 조회한다. 에이전트가 만든
 SQL 문자열을 직접 실행하지 않고 등록된 데이터셋·컬럼·필터·조인만 SQLAlchemy 표현식으로
 변환한다. 가공이 완료되면 `GET /api/v1/runs/{run_id}/result.csv`로 최종 결과를

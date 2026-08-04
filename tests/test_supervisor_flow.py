@@ -334,3 +334,46 @@ def test_rejection_rolls_back_and_creates_a_new_attempt(client, stub_agents):
     assert stub_agents.payloads[-1]["hitl_feedback"] == (
         "수도권은 서울뿐 아니라 경기와 인천도 포함해 주세요."
     )
+
+
+def test_final_rejection_retries_processing_with_feedback_and_approved_selection(
+    client, stub_agents
+):
+    run_id = _create_run(client)
+    headers = _login_as_admin(client)
+
+    client.post(f"/api/v1/runs/{run_id}/review", json={"approved": True}, headers=headers)
+    client.post(f"/api/v1/runs/{run_id}/review", json={"approved": True}, headers=headers)
+    assert _run_row(run_id)[0] == "WAITING_FINAL_REVIEW"
+
+    response = client.post(
+        f"/api/v1/runs/{run_id}/review",
+        json={
+            "approved": False,
+            "feedback": "합계 대신 평균 결제 금액으로 다시 가공해 주세요.",
+        },
+        headers=headers,
+    )
+
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert body["decision"] == "CHANGES_REQUESTED"
+    assert body["rollback_to_stage"] == "DATA_PROCESSING"
+    assert _run_row(run_id)[0] == "WAITING_FINAL_REVIEW"
+
+    rows = _stage_rows(run_id)
+    processing_attempts = [row for row in rows if row[0] == "DATA_PROCESSING"]
+    assert processing_attempts == [
+        ("DATA_PROCESSING", "ROLLED_BACK", 1),
+        ("DATA_PROCESSING", "COMPLETED", 2),
+    ]
+    assert stub_agents.calls == [
+        "requirement-analysis-agent",
+        "data-selection-agent",
+        "data-processing-agent",
+        "data-processing-agent",
+    ]
+    retry_payload = stub_agents.payloads[-1]
+    assert retry_payload["hitl_feedback"] == "합계 대신 평균 결제 금액으로 다시 가공해 주세요."
+    assert retry_payload["selection"]
+    assert retry_payload["approval_audit"]["sha256"]

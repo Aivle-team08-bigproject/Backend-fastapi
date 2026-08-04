@@ -94,7 +94,16 @@ def _sse_message(event: str, data: str) -> str:
 
 
 @router.get("/runs/{run_id}/events")
-async def stream_run_events(run_id: int, db: AsyncSession = Depends(get_db)):
+async def stream_run_events(
+    run_id: int,
+    _auth: CurrentAuth = Depends(get_current_auth),
+    db: AsyncSession = Depends(get_db),
+):
+    """로그인한 직원에게 파이프라인 상태를 SSE로 전달한다.
+
+    기본 EventSource는 Authorization 헤더를 지정할 수 없으므로 프론트엔드는
+    기존 access token을 사용하는 fetch 기반 SSE 클라이언트로 연결한다.
+    """
     run = await db.get(PipelineRun, run_id)
     if run is None:
         raise not_found("PIPELINE_RUN_NOT_FOUND", "파이프라인 실행을 찾을 수 없습니다.")

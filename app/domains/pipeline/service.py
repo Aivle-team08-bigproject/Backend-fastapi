@@ -424,13 +424,14 @@ async def submit_stage_review(
     )
 
     if not payload.approved:
-        if (
-            gate == PipelineRunStatus.WAITING_SAMPLE_REVIEW
-            and payload.failure_code is None
-        ):
+        if gate == PipelineRunStatus.WAITING_SAMPLE_REVIEW and payload.failure_code is None:
             # 합성 샘플의 의미 해석이 고객 의도와 다르면 승인된 요구사항 분석은
             # 유지하고, 자연어 feedback을 전달해 선별 단계만 다시 생성한다.
             target = StageName.DATA_SELECTION
+        elif gate == PipelineRunStatus.WAITING_FINAL_REVIEW and payload.failure_code is None:
+            # 최종 산출물 수정 요청은 승인된 요구사항과 선별 계획을 유지하고
+            # 자연어 feedback을 전달해 가공 단계만 다시 실행한다.
+            target = StageName.DATA_PROCESSING
         else:
             target = rollback_target(
                 payload.failure_code.value
@@ -574,7 +575,7 @@ async def _reopen_from(
                 attempt_no=(previous.attempt_no if previous else 0) + 1,
                 status=StageRunStatus.PENDING.value,
                 executor="CELERY",
-                # 업로드된 CSV 메타데이터는 재시도에서도 그대로 써야 한다.
+                # 승인된 선별 계획 등 단계 입력은 재시도에서도 그대로 유지한다.
                 input_payload=dict(previous.input_payload or {}) if previous else {},
                 output_payload={},
                 validation_result={},
