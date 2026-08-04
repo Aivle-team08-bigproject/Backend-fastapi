@@ -5,6 +5,8 @@ import pytest
 from pydantic import ValidationError
 
 from app.domains.pipeline.model import (
+    AnalysisStepCode,
+    AnalysisStepStatus,
     DataRequest,
     PipelineRun,
     PipelineRunStatus,
@@ -110,6 +112,69 @@ def test_persist_running_pipeline_event():
     assert event.stage_run_id == 11
 
 
+def test_persist_analysis_step_event_merges_into_output_payload():
+    now = datetime.now(timezone.utc)
+    run = PipelineRun(
+        id=7,
+        data_request_id=3,
+        attempt_no=1,
+        status="RUNNING",
+        current_stage="REQUIREMENT_ANALYSIS",
+        progress_percent=1,
+        celery_task_id="task-7",
+        created_at=now,
+        updated_at=now,
+    )
+    data_request = DataRequest(
+        id=3,
+        client_id=1,
+        request_no="REQ-TEST",
+        title="test",
+        raw_requirement="test",
+        output_formats=[],
+        delivery_channels=[],
+        analysis_condition={},
+        status="RUNNING",
+        created_at=now,
+        updated_at=now,
+    )
+    stage = StageRun(
+        id=11,
+        pipeline_run_id=7,
+        stage_code="REQUIREMENT_ANALYSIS",
+        attempt_no=1,
+        status="RUNNING",
+        executor="CELERY",
+        input_payload={},
+        output_payload={},
+        validation_result={},
+        created_at=now,
+    )
+    db = FakeAsyncSession(run, data_request, stage)
+    event = PipelineStatusEvent(
+        run_id=7,
+        celery_task_id="task-7",
+        run_status=PipelineRunStatus.RUNNING,
+        current_stage="REQUIREMENT_ANALYSIS",
+        stage_status=StageRunStatus.RUNNING,
+        analysis_step=AnalysisStepCode.REQUEST_ANALYSIS,
+        analysis_step_status=AnalysisStepStatus.COMPLETED,
+        attempt_no=1,
+        step_metadata={"usage_purpose_identified": True},
+        progress_percent=11,
+        message="요청 분석이 완료되었습니다.",
+        occurred_at=now,
+    )
+
+    assert asyncio.run(persist_status_event(db, event)) is True
+    steps = stage.output_payload["analysis_steps"]
+    assert steps["REQUEST_ANALYSIS"]["status"] == "COMPLETED"
+    assert steps["REQUEST_ANALYSIS"]["metadata"] == {"usage_purpose_identified": True}
+    # 아직 시작 안 한 다른 두 단계는 PENDING으로 초기화되어 있어야 한다.
+    assert steps["REQUEST_STRUCTURING"]["status"] == "PENDING"
+    assert steps["DATA_CATEGORIZATION"]["status"] == "PENDING"
+
+
 def test_sse_message_format():
     assert _sse_message("status", '{"run_status":"RUNNING"}') == (
         'event: status\ndata: {"run_status":"RUNNING"}\n\n'
@@ -120,6 +185,40 @@ def test_sse_message_includes_database_event_id():
     assert _sse_message("status", '{"event_id":101}', 101) == (
         'id: 101\nevent: status\ndata: {"event_id":101}\n\n'
     )
+
+
+def test_pipeline_status_event_serializes_optional_analysis_step_contract():
+    event = PipelineStatusEvent(
+        run_id=7,
+        celery_task_id="task-7",
+        run_status=PipelineRunStatus.RUNNING,
+        current_stage="REQUIREMENT_ANALYSIS",
+        stage_status=StageRunStatus.RUNNING,
+        analysis_step=AnalysisStepCode.REQUEST_STRUCTURING,
+        analysis_step_status=AnalysisStepStatus.RUNNING,
+        attempt_no=1,
+        progress_percent=12,
+        message="요청을 구조화하고 있습니다.",
+        occurred_at=datetime.now(timezone.utc),
+    )
+
+    payload = event.model_dump(mode="json")
+    assert payload["analysis_step"] == "REQUEST_STRUCTURING"
+    assert payload["analysis_step_status"] == "RUNNING"
+    assert payload["attempt_no"] == 1
+
+
+def test_pipeline_status_event_rejects_partial_analysis_step_fields():
+    with pytest.raises(ValidationError, match="must be set together"):
+        PipelineStatusEvent(
+            run_id=7,
+            celery_task_id="task-7",
+            run_status=PipelineRunStatus.RUNNING,
+            analysis_step=AnalysisStepCode.REQUEST_ANALYSIS,
+            progress_percent=1,
+            message="요청을 분석하고 있습니다.",
+            occurred_at=datetime.now(timezone.utc),
+        )
 
 
 def test_pipeline_status_event_serializes_optional_selection_step_contract():

@@ -96,6 +96,24 @@ class ProcessingStepStatus(str, enum.Enum):
     ROLLED_BACK = "ROLLED_BACK"
 
 
+class AnalysisStepCode(str, enum.Enum):
+    """REQUIREMENT_ANALYSIS 내부에서 실제로 순차 실행되는 의미적 단계."""
+
+    REQUEST_ANALYSIS = "REQUEST_ANALYSIS"
+    REQUEST_STRUCTURING = "REQUEST_STRUCTURING"
+    DATA_CATEGORIZATION = "DATA_CATEGORIZATION"
+
+
+class AnalysisStepStatus(str, enum.Enum):
+    """요구사항 분석 서브스텝 상태. 상위 StageRun과 별도 계약으로 관리한다."""
+
+    PENDING = "PENDING"
+    RUNNING = "RUNNING"
+    COMPLETED = "COMPLETED"
+    FAILED = "FAILED"
+    ROLLED_BACK = "ROLLED_BACK"
+
+
 class StageName(str, enum.Enum):
     """Supervisor가 순서대로 진행시키는 실행 단계.
 

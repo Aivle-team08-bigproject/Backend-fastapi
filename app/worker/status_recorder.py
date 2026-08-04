@@ -16,6 +16,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.common.time_utils import utcnow
 from app.domains.pipeline.model import (
+    AnalysisStepStatus,
     Artifact,
     ArtifactType,
     DataRequest,
@@ -32,6 +33,7 @@ from app.domains.pipeline.model import (
 )
 from app.worker.status_event import PipelineStatusEvent
 from app.worker.status_publisher import publish_to_screen
+from app.domains.pipeline.analysis_steps import initial_analysis_steps_snapshot
 from app.domains.pipeline.selection_steps import initial_selection_steps_snapshot
 from app.domains.pipeline.processing_steps import initial_processing_steps_snapshot
 
@@ -87,6 +89,36 @@ async def persist_status_event(db: AsyncSession, event: PipelineStatusEvent) -> 
             event.stage_run_id = stage.id
             stage.status = event.stage_status.value
             stage.executor_reference = event.celery_task_id
+            if event.current_stage == "REQUIREMENT_ANALYSIS":
+                stage_payload = dict(stage.output_payload or {})
+                steps = stage_payload.get("analysis_steps")
+                if not isinstance(steps, dict):
+                    steps = initial_analysis_steps_snapshot()
+                if event.analysis_step is not None:
+                    step_payload = dict(steps[event.analysis_step.value])
+                    step_payload["status"] = event.analysis_step_status.value
+                    if event.analysis_step_status == AnalysisStepStatus.RUNNING:
+                        step_payload["started_at"] = (
+                            step_payload.get("started_at") or now.isoformat()
+                        )
+                        step_payload["completed_at"] = None
+                        step_payload["error_message"] = None
+                    elif event.analysis_step_status == AnalysisStepStatus.COMPLETED:
+                        step_payload["started_at"] = (
+                            step_payload.get("started_at") or now.isoformat()
+                        )
+                        step_payload["completed_at"] = now.isoformat()
+                        step_payload["error_message"] = None
+                    elif event.analysis_step_status == AnalysisStepStatus.FAILED:
+                        step_payload["started_at"] = (
+                            step_payload.get("started_at") or now.isoformat()
+                        )
+                        step_payload["completed_at"] = now.isoformat()
+                        step_payload["error_message"] = event.error_message
+                    step_payload["metadata"] = event.step_metadata
+                    steps[event.analysis_step.value] = step_payload
+                stage_payload["analysis_steps"] = steps
+                stage.output_payload = stage_payload
             if event.current_stage == "DATA_SELECTION":
                 stage_payload = dict(stage.output_payload or {})
                 steps = stage_payload.get("selection_steps")
@@ -153,7 +185,11 @@ async def persist_status_event(db: AsyncSession, event: PipelineStatusEvent) -> 
                 stage.started_at = stage.started_at or now
             elif event.stage_status == StageRunStatus.COMPLETED:
                 result = dict(event.result or {})
-                if event.current_stage == "DATA_SELECTION":
+                if event.current_stage == "REQUIREMENT_ANALYSIS":
+                    result["analysis_steps"] = stage.output_payload.get(
+                        "analysis_steps", initial_analysis_steps_snapshot()
+                    )
+                elif event.current_stage == "DATA_SELECTION":
                     result["selection_steps"] = stage.output_payload.get(
                         "selection_steps", initial_selection_steps_snapshot()
                     )
@@ -165,7 +201,11 @@ async def persist_status_event(db: AsyncSession, event: PipelineStatusEvent) -> 
                 stage.completed_at = now
             elif event.stage_status == StageRunStatus.FAILED:
                 result = dict(event.result or {})
-                if event.current_stage == "DATA_SELECTION":
+                if event.current_stage == "REQUIREMENT_ANALYSIS":
+                    result["analysis_steps"] = stage.output_payload.get(
+                        "analysis_steps", initial_analysis_steps_snapshot()
+                    )
+                elif event.current_stage == "DATA_SELECTION":
                     result["selection_steps"] = stage.output_payload.get(
                         "selection_steps", initial_selection_steps_snapshot()
                     )
@@ -179,6 +219,7 @@ async def persist_status_event(db: AsyncSession, event: PipelineStatusEvent) -> 
 
     is_failed_event = (
         event.run_status == PipelineRunStatus.FAILED
+        or event.analysis_step_status == AnalysisStepStatus.FAILED
         or event.selection_step_status == SelectionStepStatus.FAILED
         or event.processing_step_status == ProcessingStepStatus.FAILED
     )
@@ -191,6 +232,12 @@ async def persist_status_event(db: AsyncSession, event: PipelineStatusEvent) -> 
         payload={
             "stage": event.current_stage,
             "status": event.run_status.value,
+            "analysis_step": event.analysis_step.value
+            if event.analysis_step
+            else None,
+            "analysis_step_status": event.analysis_step_status.value
+            if event.analysis_step_status
+            else None,
             "selection_step": event.selection_step.value
             if event.selection_step
             else None,
@@ -256,6 +303,8 @@ async def record_status(
     error_message: str | None = None,
     validation_result: dict | None = None,
     rollback_to_stage: str | None = None,
+    analysis_step=None,
+    analysis_step_status=None,
     selection_step=None,
     selection_step_status=None,
     processing_step=None,
@@ -273,6 +322,8 @@ async def record_status(
         run_status=run_status,
         current_stage=current_stage,
         stage_status=stage_status,
+        analysis_step=analysis_step,
+        analysis_step_status=analysis_step_status,
         selection_step=selection_step,
         selection_step_status=selection_step_status,
         processing_step=processing_step,

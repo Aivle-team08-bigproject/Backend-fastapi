@@ -3,6 +3,8 @@ from datetime import datetime
 from pydantic import BaseModel, Field, model_validator
 
 from app.domains.pipeline.model import (
+    AnalysisStepCode,
+    AnalysisStepStatus,
     PipelineRunStatus,
     ProcessingStepCode,
     ProcessingStepStatus,
@@ -19,6 +21,8 @@ class PipelineStatusEvent(BaseModel):
     run_status: PipelineRunStatus
     current_stage: str | None = None
     stage_status: StageRunStatus | None = None
+    analysis_step: AnalysisStepCode | None = None
+    analysis_step_status: AnalysisStepStatus | None = None
     selection_step: SelectionStepCode | None = None
     selection_step_status: SelectionStepStatus | None = None
     processing_step: ProcessingStepCode | None = None
@@ -38,6 +42,12 @@ class PipelineStatusEvent(BaseModel):
 
     @model_validator(mode="after")
     def validate_selection_step_fields(self) -> "PipelineStatusEvent":
+        if (self.analysis_step is None) != (self.analysis_step_status is None):
+            raise ValueError(
+                "analysis_step and analysis_step_status must be set together"
+            )
+        if self.analysis_step is not None and self.attempt_no is None:
+            raise ValueError("analysis step event requires attempt_no")
         if (self.selection_step is None) != (self.selection_step_status is None):
             raise ValueError(
                 "selection_step and selection_step_status must be set together"
