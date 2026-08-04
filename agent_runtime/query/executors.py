@@ -8,7 +8,6 @@ from sqlalchemy import ColumnElement, Select, distinct, func, select, tuple_
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from agent_runtime.query.plan import FilterCondition, QueryPolicyError, SelectionPlan
-from agent_runtime.query.normalization import FilterValueError, normalize_filter_value
 from agent_runtime.query.registry import (
     DATASETS,
     K_ANONYMITY,
@@ -184,24 +183,18 @@ def _joined_source(dataset_names: tuple[str, ...]):
 
 
 def _sql_condition(column: ColumnElement, condition: FilterCondition):
-    try:
-        value = normalize_filter_value(column.type, condition.value)
-    except FilterValueError as exc:
-        raise QueryPolicyError(
-            f"invalid filter value for {condition.column}: {exc}"
-        ) from exc
     if condition.operator == "eq":
-        return column == value
+        return column == condition.value
     if condition.operator == "in":
-        return column.in_(value)
+        return column.in_(condition.value)
     if condition.operator == "gte":
-        return column >= value
+        return column >= condition.value
     if condition.operator == "lte":
-        return column <= value
+        return column <= condition.value
     if condition.operator == "between":
-        return column.between(value[0], value[1])
+        return column.between(condition.value[0], condition.value[1])
     if condition.operator == "starts_with":
-        return column.startswith(value, autoescape=True)
+        return column.startswith(condition.value, autoescape=True)
     raise QueryPolicyError(f"unsupported filter operator: {condition.operator}")
 
 
