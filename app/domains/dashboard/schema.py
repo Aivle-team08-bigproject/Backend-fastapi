@@ -1,4 +1,4 @@
-from datetime import datetime
+from datetime import date, datetime
 from enum import Enum
 from typing import Literal
 
@@ -61,11 +61,12 @@ StageGroupCode = Literal[
     "UNKNOWN",
 ]
 DecisionStatus = Literal["pending", "approved", "changes_requested", "not_required"]
-StatusGroupCode = Literal["waiting_review", "in_progress", "completed", "failed", "unknown"]
+StatusGroupCode = Literal["waiting_review", "in_progress", "completed", "failed", "overdue", "unknown"]
 
 
 class DashboardTaskItemResponse(BaseModel):
     request_no: str
+    run_id: int | None = None
     client: str
     title: str
     assignee_code: str | None
@@ -78,6 +79,8 @@ class DashboardTaskItemResponse(BaseModel):
     priority_code: PriorityCode | None
     decision_status: DecisionStatus
     requires_action: bool
+    progress_percent: int = Field(default=0, ge=0, le=100)
+    due_at: datetime | None = None
     detail_route: str
     created_at: datetime
     updated_at: datetime
@@ -107,7 +110,10 @@ class DashboardDeadlineTaskResponse(BaseModel):
 
 
 class DashboardResponse(BaseModel):
+    scope: Literal["mine"] = "mine"
     generated_at: datetime
+    summary: "PersonalDashboardSummaryResponse"
+    progress: "DashboardProgressResponse"
     priority_cards: list[DashboardPriorityCardResponse]
     priority_actions: list[DashboardTaskItemResponse]
     popular_products: list[PopularProductResponse]
@@ -117,18 +123,102 @@ class DashboardResponse(BaseModel):
     active_task_count: int = Field(ge=0)
 
 
+class PersonalDashboardSummaryResponse(BaseModel):
+    total_count: int = Field(ge=0)
+    active_count: int = Field(ge=0)
+    approval_count: int = Field(ge=0)
+    failed_count: int = Field(ge=0)
+    completion_rate: float = Field(ge=0, le=100)
+
+
+class DashboardStageProgressResponse(BaseModel):
+    code: str
+    status: str
+    progress_percent: int = Field(ge=0, le=100)
+
+
+class DashboardProgressResponse(BaseModel):
+    percent: int = Field(ge=0, le=100)
+    current_stage: str | None
+    stages: list[DashboardStageProgressResponse]
+
+
+DashboardResponse.model_rebuild()
+
+
 class DashboardTaskQuery(BaseModel):
+    scope: Literal["mine", "all"] = "mine"
+    search: str | None = Field(default=None, max_length=100)
     priority: PriorityCode | None = None
     stage: StageGroupCode | None = None
+    status: StatusGroupCode | None = None
+    assignee: str | None = Field(default=None, max_length=40)
+    created_from: date | None = None
+    created_to: date | None = None
     page: int = Field(default=1, ge=1)
     page_size: Literal[30, 50, 100] = 30
 
 
 class DashboardTaskListResponse(BaseModel):
+    scope: Literal["mine", "all"] = "mine"
     items: list[DashboardTaskItemResponse]
     total_count: int = Field(ge=0)
     page: int = Field(ge=1)
     page_size: Literal[30, 50, 100]
+
+
+class DashboardSummaryResponse(BaseModel):
+    total_count: int = Field(ge=0)
+    active_count: int = Field(ge=0)
+    waiting_review_count: int = Field(ge=0)
+    failed_count: int = Field(ge=0)
+    overdue_count: int = Field(ge=0)
+    deadline_soon_count: int = Field(ge=0)
+
+
+class AssigneeProgressResponse(BaseModel):
+    assignee_code: str | None
+    assignee_name: str
+    total_count: int = Field(ge=0)
+    completed_count: int = Field(ge=0)
+    waiting_review_count: int = Field(ge=0)
+    failed_count: int = Field(ge=0)
+    progress_percent: float = Field(ge=0, le=100)
+
+
+class AdminDashboardResponse(BaseModel):
+    scope: Literal["all"] = "all"
+    generated_at: datetime
+    summary: DashboardSummaryResponse
+    assignee_progress: list[AssigneeProgressResponse]
+    attention_items: dict[str, list[DashboardTaskItemResponse]]
+
+
+class TaskStageDetailResponse(BaseModel):
+    stage_code: str
+    status: str
+    attempt_no: int
+    executor: str
+    created_at: datetime
+    started_at: datetime | None = None
+    completed_at: datetime | None = None
+    error_message: str | None = None
+
+
+class TaskDetailResponse(BaseModel):
+    request_no: str
+    run_id: int
+    title: str
+    assignee_code: str | None
+    assignee_name: str
+    run_status: str | None
+    current_stage: str | None
+    progress_percent: int = Field(ge=0, le=100)
+    attempt_no: int | None
+    rollback_to_stage: str | None
+    error_message: str | None
+    stages: list[TaskStageDetailResponse]
+    available_actions: list[str]
 
 
 # The old name remains import-compatible for code that only references the
