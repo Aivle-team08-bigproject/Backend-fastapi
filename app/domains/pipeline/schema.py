@@ -107,6 +107,19 @@ class SamplePreviewResponse(BaseModel):
     review_summary: SamplePreviewReviewSummary
 
 
+class ProcessingResultResponse(BaseModel):
+    run_id: int
+    stage: str
+    attempt_no: int
+    api_result: dict
+    processed_columns: list[str]
+    quality_report: dict
+    processing_explanation: dict
+    visualization: dict | None = None
+    report: dict | None = None
+    processing_plan: dict | None = None
+
+
 class StageReviewRequest(BaseModel):
     """단계 산출물에 대한 사람 검토 결과(HITL)."""
 

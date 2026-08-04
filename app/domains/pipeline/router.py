@@ -14,6 +14,7 @@ from app.domains.pipeline.schema import (
     CreateDataRequestRequest,
     CreateDataRequestResponse,
     PipelineRunResponse,
+    ProcessingResultResponse,
     SamplePreviewResponse,
     StageReviewRequest,
     StageReviewResponse,
@@ -21,6 +22,7 @@ from app.domains.pipeline.schema import (
 from app.domains.pipeline.service import (
     create_data_request,
     get_pipeline_run,
+    get_processing_result,
     get_result_artifact,
     get_sample_preview,
     submit_stage_review,
@@ -61,6 +63,17 @@ async def get_run_sample_preview(
     db: AsyncSession = Depends(get_db),
 ) -> SamplePreviewResponse:
     return await get_sample_preview(db, run_id)
+
+
+@router.get(
+    "/runs/{run_id}/processing-result",
+    response_model=ProcessingResultResponse,
+)
+async def get_run_processing_result(
+    run_id: int,
+    db: AsyncSession = Depends(get_db),
+) -> ProcessingResultResponse:
+    return await get_processing_result(db, run_id)
 
 
 @router.post("/runs/{run_id}/review", response_model=StageReviewResponse)
