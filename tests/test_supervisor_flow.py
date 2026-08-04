@@ -262,6 +262,14 @@ def test_full_approval_path_walks_every_stage_and_completes(client, stub_agents)
     assert _run_row(run_id)[0] == "WAITING_FINAL_REVIEW"
     assert stub_agents.calls[-1] == "data-processing-agent"
 
+    processing_response = client.get(f"/api/v1/runs/{run_id}/processing-result")
+    assert processing_response.status_code == 200, processing_response.text
+    processing_result = processing_response.json()
+    assert processing_result["stage"] == "DATA_PROCESSING"
+    assert processing_result["processed_columns"] == ["지역", "결제건수"]
+    assert processing_result["api_result"] == {"items": [], "meta": {}}
+    assert processing_result["quality_report"]["output_row_count"] == 5
+
     # 최종 승인 -> COMPLETED, 더 진행할 단계 없음.
     response = client.post(f"/api/v1/runs/{run_id}/review", json={"approved": True}, headers=headers)
     assert response.status_code == 200, response.text

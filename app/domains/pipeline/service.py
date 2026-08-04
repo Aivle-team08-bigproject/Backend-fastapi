@@ -28,6 +28,7 @@ from app.domains.pipeline.schema import (
     CreateDataRequestRequest,
     CreateDataRequestResponse,
     PipelineRunResponse,
+    ProcessingResultResponse,
     RequirementAnalysisResponse,
     RunEventResponse,
     RunStageResponse,
@@ -381,6 +382,56 @@ async def get_sample_preview(db: AsyncSession, run_id: int) -> SamplePreviewResp
             "has_catalog_issues": bool(catalog_issues),
             "catalog_issue_count": len(catalog_issues),
         },
+    )
+
+
+async def get_processing_result(db: AsyncSession, run_id: int) -> ProcessingResultResponse:
+    """가장 최근에 완료된 데이터 가공 단계의 JSON 산출물을 반환한다."""
+    run = await db.get(PipelineRun, run_id)
+    if run is None:
+        raise not_found("PIPELINE_RUN_NOT_FOUND", "파이프라인 실행을 찾을 수 없습니다.")
+
+    stage = await db.scalar(
+        select(StageRun)
+        .where(
+            StageRun.pipeline_run_id == run.id,
+            StageRun.stage_code == StageName.DATA_PROCESSING.value,
+            StageRun.status == StageRunStatus.COMPLETED.value,
+        )
+        .order_by(StageRun.attempt_no.desc(), StageRun.id.desc())
+        .limit(1)
+    )
+    if stage is None:
+        raise not_found(
+            "PIPELINE_RESULT_NOT_READY",
+            "데이터 가공 결과가 아직 준비되지 않았습니다.",
+        )
+
+    output = stage.output_payload or {}
+    required = (
+        "api_result",
+        "processed_columns",
+        "quality_report",
+        "processing_explanation",
+    )
+    if any(key not in output for key in required):
+        raise DomainException(
+            status.HTTP_409_CONFLICT,
+            "PIPELINE_RESULT_INVALID",
+            "저장된 데이터 가공 결과가 유효하지 않습니다.",
+        )
+
+    return ProcessingResultResponse(
+        run_id=run.id,
+        stage=StageName.DATA_PROCESSING.value,
+        attempt_no=stage.attempt_no,
+        api_result=output["api_result"],
+        processed_columns=output["processed_columns"],
+        quality_report=output["quality_report"],
+        processing_explanation=output["processing_explanation"],
+        visualization=output.get("visualization"),
+        report=output.get("report"),
+        processing_plan=output.get("processing_plan"),
     )
 
 
