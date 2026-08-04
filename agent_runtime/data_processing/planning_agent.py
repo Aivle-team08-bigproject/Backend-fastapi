@@ -22,6 +22,8 @@ select_columns뿐이다. source_columns는 승인된 선별 계획에서 현재 
 새 컬럼은 derive_date_part, bucketize 또는 aggregate의 target으로만 생성한다.
 직접 식별자 가명화와 k-익명성은 실행기가 강제하므로 계획에 넣거나 기준을 변경하지 않는다.
 고객 목적을 달성하는 데 필요한 최소 operation만 선택하고 실행 순서대로 배열에 넣는다.
+hitl_feedback이 있으면 승인된 선별 범위 안에서 고객의 최종 반려 의견을 우선 반영해 이전과 다른
+가공 계획을 만든다. 승인되지 않은 컬럼을 추가하거나 선별 계획 자체를 변경해서는 안 된다.
 
 출력 형식:
 {
@@ -71,6 +73,7 @@ def create_processing_plan(payload: dict) -> dict:
         "raw_requirement": payload.get("raw_requirement", ""),
         "analysis": payload.get("analysis") or {},
         "approved_selection": payload.get("selection") or {},
+        "hitl_feedback": payload.get("hitl_feedback"),
     }
     last_error: str | None = None
     retry_feedback: str | None = None

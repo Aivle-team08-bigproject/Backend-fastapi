@@ -103,7 +103,8 @@ class StageReviewRequest(BaseModel):
 
     approved: bool
     feedback: str | None = Field(default=None, max_length=4000)
-    # 반려 시 되돌아갈 단계를 정하는 근거. 없으면 HUMAN_REJECTED로 처음부터 다시 돈다.
+    # 선택값이 있으면 실패 정책표로 롤백 단계를 정한다. 없으면 현재 HITL 게이트 기준으로
+    # 요구사항→요구사항 분석, 샘플→선별, 최종 산출물→가공 단계부터 다시 실행한다.
     failure_code: FailureCode | None = None
 
 
