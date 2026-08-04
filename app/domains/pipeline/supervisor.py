@@ -216,6 +216,7 @@ async def run_stage(
     db: AsyncSession,
     stage: StageRun,
     agent_client: AgentClient | None = None,
+    requirement_analysis_step_callback=None,
     selection_step_callback=None,
     processing_step_callback=None,
 ) -> dict:
@@ -227,6 +228,10 @@ async def run_stage(
     반환: {stage_name, passed, output, validation, run_status, progress_percent, artifact}
     """
     client = agent_client or AgentRuntimeClient()
+    if requirement_analysis_step_callback is not None and hasattr(
+        client, "requirement_analysis_step_callback"
+    ):
+        client.requirement_analysis_step_callback = requirement_analysis_step_callback
     if selection_step_callback is not None and hasattr(
         client, "selection_step_callback"
     ):
