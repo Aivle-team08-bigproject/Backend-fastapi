@@ -53,6 +53,18 @@ def _selection():
                 "data_type": "number",
                 "source_columns": ["krw_converted_amount"],
                 "derivation": "원화 환산 금액 합계",
+                "derivation_spec": {
+                    "spec_version": "1.0",
+                    "operation": "arithmetic",
+                    "parameters": {
+                        "operator": "add",
+                        "operands": [
+                            {"column": "krw_converted_amount"},
+                            {"literal": 0},
+                        ],
+                    },
+                    "evidence": "원화 환산 금액이라는 DB COMMENT와 고객 요청",
+                },
                 "description": "고객 결제 금액",
             }
         ],
@@ -128,7 +140,7 @@ def test_column_design_contract_rejects_unselected_derived_source():
     selection = _selection()
     selection["derived_columns"][0]["source_columns"] = ["transaction_amount"]
 
-    with pytest.raises(ValueError, match="선택된 source column"):
+    with pytest.raises(ValueError, match="원본 또는 앞에서 정의된 파생 컬럼"):
         _validate_contract(selection, SCHEMA_METADATA)
 
 
@@ -430,3 +442,51 @@ def test_run_steps_reports_ordered_statuses_and_small_summaries(monkeypatch):
     assert events[1][2] == {"selected_table_count": 1, "source_column_count": 2}
     assert events[3][2] == {"derived_column_count": 1}
     assert events[5][2] == {"sample_count": 5}
+
+
+def test_derived_comparison_symbol_is_normalized_to_executor_contract():
+    selection = _selection()
+    spec = selection["derived_columns"][0]["derivation_spec"]
+    spec["operation"] = "compare"
+    spec["parameters"] = {
+        "operator": ">=",
+        "left": {"column": "krw_converted_amount"},
+        "right": {"literal": 10000},
+    }
+    selection["derived_columns"][0]["data_type"] = "boolean"
+
+    _validate_contract(selection, SCHEMA_METADATA)
+
+    assert spec["parameters"]["operator"] == "gte"
+
+
+def test_selection_failure_keeps_safe_model_response_diagnostics(monkeypatch):
+    class EmptyResult:
+        stop_reason = "max_tokens"
+
+        def __str__(self):
+            return "응답에 JSON이 없습니다"
+
+    monkeypatch.setattr(selection_agent, "build_agent", lambda _prompt: lambda _message: EmptyResult())
+    events = []
+
+    with pytest.raises(selection_agent.SelectionPlanningError) as raised:
+        selection_agent._run_prompt_step(
+            system_prompt="test",
+            request_payload={},
+            validate=lambda _value: None,
+            step_label="파생 컬럼 정의",
+            step_code="DERIVED_COLUMN_DESIGN",
+            on_step=lambda code, status, metadata: events.append((code, status, metadata)),
+        )
+
+    snapshot = raised.value.failure_snapshot
+    assert snapshot["failed_step"] == "DERIVED_COLUMN_DESIGN"
+    assert snapshot["retry_count"] == 3
+    assert snapshot["failure_code"] == "SELECTION_RULE_INVALID"
+    assert snapshot["model_response"] == {
+        "length": len("응답에 JSON이 없습니다"),
+        "excerpt": "응답에 JSON이 없습니다",
+        "finish_reason": "max_tokens",
+    }
+    assert events[-1][1] == "FAILED"

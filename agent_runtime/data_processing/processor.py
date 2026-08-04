@@ -11,6 +11,7 @@ import os
 import statistics
 from collections import Counter
 from datetime import date, datetime
+from zoneinfo import ZoneInfo
 from typing import Any
 
 from agent_runtime.data_processing.plan import (
@@ -276,11 +277,17 @@ def _execute_plan(
             source = operation.source_columns[0]
             target = str(operation.target_column)
             part = str(operation.parameters["part"])
+            timezone_name = str(operation.parameters.get("timezone", "UTC"))
             for row in rows:
-                row[target] = _date_part(row.get(source), part)
+                row[target] = _date_part(row.get(source), part, timezone_name)
             if target not in columns:
                 columns.append(target)
-            detail = {"part": part, "target_column": target, "affected_rows": len(rows)}
+            detail = {
+                "part": part,
+                "timezone": timezone_name,
+                "target_column": target,
+                "affected_rows": len(rows),
+            }
         elif operation.type == "bucketize":
             source = operation.source_columns[0]
             target = str(operation.target_column)
@@ -293,6 +300,15 @@ def _execute_plan(
             if target not in columns:
                 columns.append(target)
             detail = {"bins": bins, "target_column": target, "affected_rows": len(rows)}
+        elif operation.type in {"compare", "logical", "conditional", "arithmetic", "map_values"}:
+            target = str(operation.target_column)
+            for row in rows:
+                row[target] = _evaluate_expression(
+                    {"operation": operation.type, "parameters": operation.parameters}, row
+                )
+            if target not in columns:
+                columns.append(target)
+            detail = {"target_column": target, "affected_rows": len(rows)}
         elif operation.type == "aggregate":
             rows, columns = _aggregate(rows, operation)
             detail = {"affected_rows": before - len(rows), "output_rows": len(rows)}
@@ -319,6 +335,88 @@ def _execute_plan(
     return rows, columns, audit
 
 
+def _evaluate_expression(expression: dict[str, Any], row: dict[str, Any]) -> Any:
+    if set(expression) == {"column"}:
+        return row.get(str(expression["column"]))
+    if set(expression) == {"literal"}:
+        return expression["literal"]
+
+    operation = expression.get("operation")
+    parameters = expression.get("parameters") or {}
+    if operation == "compare":
+        left = _evaluate_expression(parameters["left"], row)
+        right = _evaluate_expression(parameters["right"], row)
+        return _compare(left, right, str(parameters["operator"]))
+    if operation == "logical":
+        values = [bool(_evaluate_expression(item, row)) for item in parameters["operands"]]
+        if parameters["operator"] == "not":
+            return not values[0]
+        return all(values) if parameters["operator"] == "and" else any(values)
+    if operation == "conditional":
+        branch = "true_value" if bool(_evaluate_expression(parameters["condition"], row)) else "false_value"
+        return _evaluate_expression(parameters[branch], row)
+    if operation == "arithmetic":
+        values = [_numeric_operand(_evaluate_expression(item, row)) for item in parameters["operands"]]
+        if any(value is None for value in values):
+            return None
+        return _arithmetic(values, str(parameters["operator"]), str(parameters.get("on_divide_by_zero", "null")))
+    if operation == "map_values":
+        source = _evaluate_expression(parameters["source"], row)
+        mapping = parameters["mapping"]
+        if str(source) in mapping:
+            return mapping[str(source)]
+        return _evaluate_expression(parameters.get("default", {"literal": None}), row)
+    raise ProcessingError(f"unsupported expression operation: {operation}")
+
+
+def _compare(left: Any, right: Any, operator: str) -> bool:
+    if operator == "eq":
+        return left == right
+    if operator == "neq":
+        return left != right
+    if operator == "in":
+        return isinstance(right, (list, tuple, set)) and left in right
+    if left is None or right is None:
+        return False
+    try:
+        return {
+            "gt": left > right,
+            "gte": left >= right,
+            "lt": left < right,
+            "lte": left <= right,
+        }[operator]
+    except TypeError:
+        return False
+
+
+def _numeric_operand(value: Any) -> float | None:
+    if value is None or isinstance(value, bool):
+        return None
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _arithmetic(values: list[float | None], operator: str, zero_policy: str) -> float | None:
+    numeric = [float(value) for value in values if value is not None]
+    result = numeric[0]
+    for value in numeric[1:]:
+        if operator == "add":
+            result += value
+        elif operator == "subtract":
+            result -= value
+        elif operator == "multiply":
+            result *= value
+        elif value == 0:
+            if zero_policy == "error":
+                raise ProcessingError("division by zero in arithmetic operation")
+            return 0.0 if zero_policy == "zero" else None
+        else:
+            result /= value
+    return result
+
+
 def _execute_fill_missing(
     rows: list[dict[str, Any]], operation: ProcessingOperation
 ) -> tuple[list[dict[str, Any]], int]:
@@ -342,19 +440,23 @@ def _execute_fill_missing(
     return rows, affected
 
 
-def _date_part(value: Any, part: str) -> Any:
+def _date_part(value: Any, part: str, timezone_name: str = "UTC") -> Any:
     if value is None:
         return None
     try:
         parsed = value if isinstance(value, (date, datetime)) else datetime.fromisoformat(str(value).replace("Z", "+00:00"))
     except (TypeError, ValueError):
         return None
+    if isinstance(parsed, datetime) and parsed.tzinfo is not None:
+        parsed = parsed.astimezone(ZoneInfo(timezone_name))
     if part == "year":
         return parsed.year
     if part == "month":
         return f"{parsed.year:04d}-{parsed.month:02d}"
     if part == "day":
         return parsed.date().isoformat() if isinstance(parsed, datetime) else parsed.isoformat()
+    if part == "hour":
+        return parsed.hour if isinstance(parsed, datetime) else None
     return parsed.weekday()
 
 

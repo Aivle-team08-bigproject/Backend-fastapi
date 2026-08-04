@@ -65,8 +65,14 @@ FINAL_CONTRACT_REFERENCE = """당신은 '하나 데이터 마켓'의 DB 메타�
     {
       "name": "<새 파생 컬럼명>",
       "data_type": "<string|integer|number|boolean|date|datetime>",
-      "source_columns": ["<source_columns에 선택된 실제 컬럼명>"],
+      "source_columns": ["<선택된 원본 또는 앞에서 정의된 파생 컬럼명>"],
       "derivation": "<계산 또는 조합 규칙>",
+      "derivation_spec": {
+        "spec_version": "1.0",
+        "operation": "<compare|logical|conditional|arithmetic|date_part|bucketize|aggregate|map_values>",
+        "parameters": {"source": {"column": "<참조 컬럼명>"}},
+        "evidence": "<DB COMMENT·카탈로그·고객 요구·HITL 근거>"
+      },
       "description": "<고객에게 보여줄 설명>"
     }
   ],
@@ -144,7 +150,9 @@ FINAL_CONTRACT_REFERENCE = """당신은 '하나 데이터 마켓'의 DB 메타�
 - selected_tables는 available_data에 있는 값만 사용한다.
 - source_columns.column은 schema_metadata에 실제 존재하는 허용 컬럼만 사용한다.
 - source_columns에는 고객 요청을 충족하는 데 필요한 최소 원본 컬럼만 넣는다.
-- derived_columns는 반드시 source_columns만으로 계산 가능해야 한다.
+- derived_columns는 선택된 source_columns와 배열 앞쪽에서 정의한 파생 컬럼만 참조한다.
+- derived_columns는 derivation_spec 1.0으로 실행 의미와 실제 근거를 구조화한다.
+- 임의 Python, SQL 또는 문자열 수식을 derivation_spec에 넣지 않는다.
 - 고객 요청에 맞게 기존 컬럼을 계산·집계·분류·조합한 derived_columns를 최소 1개 만든다.
 - derived_columns를 단순한 원본 컬럼의 이름 변경으로 만들지 않는다.
 - retry_feedback이 있으면 실패 원인을 반드시 수정해서 전체 JSON을 다시 생성한다.
@@ -230,15 +238,26 @@ hitl_feedback이 있으면 승인된 원본 범위 안에서 우선 반영하고
   "derived_columns": [{
     "name": "새 파생 컬럼명",
     "data_type": "string|integer|number|boolean|date|datetime",
-    "source_columns": ["검증된 원본 컬럼명"],
+    "source_columns": ["검증된 원본 또는 앞에서 정의된 파생 컬럼명"],
     "derivation": "계산·집계·분류·조합 규칙",
+    "derivation_spec": {
+      "spec_version": "1.0",
+      "operation": "compare|logical|conditional|arithmetic|date_part|bucketize|aggregate|map_values",
+      "parameters": {"operator": "연산별 구조화된 매개변수"},
+      "evidence": "DB COMMENT, 카탈로그, 고객 요구 또는 HITL 근거"
+    },
     "description": "고객에게 보여줄 설명"
   }]
 }
 
 규칙:
 - derived_columns는 최소 1개 만든다.
-- source_selection.source_columns에 있는 실제 컬럼만 참조한다.
+- source_selection.source_columns 또는 배열 앞쪽에서 이미 정의한 파생 컬럼만 참조한다.
+- derivation_spec은 임의 Python·SQL·문자열 수식 없이 실행 의미를 구조화한다.
+- parameters 안에서 컬럼을 참조할 때는 {"column":"컬럼명"}, 상수는 {"literal":값} 형식을 쓴다.
+- 비교 operator는 eq, neq, gt, gte, lt, lte, in만 사용한다. ==, !=, >, >=, <, <= 기호는 쓰지 않는다.
+- evidence에는 DB COMMENT, reference catalog, 고객 요구사항 또는 HITL 중 실제 근거를 적는다.
+- 파생 컬럼 간 순환 참조나 뒤에서 정의할 컬럼의 선행 참조를 만들지 않는다.
 - 단순 이름 변경은 파생 컬럼으로 만들지 않는다.
 - 이름은 중복될 수 없고 원본 컬럼명과도 충돌하지 않게 한다.
 - JSON 외 텍스트를 출력하지 않는다."""
@@ -278,6 +297,14 @@ _JSON_BLOCK_RE = re.compile(r"\{.*\}", re.DOTALL)
 MAX_ATTEMPTS = 3
 
 
+class SelectionPlanningError(ValueError):
+    """선별 단계 실패 원인과 안전한 모델 응답 진단을 함께 전달한다."""
+
+    def __init__(self, message: str, failure_snapshot: dict):
+        super().__init__(message)
+        self.failure_snapshot = failure_snapshot
+
+
 def _build_model() -> OpenAIModel:
     return OpenAIModel(
         client_args={
@@ -285,7 +312,7 @@ def _build_model() -> OpenAIModel:
             "base_url": settings.deepseek_base_url,
         },
         model_id=settings.data_selection_model_id,
-        params={"temperature": 0},
+        params={"temperature": 0, "response_format": {"type": "json_object"}},
     )
 
 
@@ -456,14 +483,26 @@ def _validate_contract(
         if not set(values).issubset(allowed_codes):
             raise ValueError("mcc_code 필터는 실제 MCC 카탈로그 코드만 사용할 수 있음")
 
+    available_derived_sources = set(selected_source_set)
+    derived_names = {
+        column.get("name") for column in derived_columns if isinstance(column, dict)
+    }
+    if len(derived_names) != len(derived_columns) or None in derived_names:
+        raise ValueError("derived column 이름은 비어 있거나 중복될 수 없음")
+    if derived_names & selected_source_set:
+        raise ValueError("derived column 이름은 원본 컬럼명과 충돌할 수 없음")
+
     for column in derived_columns:
         sources = column.get("source_columns")
         if not column.get("name") or not isinstance(sources, list) or not sources:
             raise ValueError("모든 derived column에는 name과 source_columns가 필요함")
-        if not set(sources).issubset(selected_source_set):
-            raise ValueError("derived column은 선택된 source column만 참조해야 함")
+        if not set(sources).issubset(available_derived_sources):
+            raise ValueError("derived column은 원본 또는 앞에서 정의된 파생 컬럼만 참조해야 함")
         if not column.get("derivation"):
             raise ValueError("모든 derived column에는 derivation이 필요함")
+        _normalize_derivation_spec(column)
+        _validate_derivation_spec(column, set(sources))
+        available_derived_sources.add(column["name"])
 
     if not isinstance(sample_columns, list) or not sample_columns:
         raise ValueError("sample_columns는 비어 있지 않은 배열이어야 함")
@@ -506,6 +545,133 @@ def _assert_exact_keys(data: dict, expected: set[str], step_name: str) -> None:
         raise ValueError(f"{step_name} 결과에 허용되지 않은 키: {', '.join(sorted(extra))}")
 
 
+def _validate_derivation_spec(column: dict, declared_sources: set[str]) -> None:
+    spec = column.get("derivation_spec")
+    if not isinstance(spec, dict):
+        raise ValueError("모든 derived column에는 derivation_spec 객체가 필요함")
+    if set(spec) != {"spec_version", "operation", "parameters", "evidence"}:
+        raise ValueError("derivation_spec 키가 계약과 일치하지 않음")
+    if spec.get("spec_version") != "1.0":
+        raise ValueError("지원하지 않는 derivation_spec 버전")
+    allowed_operations = {
+        "compare", "logical", "conditional", "arithmetic", "date_part",
+        "bucketize", "aggregate", "map_values",
+    }
+    if spec.get("operation") not in allowed_operations:
+        raise ValueError("지원하지 않는 derivation_spec operation")
+    parameters = spec.get("parameters")
+    if not isinstance(parameters, dict) or not parameters:
+        raise ValueError("derivation_spec.parameters는 비어 있지 않은 객체여야 함")
+    if not spec.get("evidence"):
+        raise ValueError("derivation_spec에는 실제 판단 evidence가 필요함")
+    _validate_spec_operators(spec)
+
+    referenced: set[str] = set()
+
+    def collect(value) -> None:
+        if isinstance(value, dict):
+            if set(value) == {"column"} and isinstance(value["column"], str):
+                referenced.add(value["column"])
+                return
+            for nested in value.values():
+                collect(nested)
+        elif isinstance(value, list):
+            for nested in value:
+                collect(nested)
+
+    collect(parameters)
+    if referenced != declared_sources:
+        raise ValueError("derivation_spec 컬럼 참조는 source_columns와 정확히 일치해야 함")
+
+    result_type_by_operation = {
+        "compare": {"boolean"},
+        "logical": {"boolean"},
+        "conditional": {"string", "integer", "number", "boolean", "date", "datetime"},
+        "arithmetic": {"integer", "number"},
+        "date_part": {"integer", "string"},
+        "bucketize": {"string", "integer"},
+        "aggregate": {"integer", "number"},
+        "map_values": {"string", "integer", "number", "boolean"},
+    }
+    if column.get("data_type") not in result_type_by_operation[spec["operation"]]:
+        raise ValueError("derived column data_type이 derivation_spec 결과 타입과 맞지 않음")
+
+
+def _normalize_derivation_spec(column: dict) -> None:
+    """명확한 비교 기호 별칭을 executor의 단일 operator 계약으로 정규화한다."""
+
+    spec = column.get("derivation_spec")
+    if not isinstance(spec, dict):
+        return
+    aliases = {
+        "==": "eq", "=": "eq", "!=": "neq", "<>": "neq",
+        ">": "gt", ">=": "gte", "<": "lt", "<=": "lte",
+    }
+
+    def normalize(value) -> None:
+        if isinstance(value, dict):
+            operator = value.get("operator")
+            if operator in aliases:
+                value["operator"] = aliases[operator]
+            operation = value.get("operation")
+            parameters = value.get("parameters")
+            if isinstance(parameters, dict):
+                if operation == "logical" and "conditions" in parameters:
+                    if "operands" in parameters:
+                        raise ValueError("logical parameters에 conditions와 operands를 함께 사용할 수 없음")
+                    parameters["operands"] = parameters.pop("conditions")
+                if operation == "conditional":
+                    for old, new in {
+                        "if": "condition", "then": "true_value", "else": "false_value"
+                    }.items():
+                        if old in parameters:
+                            if new in parameters:
+                                raise ValueError(f"conditional parameters에 {old}와 {new}를 함께 사용할 수 없음")
+                            parameters[new] = parameters.pop(old)
+            for nested in value.values():
+                normalize(nested)
+        elif isinstance(value, list):
+            for nested in value:
+                normalize(nested)
+
+    normalize(spec)
+
+
+def _validate_spec_operators(spec: dict) -> None:
+    def validate(operation: str | None, parameters) -> None:
+        if not isinstance(parameters, dict):
+            return
+        operator = parameters.get("operator")
+        allowed = {
+            "compare": {"eq", "neq", "gt", "gte", "lt", "lte", "in"},
+            "logical": {"and", "or", "not"},
+            "arithmetic": {"add", "subtract", "multiply", "divide"},
+        }.get(operation)
+        if allowed is not None and operator not in allowed:
+            raise ValueError(f"{operation} derivation operator가 실행 계약과 맞지 않음")
+        for value in parameters.values():
+            if isinstance(value, dict):
+                validate(value.get("operation"), value.get("parameters"))
+                for nested in value.values():
+                    if isinstance(nested, (dict, list)):
+                        walk(nested)
+            elif isinstance(value, list):
+                walk(value)
+
+    def walk(value) -> None:
+        if isinstance(value, dict):
+            if "operation" in value and "parameters" in value:
+                validate(value.get("operation"), value.get("parameters"))
+            else:
+                for nested in value.values():
+                    walk(nested)
+        elif isinstance(value, list):
+            for nested in value:
+                walk(nested)
+
+    validate(spec.get("operation"), spec.get("parameters"))
+
+
 def _placeholder_sample(source_column: str) -> dict:
     column_name = "__contract_placeholder__"
     return {
@@ -543,6 +709,12 @@ def _validate_source_contract(
                 "data_type": "string",
                 "source_columns": [first_source],
                 "derivation": "단계 계약 검증용 조합",
+                "derivation_spec": {
+                    "spec_version": "1.0",
+                    "operation": "map_values",
+                    "parameters": {"source": {"column": first_source}, "mapping": {}},
+                    "evidence": "단계 계약 검증용 근거",
+                },
                 "description": "단계 계약 검증용 파생 컬럼",
             }
         ],
@@ -610,13 +782,23 @@ def _run_prompt_step(
     if on_step is not None:
         on_step(step_code, "RUNNING", None)
     last_error: str | None = None
+    last_response_excerpt: str | None = None
+    last_response_length = 0
+    last_finish_reason: str | None = None
+    attempts_used = 0
     retry_payload = {**request_payload, "retry_feedback": None}
     for attempt in range(1, MAX_ATTEMPTS + 1):
+        attempts_used = attempt
         try:
             raw = build_agent(system_prompt)(
                 json.dumps(retry_payload, ensure_ascii=False)
             )
-            parsed = _extract_json(str(raw))
+            raw_text = str(raw)
+            last_response_length = len(raw_text)
+            last_response_excerpt = raw_text[:2000] if raw_text else None
+            finish_reason = getattr(raw, "stop_reason", None)
+            last_finish_reason = str(finish_reason) if finish_reason else None
+            parsed = _extract_json(raw_text)
             validate(parsed)
         except Exception as exc:  # noqa: BLE001 - 모델 계약 실패를 단계 안에서 재시도
             last_error = str(exc)
@@ -630,13 +812,24 @@ def _run_prompt_step(
                 on_step(step_code, "COMPLETED", _step_summary(step_code, parsed))
             return parsed
     error_message = f"{step_label} 단계가 {MAX_ATTEMPTS}회 시도 후에도 실패: {last_error}"
+    failure_snapshot = {
+        "failed_step": step_code,
+        "validation_errors": [last_error] if last_error else [],
+        "retry_count": attempts_used,
+        "failure_code": "SELECTION_RULE_INVALID",
+        "model_response": {
+            "length": last_response_length,
+            "excerpt": last_response_excerpt,
+            "finish_reason": last_finish_reason,
+        },
+    }
     if on_step is not None:
         on_step(
             step_code,
             "FAILED",
-            {"validation_errors": [last_error] if last_error else []},
+            failure_snapshot,
         )
-    raise ValueError(error_message)
+    raise SelectionPlanningError(error_message, failure_snapshot)
 
 
 def _step_summary(step_code: str, result: dict) -> dict:

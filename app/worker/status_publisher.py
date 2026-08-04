@@ -13,6 +13,7 @@ from redis import Redis
 
 from app.core.config import settings
 from app.worker.status_event import PipelineStatusEvent
+from app.domains.pipeline.failure import public_step_metadata
 
 
 logger = logging.getLogger(__name__)
@@ -21,7 +22,11 @@ _redis_client = Redis.from_url(settings.worker_status_redis_url, decode_response
 
 
 def publish_to_screen(event: PipelineStatusEvent) -> None:
-    payload = event.model_dump_json()
+    # result에는 실패 후보 계획이나 성공 산출물이 포함될 수 있으므로 SSE에는 내보내지 않는다.
+    public_event = event.model_copy(
+        update={"step_metadata": public_step_metadata(event.step_metadata)}
+    )
+    payload = public_event.model_dump_json(exclude={"result"})
     latest_key = f"{settings.worker_status_key_prefix}:{event.run_id}"
     try:
         with _redis_client.pipeline() as pipe:
