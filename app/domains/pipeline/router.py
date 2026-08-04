@@ -38,9 +38,10 @@ router = APIRouter(prefix="/api/v1", tags=["pipeline"])
 )
 async def create_request(
     payload: CreateDataRequestRequest,
+    auth: CurrentAuth = Depends(get_current_auth),
     db: AsyncSession = Depends(get_db),
 ) -> CreateDataRequestResponse:
-    return await create_data_request(db, payload)
+    return await create_data_request(db, payload, auth.employee)
 
 
 @router.get("/runs/{run_id}", response_model=PipelineRunResponse)

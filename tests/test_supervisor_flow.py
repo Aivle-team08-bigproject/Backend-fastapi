@@ -165,8 +165,10 @@ def stub_agents(monkeypatch):
 
 def _create_run(client: TestClient) -> int:
     marker = uuid.uuid4().hex[:8]
+    headers = _login_as_admin(client)
     response = client.post(
         "/api/v1/data-requests",
+        headers=headers,
         json={
             "raw_requirement": f"서울 지역 결제 데이터를 CSV로 주세요. {marker}",
             "title": f"수퍼바이저 흐름 테스트 {marker}",
