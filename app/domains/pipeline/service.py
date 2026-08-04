@@ -28,6 +28,7 @@ from app.domains.pipeline.schema import (
     CreateDataRequestRequest,
     CreateDataRequestResponse,
     PipelineRunResponse,
+    RequirementAnalysisResponse,
     RunEventResponse,
     RunStageResponse,
     SamplePreviewResponse,
@@ -260,6 +261,20 @@ async def get_pipeline_run(db: AsyncSession, run_id: int) -> PipelineRunResponse
             )
         ).all()
     )
+    requirement_stage = next(
+        (
+            stage
+            for stage in reversed(stages)
+            if stage.stage_code == StageName.REQUIREMENT_ANALYSIS.value
+            and stage.status == StageRunStatus.COMPLETED.value
+        ),
+        None,
+    )
+    requirement_analysis = (
+        RequirementAnalysisResponse.model_validate(requirement_stage.output_payload)
+        if requirement_stage is not None
+        else None
+    )
     return PipelineRunResponse(
         run_id=run.id,
         request_no=data_request.request_no,
@@ -292,6 +307,7 @@ async def get_pipeline_run(db: AsyncSession, run_id: int) -> PipelineRunResponse
             )
             for event in events
         ],
+        requirement_analysis=requirement_analysis,
     )
 
 

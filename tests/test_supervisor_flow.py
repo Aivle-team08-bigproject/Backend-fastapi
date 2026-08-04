@@ -216,6 +216,16 @@ def test_full_approval_path_walks_every_stage_and_completes(client, stub_agents)
     assert rollback is None
     assert stub_agents.calls == ["requirement-analysis-agent"]
 
+    run_response = client.get(f"/api/v1/runs/{run_id}")
+    assert run_response.status_code == 200, run_response.text
+    assert run_response.json()["requirement_analysis"] == {
+        "usage_purpose": "consumption_trend",
+        "requested_data_sentence": "서울 지역 결제 데이터",
+        "categories": {"region": ["capital_area"]},
+        "delivery_channel": "FILE_DOWNLOAD",
+        "output_formats": ["csv"],
+    }
+
     # 1차 승인 -> 데이터 선별이 돌고 두 번째 게이트에서 멈춘다.
     response = client.post(f"/api/v1/runs/{run_id}/review", json={"approved": True}, headers=headers)
     assert response.status_code == 200, response.text
