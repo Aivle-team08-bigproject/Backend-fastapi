@@ -412,7 +412,11 @@ def _task_filters(projection, query: DashboardTaskQuery, owner_id: int | None = 
     if owner_id is not None:
         predicates.append(projection.c.owner_id == owner_id)
     if query.priority is not None:
-        predicates.append(projection.c.priority_code == query.priority)
+        predicates.extend((
+            projection.c.priority_code == query.priority,
+            projection.c.requires_action.is_(True),
+            projection.c.status_group_code != "completed",
+        ))
     if query.stage is not None:
         predicates.append(projection.c.stage_group_code == query.stage)
     if query.status is not None:
