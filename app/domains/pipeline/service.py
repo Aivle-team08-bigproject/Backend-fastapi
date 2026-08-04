@@ -34,6 +34,7 @@ from app.domains.pipeline.schema import (
     StageReviewRequest,
     StageReviewResponse,
 )
+from app.domains.pipeline.failure import public_failure
 from app.domains.pipeline.plan_integrity import (
     selection_plan_sha256,
     snapshot_selection_plan,
@@ -258,6 +259,21 @@ async def get_pipeline_run(db: AsyncSession, run_id: int) -> PipelineRunResponse
             )
         ).all()
     )
+    latest_failed_stage = next(
+        (stage for stage in reversed(stages) if stage.status == StageRunStatus.FAILED.value),
+        None,
+    )
+    run_failure = (
+        public_failure(
+            stage=latest_failed_stage.stage_code,
+            result=latest_failed_stage.output_payload,
+            validation_result=latest_failed_stage.validation_result,
+            rollback_to_stage=run.rollback_to_stage,
+            error_message=latest_failed_stage.error_message or run.error_message,
+        )
+        if latest_failed_stage is not None
+        else None
+    )
     return PipelineRunResponse(
         run_id=run.id,
         request_no=data_request.request_no,
@@ -270,12 +286,21 @@ async def get_pipeline_run(db: AsyncSession, run_id: int) -> PipelineRunResponse
         celery_task_id=run.celery_task_id,
         created_at=run.created_at,
         updated_at=run.updated_at,
+        error_message=run.error_message,
+        failure=run_failure,
         stages=[
             RunStageResponse(
                 stage_code=stage.stage_code,
                 status=stage.status,
                 executor=stage.executor,
                 created_at=stage.created_at,
+                failure=public_failure(
+                    stage=stage.stage_code,
+                    result=stage.output_payload,
+                    validation_result=stage.validation_result,
+                    rollback_to_stage=run.rollback_to_stage,
+                    error_message=stage.error_message,
+                ) if stage.status == StageRunStatus.FAILED.value else None,
             )
             for stage in stages
         ],

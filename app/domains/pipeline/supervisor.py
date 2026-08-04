@@ -310,6 +310,7 @@ def rollback_target(failure_code: str | None) -> StageName:
         FailureCode.LOW_SIMILARITY_MATCH: StageName.DATA_SELECTION,
         FailureCode.DUPLICATED_DATA: StageName.DATA_SELECTION,
         FailureCode.OUTLIER_DETECTED: StageName.DATA_SELECTION,
+        FailureCode.SELECTION_RULE_INVALID: StageName.DATA_SELECTION,
         FailureCode.FORMAT_INVALID: StageName.DATA_PROCESSING,
         FailureCode.PROCESSING_RULE_INVALID: StageName.DATA_PROCESSING,
         FailureCode.PRIVACY_THRESHOLD_NOT_MET: StageName.DATA_SELECTION,

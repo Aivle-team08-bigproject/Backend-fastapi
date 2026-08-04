@@ -12,8 +12,10 @@ from agent_runtime.data_processing.config import settings
 from agent_runtime.data_processing.plan import (
     ProcessingOperation,
     ProcessingPlan,
+    order_derived_operations,
     validate_processing_operations,
     validate_processing_plan,
+    validate_approved_derived_coverage,
 )
 
 
@@ -47,8 +49,19 @@ cast의 parameters는 반드시 {{"data_type":"string|integer|number|date|dateti
 
 DERIVED_COLUMN_ORDER_PROMPT = f"""당신은 데이터 가공 Agent의 파생 컬럼 생성 순서 결정 단계다.
 앞의 중복·결측 계획을 변경하지 않고, 승인된 파생 컬럼 정의와 고객 목적을 만족하도록 의존관계
-순서대로 operation을 설계한다. 허용 operation은 derive_date_part, bucketize, aggregate, sort다.
-파생이나 집계가 필요 없으면 operations를 빈 배열로 반환한다.
+순서대로 operation을 설계한다. 허용 operation은 derive_date_part, bucketize, compare, logical,
+conditional, arithmetic, map_values, aggregate, sort다.
+approved_selection.derived_columns의 derivation_spec은 고객이 승인한 의미 계약이므로 자연어
+derivation만 보고 다른 의미로 변경하지 않는다. spec_version, operation, parameters, evidence와
+파생 컬럼 간 의존 순서를 함께 확인한다. 현재 executor가 지원하지 않는 operation을 임의의
+Python·SQL·유사 operation으로 대체하지 않는다.
+compare operator는 eq, neq, gt, gte, lt, lte, in만 사용하며 비교 기호를 쓰지 않는다.
+derive_date_part의 part는 year, month, day, weekday, hour 중 하나다.
+logical은 operands, conditional은 condition, true_value, false_value 키를 사용한다.
+각 approved_selection.derived_columns를 의존 순서대로 실행 operation으로 변환하고 name을
+target_column으로 사용한다. compare/logical/conditional/arithmetic/map_values의 parameters는
+derivation_spec.parameters를 의미 변경 없이 사용한다. 파생이나 집계가 필요 없으면
+operations를 빈 배열로 반환한다.
 aggregate parameters는 반드시 {{"group_by":["컬럼"],"metrics":[{{"column":"컬럼",
 "function":"sum|count|count_distinct|avg|min|max","target":"새컬럼"}}]}} 형식이다.
 
@@ -80,6 +93,14 @@ _JSON_BLOCK_RE = re.compile(r"\{.*\}", re.DOTALL)
 MAX_ATTEMPTS = 3
 
 
+class ProcessingPlanningError(ValueError):
+    """가공 계획 실패 원인과 마지막 안전한 후보 JSON을 함께 전달한다."""
+
+    def __init__(self, message: str, failure_snapshot: dict):
+        super().__init__(message)
+        self.failure_snapshot = failure_snapshot
+
+
 def _build_model() -> OpenAIModel:
     return OpenAIModel(
         client_args={
@@ -89,7 +110,7 @@ def _build_model() -> OpenAIModel:
             "max_retries": 0,
         },
         model_id=settings.data_processing_model_id,
-        params={"temperature": 0},
+        params={"temperature": 0, "response_format": {"type": "json_object"}},
     )
 
 
@@ -113,6 +134,8 @@ def _validate_operations_result(
     allowed_types: set[str],
     previous_operations: list[ProcessingOperation],
     selection: dict,
+    order_by_dependency: bool = False,
+    validate_coverage: bool = False,
 ) -> list[ProcessingOperation]:
     if set(result) != {"operations"} or not isinstance(result["operations"], list):
         raise ValueError("현재 단계 결과는 operations 배열 하나만 포함해야 함")
@@ -122,11 +145,16 @@ def _validate_operations_result(
     invalid = {operation.type for operation in operations} - allowed_types
     if invalid:
         raise ValueError(f"현재 단계에 허용되지 않은 operation: {', '.join(sorted(invalid))}")
+    if order_by_dependency:
+        operations = order_derived_operations(operations, selection)
+        result["operations"] = [operation.model_dump(mode="json") for operation in operations]
     combined = [*previous_operations, *operations]
     identifiers = [operation.id for operation in combined]
     if len(identifiers) != len(set(identifiers)):
         raise ValueError("processing operation ids must be unique")
     validate_processing_operations(combined, selection)
+    if validate_coverage:
+        validate_approved_derived_coverage(combined, selection)
     return operations
 
 
@@ -136,6 +164,51 @@ def _normalize_operation_item(item: dict) -> dict:
         raise ValueError("processing operation은 JSON 객체여야 함")
     normalized = dict(item)
     parameters = dict(normalized.get("parameters") or {})
+    aliases = {
+        "==": "eq", "=": "eq", "!=": "neq", "<>": "neq",
+        ">": "gt", ">=": "gte", "<": "lt", "<=": "lte",
+    }
+
+    def normalize_operators(value) -> None:
+        if isinstance(value, dict):
+            if value.get("operator") in aliases:
+                value["operator"] = aliases[value["operator"]]
+            for nested in value.values():
+                normalize_operators(nested)
+        elif isinstance(value, list):
+            for nested in value:
+                normalize_operators(nested)
+
+    normalize_operators(parameters)
+
+    def normalize_expression_aliases(value) -> None:
+        if not isinstance(value, dict):
+            if isinstance(value, list):
+                for nested in value:
+                    normalize_expression_aliases(nested)
+            return
+        operation = value.get("operation") or (normalized.get("type") if value is normalized else None)
+        expression_parameters = value.get("parameters")
+        if not isinstance(expression_parameters, dict):
+            expression_parameters = parameters if value is normalized else None
+        if isinstance(expression_parameters, dict):
+            if operation == "logical" and "conditions" in expression_parameters:
+                if "operands" in expression_parameters:
+                    raise ValueError("logical parameters에 conditions와 operands를 함께 사용할 수 없음")
+                expression_parameters["operands"] = expression_parameters.pop("conditions")
+            if operation == "conditional" and any(
+                key in expression_parameters for key in ("if", "then", "else")
+            ):
+                aliases = {"if": "condition", "then": "true_value", "else": "false_value"}
+                for old, new in aliases.items():
+                    if old in expression_parameters:
+                        if new in expression_parameters:
+                            raise ValueError(f"conditional parameters에 {old}와 {new}를 함께 사용할 수 없음")
+                        expression_parameters[new] = expression_parameters.pop(old)
+        for nested in value.values():
+            normalize_expression_aliases(nested)
+
+    normalize_expression_aliases(normalized)
     if normalized.get("type") == "cast" and "type" in parameters:
         if "data_type" in parameters:
             raise ValueError("cast parameters에 type과 data_type을 함께 사용할 수 없음")
@@ -176,15 +249,40 @@ def _run_prompt_step(
         on_step(step_code, "RUNNING", None)
     retry_feedback = None
     last_error = None
+    last_candidate = None
+    last_candidate_attempt = None
+    last_response_excerpt = None
+    last_response_length = 0
+    last_finish_reason = None
+    attempt_diagnostics: list[dict] = []
+    attempts_used = 0
     for attempt in range(1, MAX_ATTEMPTS + 1):
+        attempts_used = attempt
+        parsed = False
         try:
             request = {**request_payload, "retry_feedback": retry_feedback}
-            result = _extract_json(
-                str(build_agent(system_prompt)(json.dumps(request, ensure_ascii=False)))
-            )
+            raw = build_agent(system_prompt)(json.dumps(request, ensure_ascii=False))
+            raw_text = str(raw)
+            last_response_length = len(raw_text)
+            last_response_excerpt = raw_text[:2000] if raw_text else None
+            finish_reason = getattr(raw, "stop_reason", None)
+            last_finish_reason = str(finish_reason) if finish_reason else None
+            result = _extract_json(raw_text)
+            parsed = True
+            last_candidate = result
+            last_candidate_attempt = attempt
             validate(result)
         except Exception as exc:  # noqa: BLE001 - 계약 실패는 현재 단계 안에서 재시도
             last_error = str(exc)
+            attempt_diagnostics.append(
+                {
+                    "attempt": attempt,
+                    "error": last_error,
+                    "response_length": last_response_length,
+                    "finish_reason": last_finish_reason,
+                    "json_parsed": parsed,
+                }
+            )
             retry_feedback = (
                 f"직전 {attempt}회차 {step_label} 검증 실패: {last_error}. "
                 "현재 단계 JSON만 수정해 다시 생성하세요."
@@ -194,12 +292,44 @@ def _run_prompt_step(
                 on_step(step_code, "COMPLETED", _step_summary(result))
             return result
     if on_step is not None:
+        failure_snapshot = {
+            "failed_step": step_code,
+            "candidate_processing_plan": last_candidate,
+            "candidate_attempt": last_candidate_attempt,
+            "validation_errors": [last_error] if last_error else [],
+            "retry_count": attempts_used,
+            "failure_code": "PROCESSING_RULE_INVALID",
+            "model_response": {
+                "length": last_response_length,
+                "excerpt": last_response_excerpt,
+                "finish_reason": last_finish_reason,
+            },
+            "attempt_diagnostics": attempt_diagnostics,
+        }
         on_step(
             step_code,
             "FAILED",
-            {"validation_errors": [last_error] if last_error else []},
+            failure_snapshot,
         )
-    raise ValueError(f"{step_label} 단계를 {MAX_ATTEMPTS}회 생성했지만 실패했습니다: {last_error}")
+    else:
+        failure_snapshot = {
+            "failed_step": step_code,
+            "candidate_processing_plan": last_candidate,
+            "candidate_attempt": last_candidate_attempt,
+            "validation_errors": [last_error] if last_error else [],
+            "retry_count": attempts_used,
+            "failure_code": "PROCESSING_RULE_INVALID",
+            "model_response": {
+                "length": last_response_length,
+                "excerpt": last_response_excerpt,
+                "finish_reason": last_finish_reason,
+            },
+            "attempt_diagnostics": attempt_diagnostics,
+        }
+    raise ProcessingPlanningError(
+        f"{step_label} 단계를 {MAX_ATTEMPTS}회 생성했지만 실패했습니다: {last_error}",
+        failure_snapshot,
+    )
 
 
 def create_processing_plan(payload: dict, on_step=None) -> dict:
@@ -213,7 +343,10 @@ def create_processing_plan(payload: dict, on_step=None) -> dict:
     selection = common["approved_selection"]
     accumulated: list[ProcessingOperation] = []
 
-    def run_operation_step(prompt, code, label, allowed, extra):
+    def run_operation_step(
+        prompt, code, label, allowed, extra, *, order_by_dependency=False,
+        validate_coverage=False,
+    ):
         result = _run_prompt_step(
             system_prompt=prompt,
             request_payload={**common, **extra},
@@ -222,6 +355,8 @@ def create_processing_plan(payload: dict, on_step=None) -> dict:
                 allowed_types=allowed,
                 previous_operations=accumulated,
                 selection=selection,
+                order_by_dependency=order_by_dependency,
+                validate_coverage=validate_coverage,
             ),
             step_code=code,
             step_label=label,
@@ -249,8 +384,13 @@ def create_processing_plan(payload: dict, on_step=None) -> dict:
         DERIVED_COLUMN_ORDER_PROMPT,
         "DERIVED_COLUMN_ORDER",
         "파생 컬럼 생성 순서 결정",
-        {"derive_date_part", "bucketize", "aggregate", "sort"},
+        {
+            "derive_date_part", "bucketize", "compare", "logical", "conditional",
+            "arithmetic", "map_values", "aggregate", "sort",
+        },
         {"deduplication_plan": dedup, "missing_value_plan": missing},
+        order_by_dependency=True,
+        validate_coverage=True,
     )
 
     final_result = _run_prompt_step(

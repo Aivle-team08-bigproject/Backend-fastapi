@@ -26,6 +26,7 @@ from app.domains.pipeline.plan_integrity import (
     selection_plan_sha256,
     snapshot_selection_plan,
 )
+from app.domains.pipeline.validation import validate_stage_output
 
 
 NOW = datetime.now(timezone.utc)
@@ -419,6 +420,24 @@ def test_failed_validation_marks_run_failed_and_keeps_failure_code():
     assert outcome["run_status"] == PipelineRunStatus.FAILED
     assert outcome["validation"]["failure_code"] == "REQUIRED_KEY_MISSING"
     assert outcome["artifact"] is None
+    assert outcome["error_message"] == "model unavailable"
+
+
+def test_processing_agent_error_is_not_replaced_by_missing_output_errors():
+    validation = validate_stage_output(
+        StageName.DATA_PROCESSING,
+        {
+            "_agent_error": "operation op-9 references unavailable columns: risk_score",
+            "_failure_code": "PROCESSING_RULE_INVALID",
+        },
+    )
+
+    assert validation == {
+        "passed": False,
+        "errors": ["operation op-9 references unavailable columns: risk_score"],
+        "failure_code": "PROCESSING_RULE_INVALID",
+    }
+    assert all("missing required key" not in error for error in validation["errors"])
 
 
 class ApprovingAgentClient:
@@ -446,6 +465,7 @@ def test_passing_stage_stops_at_its_hitl_gate():
 
 def test_rollback_target_maps_failure_codes_to_stages():
     assert rollback_target("INSUFFICIENT_DATA") == StageName.DATA_SELECTION
+    assert rollback_target("SELECTION_RULE_INVALID") == StageName.DATA_SELECTION
     assert rollback_target("PROCESSING_RULE_INVALID") == StageName.DATA_PROCESSING
     assert rollback_target("HUMAN_REJECTED") == StageName.REQUIREMENT_ANALYSIS
     # 알 수 없는 값과 None은 처음부터 다시 돈다.
