@@ -128,7 +128,7 @@ HARDCODED_VIEW_PAYLOADS = {
 
 
 async def create_data_request(
-    db: AsyncSession, payload: CreateDataRequestRequest
+    db: AsyncSession, payload: CreateDataRequestRequest, owner: Employee
 ) -> CreateDataRequestResponse:
     now = utcnow()
     client = await db.scalar(select(Client).where(Client.company_name == payload.requester_name))
@@ -142,6 +142,8 @@ async def create_data_request(
     data_request = DataRequest(
         request_no=_make_request_no(),
         client_id=client.id,
+        owner_id=owner.id,
+        owner_name=owner.name,
         requester_name=payload.requester_name,
         title=title,
         raw_requirement=payload.raw_requirement.strip(),
