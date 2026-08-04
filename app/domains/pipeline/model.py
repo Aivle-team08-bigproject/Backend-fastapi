@@ -61,6 +61,41 @@ class StageRunStatus(str, enum.Enum):
     ROLLED_BACK = "ROLLED_BACK"
 
 
+class SelectionStepCode(str, enum.Enum):
+    """DATA_SELECTION 내부에서 실제로 순차 실행되는 의미적 단계."""
+
+    SOURCE_COLUMN_SELECTION = "SOURCE_COLUMN_SELECTION"
+    DERIVED_COLUMN_DESIGN = "DERIVED_COLUMN_DESIGN"
+    SYNTHETIC_SAMPLE_GENERATION = "SYNTHETIC_SAMPLE_GENERATION"
+
+
+class SelectionStepStatus(str, enum.Enum):
+    """선별 서브스텝 상태. 상위 StageRun과 별도 계약으로 관리한다."""
+
+    PENDING = "PENDING"
+    RUNNING = "RUNNING"
+    COMPLETED = "COMPLETED"
+    FAILED = "FAILED"
+    ROLLED_BACK = "ROLLED_BACK"
+
+
+class ProcessingStepCode(str, enum.Enum):
+    """DATA_PROCESSING 내부의 LLM 계획 수립 단계."""
+
+    DEDUPLICATION_PLAN = "DEDUPLICATION_PLAN"
+    MISSING_VALUE_PLAN = "MISSING_VALUE_PLAN"
+    DERIVED_COLUMN_ORDER = "DERIVED_COLUMN_ORDER"
+    FINAL_COLUMN_VALIDATION = "FINAL_COLUMN_VALIDATION"
+
+
+class ProcessingStepStatus(str, enum.Enum):
+    PENDING = "PENDING"
+    RUNNING = "RUNNING"
+    COMPLETED = "COMPLETED"
+    FAILED = "FAILED"
+    ROLLED_BACK = "ROLLED_BACK"
+
+
 class StageName(str, enum.Enum):
     """Supervisor가 순서대로 진행시키는 실행 단계.
 
