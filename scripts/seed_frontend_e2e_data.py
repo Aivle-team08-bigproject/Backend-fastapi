@@ -7,7 +7,7 @@
 import asyncio
 from datetime import datetime, timedelta
 
-from sqlalchemy import select
+from sqlalchemy import delete, select
 
 from app.common.time_utils import utcnow
 from app.core.security import hash_password
@@ -24,8 +24,15 @@ from app.domains.pipeline.model import (
     Client,
     DataRequest,
     DataRequestStatus,
+    Artifact,
+    ArtifactType,
+    EventType,
+    PipelineEvent,
     PipelineRun,
     PipelineRunStatus,
+    PiiScanStatus,
+    Review,
+    ReviewDecision,
     StageRun,
     StageRunStatus,
 )
@@ -51,7 +58,8 @@ TASKS = (
     ("E2E-COMPLETE-001", "E2E 고객사 G", "완료 작업", "E2E-PRACTITIONER-A", "COMPLETED", "COMPLETED", 100, 10),
     ("E2E-FAIL-001", "E2E 고객사 H", "실패 작업", "E2E-PRACTITIONER-A", "FAILED", "DATA_PROCESSING", 60, 7),
     ("E2E-FAIL-002", "E2E 고객사 I", "반복 실패 작업", "E2E-PRACTITIONER-B", "FAILED", "DATA_PROCESSING", 60, 8),
-    ("E2E-DEADLINE-001", "E2E 고객사 J", "마감 임박 작업", "E2E-PRACTITIONER-B", "RUNNING", "DATA_SELECTION", 30, 0),
+    ("E2E-DEADLINE-001", "E2E 고객사 J", "마감 임박 작업", "E2E-PRACTITIONER-B", "RUNNING", "DATA_SELECTION", 30, 1),
+    ("E2E-OVERDUE-001", "E2E 고객사 K", "기한 초과 작업", "E2E-PRACTITIONER-A", "RUNNING", "DATA_PROCESSING", 60, -2),
 )
 
 
@@ -98,7 +106,11 @@ async def ensure_user(db, code: str, name: str, role: EmployeeRole, permissions:
         employee.must_change_password = False
         employee.department_id = department_id
         employee.updated_at = now
-    employee.permissions = [EmployeePermission(permission_code=permission) for permission in permissions]
+    await db.execute(delete(EmployeePermission).where(EmployeePermission.employee_id == employee.id))
+    db.add_all([
+        EmployeePermission(employee_id=employee.id, permission_code=permission)
+        for permission in permissions
+    ])
     return employee
 
 
@@ -147,7 +159,6 @@ async def seed() -> None:
                     "due_at": due_at.isoformat(),
                 },
                 "status": request_status,
-                "current_stage": stage_code,
                 "updated_at": now,
             }
             if request is None:
@@ -187,7 +198,7 @@ async def seed() -> None:
             )
             stage = await db.scalar(select(StageRun).where(StageRun.pipeline_run_id == run.id, StageRun.stage_code == stage_code, StageRun.attempt_no == 1))
             if stage is None:
-                db.add(StageRun(
+                stage = StageRun(
                     pipeline_run_id=run.id,
                     stage_code=stage_code,
                     attempt_no=1,
@@ -200,7 +211,9 @@ async def seed() -> None:
                     created_at=request.created_at,
                     started_at=request.created_at,
                     completed_at=now if stage_status == StageRunStatus.COMPLETED.value else None,
-                ))
+                )
+                db.add(stage)
+                await db.flush()
             if request_no == "E2E-FAIL-002":
                 for attempt_no in (2, 3):
                     repeated_stage = await db.scalar(
@@ -224,6 +237,70 @@ async def seed() -> None:
                             created_at=now - timedelta(minutes=attempt_no),
                             started_at=now - timedelta(minutes=attempt_no),
                         ))
+
+            if run_status in {"WAITING_SAMPLE_REVIEW", "WAITING_FINAL_REVIEW", "COMPLETED"}:
+                artifact_type = (
+                    ArtifactType.FINAL.value
+                    if stage_code in {"DATA_PROCESSING", "COMPLETED"}
+                    else ArtifactType.SAMPLE.value
+                )
+                storage_key = f"e2e/{request_no}/{artifact_type.lower()}.json"
+                artifact = await db.scalar(select(Artifact).where(Artifact.storage_key == storage_key))
+                if artifact is None:
+                    artifact = Artifact(
+                        pipeline_run_id=run.id,
+                        stage_run_id=stage.id if stage is not None else None,
+                        artifact_type=artifact_type,
+                        storage_key=storage_key,
+                        mime_type="application/json",
+                        size_bytes=2048,
+                        checksum=f"e2e-{request_no.lower()}",
+                        pii_scan_status=PiiScanStatus.PASSED.value,
+                        created_at=now,
+                    )
+                    db.add(artifact)
+                    await db.flush()
+
+                if run_status == "COMPLETED":
+                    review = await db.scalar(
+                        select(Review).where(
+                            Review.data_request_id == request.id,
+                            Review.review_type == "FINAL",
+                        )
+                    )
+                    if review is None:
+                        db.add(Review(
+                            data_request_id=request.id,
+                            stage_run_id=stage.id if stage is not None else None,
+                            artifact_id=artifact.id,
+                            reviewer_id=users["E2E-MANAGER"].id,
+                            reviewer_name=users["E2E-MANAGER"].name,
+                            review_type="FINAL",
+                            decision=ReviewDecision.APPROVED.value,
+                            feedback="E2E 최종 산출물 검토 완료",
+                            created_at=now,
+                        ))
+
+            if run_status == "FAILED":
+                existing_failure_event = await db.scalar(
+                    select(PipelineEvent).where(
+                        PipelineEvent.pipeline_run_id == run.id,
+                        PipelineEvent.event_type == EventType.FAILED.value,
+                    )
+                )
+                if existing_failure_event is None:
+                    db.add(PipelineEvent(
+                        pipeline_run_id=run.id,
+                        stage_run_id=stage.id if stage is not None else None,
+                        event_type=EventType.FAILED.value,
+                        severity="HIGH",
+                        message="E2E 파이프라인 실패",
+                        payload={
+                            "e2e_seed": True,
+                            "failure_count": 3 if request_no == "E2E-FAIL-002" else 1,
+                        },
+                        occurred_at=now,
+                    ))
         await db.commit()
     print("Seeded E2E users: " + ", ".join(code for code, *_ in USERS))
     print("Seeded E2E tasks: " + ", ".join(request_no for request_no, *_ in TASKS))

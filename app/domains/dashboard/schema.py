@@ -197,12 +197,32 @@ class AdminDashboardResponse(BaseModel):
 class TaskStageDetailResponse(BaseModel):
     stage_code: str
     status: str
+    progress_percent: int = Field(default=0, ge=0, le=100)
     attempt_no: int
     executor: str
+    review_status: str | None = None
+    artifacts: list["TaskArtifactDetailResponse"] = Field(default_factory=list)
     created_at: datetime
     started_at: datetime | None = None
     completed_at: datetime | None = None
     error_message: str | None = None
+
+
+class TaskArtifactDetailResponse(BaseModel):
+    artifact_id: int
+    artifact_type: str
+    storage_key: str
+    mime_type: str | None = None
+    size_bytes: int | None = None
+    pii_scan_status: str
+
+
+class TaskHistoryResponse(BaseModel):
+    review_type: str
+    decision: str
+    feedback: str | None = None
+    reviewer_name: str | None = None
+    created_at: datetime
 
 
 class TaskDetailResponse(BaseModel):
@@ -219,6 +239,10 @@ class TaskDetailResponse(BaseModel):
     error_message: str | None
     stages: list[TaskStageDetailResponse]
     available_actions: list[str]
+    history: list[TaskHistoryResponse] = Field(default_factory=list)
+
+
+TaskStageDetailResponse.model_rebuild()
 
 
 # The old name remains import-compatible for code that only references the

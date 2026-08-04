@@ -41,7 +41,9 @@ services:
       sh -c 'python -m scripts.prepare_test_database
       && alembic upgrade head
       && python -m scripts.seed_test_admin
-      && python -m pytest -q tests/test_dashboard_contract.py tests/test_dashboard_api.py tests/test_dashboard_auth.py'
+      && python -m scripts.seed_frontend_e2e_data
+      && python -m scripts.verify_frontend_e2e_data
+      && python -m pytest -q tests/test_dashboard_contract.py tests/test_dashboard_api.py tests/test_dashboard_auth.py tests/test_dashboard_v2_contract.py'
     depends_on:
       test-db:
         condition: service_healthy
