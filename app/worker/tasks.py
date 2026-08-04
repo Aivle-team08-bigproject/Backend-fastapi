@@ -17,8 +17,20 @@ from app.db.session import AsyncSessionLocal
 from app.domains.pipeline.model import (
     PipelineRun,
     PipelineRunStatus,
+    ProcessingStepCode,
+    ProcessingStepStatus,
     StageRun,
     StageRunStatus,
+    SelectionStepCode,
+    SelectionStepStatus,
+)
+from app.domains.pipeline.selection_steps import (
+    selection_step_message,
+    selection_step_progress,
+)
+from app.domains.pipeline.processing_steps import (
+    processing_step_message,
+    processing_step_progress,
 )
 from app.domains.pipeline.supervisor import (
     STAGE_PROGRESS,
@@ -110,11 +122,69 @@ async def _run_stage(stage_id: int, celery_task_id: str) -> dict:
             run_status=PipelineRunStatus.RUNNING,
             current_stage=stage_name.value,
             stage_status=StageRunStatus.RUNNING,
-            progress_percent=max(STAGE_PROGRESS[stage_name] - 10, 0),
+            attempt_no=stage.attempt_no
+            if stage_name in {StageName.DATA_SELECTION, StageName.DATA_PROCESSING}
+            else None,
+            progress_percent=selection_step_progress(
+                SelectionStepCode.SOURCE_COLUMN_SELECTION,
+                SelectionStepStatus.RUNNING,
+            )
+            if stage_name == StageName.DATA_SELECTION
+            else processing_step_progress(
+                ProcessingStepCode.DEDUPLICATION_PLAN,
+                ProcessingStepStatus.RUNNING,
+            )
+            if stage_name == StageName.DATA_PROCESSING
+            else max(STAGE_PROGRESS[stage_name] - 10, 0),
             message=f"{stage_name.value} 단계를 시작했습니다.",
         )
 
-        outcome = await run_stage(db, stage)
+        selection_step_callback = None
+        processing_step_callback = None
+        if stage_name == StageName.DATA_SELECTION:
+            loop = asyncio.get_running_loop()
+
+            def selection_step_callback(
+                step_code: str, status_value: str, metadata: dict | None
+            ) -> None:
+                future = asyncio.run_coroutine_threadsafe(
+                    _record_selection_step(
+                        db=db,
+                        stage=stage,
+                        celery_task_id=celery_task_id,
+                        step=SelectionStepCode(step_code),
+                        status=SelectionStepStatus(status_value),
+                        metadata=metadata,
+                    ),
+                    loop,
+                )
+                future.result()
+
+        if stage_name == StageName.DATA_PROCESSING:
+            loop = asyncio.get_running_loop()
+
+            def processing_step_callback(
+                step_code: str, status_value: str, metadata: dict | None
+            ) -> None:
+                future = asyncio.run_coroutine_threadsafe(
+                    _record_processing_step(
+                        db=db,
+                        stage=stage,
+                        celery_task_id=celery_task_id,
+                        step=ProcessingStepCode(step_code),
+                        status=ProcessingStepStatus(status_value),
+                        metadata=metadata,
+                    ),
+                    loop,
+                )
+                future.result()
+
+        outcome = await run_stage(
+            db,
+            stage,
+            selection_step_callback=selection_step_callback,
+            processing_step_callback=processing_step_callback,
+        )
 
         if not outcome["passed"]:
             failure_code = (outcome["validation"] or {}).get("failure_code")
@@ -151,6 +221,80 @@ async def _run_stage(stage_id: int, celery_task_id: str) -> dict:
             validation_result=outcome["validation"],
         )
         return {"run_id": run_id, "stage_id": stage_id, "passed": True}
+
+
+async def _record_selection_step(
+    *,
+    db,
+    stage: StageRun,
+    celery_task_id: str,
+    step: SelectionStepCode,
+    status: SelectionStepStatus,
+    metadata: dict | None,
+) -> None:
+    """기존 StageRun snapshot에 상태를 기록한 뒤 이벤트를 발행한다."""
+    message = selection_step_message(step, status)
+    validation_errors = (metadata or {}).get("validation_errors") or []
+    if status not in {
+        SelectionStepStatus.RUNNING,
+        SelectionStepStatus.COMPLETED,
+        SelectionStepStatus.FAILED,
+    }:
+        raise ValueError(f"unsupported runtime checklist status: {status.value}")
+
+    await record_status(
+        db,
+        run_id=stage.pipeline_run_id,
+        celery_task_id=celery_task_id,
+        run_status=PipelineRunStatus.RUNNING,
+        current_stage=stage.stage_code,
+        stage_status=StageRunStatus.RUNNING,
+        selection_step=step,
+        selection_step_status=status,
+        attempt_no=stage.attempt_no,
+        step_metadata=metadata,
+        progress_percent=selection_step_progress(step, status),
+        message=message,
+        error_message=validation_errors[0]
+        if status == SelectionStepStatus.FAILED and validation_errors
+        else None,
+    )
+
+
+async def _record_processing_step(
+    *,
+    db,
+    stage: StageRun,
+    celery_task_id: str,
+    step: ProcessingStepCode,
+    status: ProcessingStepStatus,
+    metadata: dict | None,
+) -> None:
+    """기존 StageRun processing snapshot에 계획 단계 상태를 기록한다."""
+    if status not in {
+        ProcessingStepStatus.RUNNING,
+        ProcessingStepStatus.COMPLETED,
+        ProcessingStepStatus.FAILED,
+    }:
+        raise ValueError(f"unsupported runtime processing status: {status.value}")
+    validation_errors = (metadata or {}).get("validation_errors") or []
+    await record_status(
+        db,
+        run_id=stage.pipeline_run_id,
+        celery_task_id=celery_task_id,
+        run_status=PipelineRunStatus.RUNNING,
+        current_stage=stage.stage_code,
+        stage_status=StageRunStatus.RUNNING,
+        processing_step=step,
+        processing_step_status=status,
+        attempt_no=stage.attempt_no,
+        step_metadata=metadata,
+        progress_percent=processing_step_progress(step, status),
+        message=processing_step_message(step, status),
+        error_message=validation_errors[0]
+        if status == ProcessingStepStatus.FAILED and validation_errors
+        else None,
+    )
 
 
 @celery_app.task(bind=True, name="pipeline.process_run")
