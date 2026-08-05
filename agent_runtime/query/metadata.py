@@ -129,8 +129,8 @@ async def load_reference_catalogs(session: AsyncSession) -> list[dict]:
                 for row in metadata_rows
             ],
             "target_columns": [
-                {"dataset": "transaction_pseudonymized", "column": "mcc_code"},
-                {"dataset": "merchant", "column": "mcc_code"},
+                {"dataset": "anon_transactions", "column": "mcc_code"},
+                {"dataset": "anon_merchants", "column": "mcc_code"},
             ],
             "entries": [dict(row) for row in entries],
         }

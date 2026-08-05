@@ -1,5 +1,6 @@
 """Neon DB COMMENT 기반 컬럼 설계 에이전트."""
 
+from copy import deepcopy
 import json
 import re
 
@@ -7,6 +8,7 @@ from strands import Agent, tool
 from strands.models.openai import OpenAIModel
 
 from agent_runtime.data_selection.config import settings
+from agent_runtime.query.registry import canonical_dataset
 
 
 FINAL_CONTRACT_REFERENCE = """당신은 '하나 데이터 마켓'의 DB 메타데이터 기반 컬럼 설계 에이전트다.
@@ -331,6 +333,17 @@ def _extract_json(raw_text: str) -> dict:
     if not match:
         raise ValueError("모델 응답에서 JSON을 찾지 못함")
     return json.loads(match.group(0))
+
+
+def _normalize_dataset_names(data: dict) -> dict:
+    """선별 계약의 이전 데이터셋 별칭을 정식 논리명으로 통일한다."""
+    for table in data.get("selected_tables") or []:
+        if isinstance(table, dict) and isinstance(table.get("table"), str):
+            table["table"] = canonical_dataset(table["table"])
+    for column in data.get("source_columns") or []:
+        if isinstance(column, dict) and isinstance(column.get("dataset"), str):
+            column["dataset"] = canonical_dataset(column["dataset"])
+    return data
 
 
 def _validate_contract(
@@ -799,6 +812,7 @@ def _run_prompt_step(
             finish_reason = getattr(raw, "stop_reason", None)
             last_finish_reason = str(finish_reason) if finish_reason else None
             parsed = _extract_json(raw_text)
+            _normalize_dataset_names(parsed)
             validate(parsed)
         except Exception as exc:  # noqa: BLE001 - 모델 계약 실패를 단계 안에서 재시도
             last_error = str(exc)
@@ -854,8 +868,18 @@ def run_steps(
     on_step=None,
 ) -> dict:
     """세 프롬프트를 실행하며 선택적으로 단계 상태 콜백을 호출한다."""
-    schema_metadata = schema_metadata or []
-    reference_catalogs = reference_catalogs or []
+    schema_metadata = deepcopy(schema_metadata or [])
+    for dataset in schema_metadata:
+        if isinstance(dataset, dict) and isinstance(dataset.get("dataset"), str):
+            dataset["dataset"] = canonical_dataset(dataset["dataset"])
+    available_data = list(
+        dict.fromkeys(canonical_dataset(name) for name in available_data)
+    )
+    reference_catalogs = deepcopy(reference_catalogs or [])
+    for catalog in reference_catalogs:
+        for target in catalog.get("target_columns") or []:
+            if isinstance(target, dict) and isinstance(target.get("dataset"), str):
+                target["dataset"] = canonical_dataset(target["dataset"])
     common_payload = {
         "raw_requirement": raw_requirement,
         "analysis": analysis,
