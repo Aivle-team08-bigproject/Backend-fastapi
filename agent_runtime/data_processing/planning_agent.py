@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import re
+from copy import deepcopy
 
 from strands import Agent
 from strands.models.openai import OpenAIModel
@@ -24,6 +25,17 @@ COMMON_RULES = """실제 데이터 행은 제공되지 않으며 보려고 시�
 직접 식별자 가명화와 k-익명성은 결정론적 실행기가 강제하므로 기준을 변경하지 않는다.
 hitl_feedback이 있으면 승인 범위 안에서 최종 반려 의견을 우선 반영한다.
 JSON 하나 외에는 출력하지 않는다."""
+
+EXPRESSION_OPERAND_RULES = """expression 피연산자는 문자열·숫자·boolean을 직접 쓰지 않고
+반드시 다음 객체 중 하나로 표현한다.
+- 컬럼 참조: {"column":"승인된 원본 또는 앞에서 생성한 파생 컬럼"}
+- 상수: {"literal":"고정값"}
+- 중첩식: {"operation":"compare|logical|conditional|arithmetic|map_values",
+  "parameters":{...}}
+compare의 left/right, logical의 operands 각 항목, conditional의 condition/true_value/
+false_value, arithmetic의 operands 각 항목, map_values의 source/default에 모두 이 규칙을
+적용한다. 예: {"operator":"gte","left":{"column":"amount"},
+"right":{"literal":10000}}. 상수 문자열도 반드시 {"literal":"고액"}처럼 감싼다."""
 
 DEDUPLICATION_PLAN_PROMPT = f"""당신은 데이터 가공 Agent의 중복 제거 계획 단계다.
 고객 요구와 승인된 선별 계획을 근거로 중복 판단 컬럼을 결정한다. 중복 제거가 불필요하면
@@ -68,6 +80,8 @@ derivation_spec.parameters를 의미 변경 없이 사용한다. 파생이나 �
 operations를 빈 배열로 반환한다.
 aggregate parameters는 반드시 {{"group_by":["컬럼"],"metrics":[{{"column":"컬럼",
 "function":"sum|count|count_distinct|avg|min|max","target":"새컬럼"}}]}} 형식이다.
+
+{EXPRESSION_OPERAND_RULES}
 
 반환 계약:
 {{"operations":[{{"id":"derived-1","type":"derive_date_part","source_columns":["컬럼"],
@@ -259,6 +273,46 @@ def _normalize_operation_item(item: dict) -> dict:
         if not isinstance(aggregation, list):
             raise ValueError("aggregate aggregation 별칭은 metric 객체 또는 배열이어야 함")
         parameters["metrics"] = aggregation
+
+    expression_columns = {
+        str(column) for column in normalized.get("source_columns") or [] if column
+    }
+
+    def normalize_operand(value):
+        if isinstance(value, dict):
+            nested_operation = value.get("operation")
+            nested_parameters = value.get("parameters")
+            if set(value) == {"operation", "parameters"} and isinstance(
+                nested_operation, str
+            ) and isinstance(nested_parameters, dict):
+                normalize_expression_operands(nested_operation, nested_parameters)
+            return value
+        if isinstance(value, str) and value in expression_columns:
+            return {"column": value}
+        if isinstance(value, (str, int, float, bool)) or value is None or isinstance(value, list):
+            return {"literal": value}
+        return value
+
+    def normalize_expression_operands(operation: str, expression: dict) -> None:
+        if operation == "compare":
+            for key in ("left", "right"):
+                if key in expression:
+                    expression[key] = normalize_operand(expression[key])
+        elif operation in {"logical", "arithmetic"}:
+            operands = expression.get("operands")
+            if isinstance(operands, list):
+                expression["operands"] = [normalize_operand(value) for value in operands]
+        elif operation == "conditional":
+            for key in ("condition", "true_value", "false_value"):
+                if key in expression:
+                    expression[key] = normalize_operand(expression[key])
+        elif operation == "map_values":
+            if "source" in expression:
+                expression["source"] = normalize_operand(expression["source"])
+            if "default" in expression:
+                expression["default"] = normalize_operand(expression["default"])
+
+    normalize_expression_operands(str(normalized.get("type") or ""), parameters)
     normalized["parameters"] = parameters
     return normalized
 
@@ -285,6 +339,7 @@ def _run_prompt_step(
     retry_feedback = None
     last_error = None
     last_candidate = None
+    last_raw_candidate = None
     last_candidate_attempt = None
     last_response_excerpt = None
     last_response_length = 0
@@ -304,6 +359,7 @@ def _run_prompt_step(
             last_finish_reason = str(finish_reason) if finish_reason else None
             result = _extract_json(raw_text)
             parsed = True
+            last_raw_candidate = deepcopy(result)
             last_candidate = result
             last_candidate_attempt = attempt
             validate(result)
@@ -316,6 +372,7 @@ def _run_prompt_step(
                     "response_length": last_response_length,
                     "finish_reason": last_finish_reason,
                     "json_parsed": parsed,
+                    "candidate": deepcopy(last_candidate) if parsed else None,
                 }
             )
             retry_feedback = (
@@ -331,6 +388,7 @@ def _run_prompt_step(
         failure_snapshot = {
             "failed_step": step_code,
             "candidate_processing_plan": last_candidate,
+            "raw_candidate_processing_plan": last_raw_candidate,
             "candidate_attempt": last_candidate_attempt,
             "validation_errors": [last_error] if last_error else [],
             "retry_count": attempts_used,
@@ -351,6 +409,7 @@ def _run_prompt_step(
         failure_snapshot = {
             "failed_step": step_code,
             "candidate_processing_plan": last_candidate,
+            "raw_candidate_processing_plan": last_raw_candidate,
             "candidate_attempt": last_candidate_attempt,
             "validation_errors": [last_error] if last_error else [],
             "retry_count": attempts_used,
@@ -369,17 +428,51 @@ def _run_prompt_step(
 
 
 def _contract_retry_hint(error: str) -> str:
-    if "unsupported parameters: column" not in error and "parameters.column" not in error:
-        return ""
-    return (
-        "parameters.column을 제거하고 입력 컬럼은 source_columns에 넣으세요. "
-        "sort는 parameters={\"direction\":\"asc|desc\"}, "
-        "derive_date_part는 parameters={\"part\":\"year|month|day|weekday|hour\","
-        "\"timezone\":\"UTC|Asia/Seoul\"}, "
-        "compare는 parameters={\"operator\":\"eq|neq|gt|gte|lt|lte|in\","
-        "\"left\":{\"column\":\"컬럼\"},\"right\":{\"literal\":값}} 형식입니다. "
-        "aggregate는 group_by와 metrics를 사용하세요. "
-    )
+    if "expression operand" in error:
+        return (
+            "모든 expression 피연산자를 객체로 고치세요. 컬럼은 {\"column\":\"컬럼\"}, "
+            "상수는 {\"literal\":값} 형식입니다. compare.left/right, logical.operands, "
+            "conditional.condition/true_value/false_value, arithmetic.operands, "
+            "map_values.source/default에 문자열·숫자·boolean을 직접 넣지 마세요. "
+        )
+    if "unsupported parameters" in error or "parameters.column" in error:
+        return (
+            "허용되지 않은 parameter를 제거하세요. 입력 컬럼은 source_columns에 넣고, "
+            "sort는 parameters={\"direction\":\"asc|desc\"}, derive_date_part는 "
+            "parameters={\"part\":\"year|month|day|weekday|hour\","
+            "\"timezone\":\"UTC|Asia/Seoul\"}, compare는 operator/left/right만, "
+            "aggregate는 group_by/metrics만 사용하세요. "
+        )
+    if "operator is invalid" in error or "operation is invalid" in error:
+        return (
+            "허용 operator만 사용하세요. compare는 eq|neq|gt|gte|lt|lte|in, "
+            "logical은 and|or|not, arithmetic은 add|subtract|multiply|divide입니다. "
+        )
+    if "exactly match source_columns" in error:
+        return (
+            "expression 안의 모든 column 참조와 source_columns를 중복 없이 정확히 "
+            "일치시키고, 상수는 source_columns에 넣지 마세요. "
+        )
+    if "unavailable columns" in error or "unknown columns" in error:
+        return (
+            "승인된 source_columns 또는 앞 operation에서 이미 생성된 target_column만 "
+            "참조하고 의존 순서대로 operations를 배열하세요. "
+        )
+    if "approved derived columns" in error or "unapproved derived columns" in error:
+        return (
+            "approved_selection.derived_columns의 name을 각각 정확히 한 번 생성하고, "
+            "승인되지 않은 target_column은 만들지 마세요. "
+        )
+    if "aggregate" in error:
+        return (
+            "aggregate parameters는 group_by 문자열 배열과 metrics 객체 배열을 사용하세요. "
+            "각 metric은 column, function, target을 포함해야 합니다. "
+        )
+    if "must be a non-empty string list" in error:
+        return "해당 필드는 비어 있지 않은 컬럼명 문자열 배열로 만드세요. "
+    if "required" in error or "Field required" in error:
+        return "반환 계약의 필수 키를 모두 포함하고 null 대신 요구된 타입을 사용하세요. "
+    return "오류에 언급된 필드만 반환 계약에 맞게 고치고 승인된 의미는 변경하지 마세요. "
 
 
 def create_processing_plan(payload: dict, on_step=None) -> dict:

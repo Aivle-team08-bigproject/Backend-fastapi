@@ -818,6 +818,7 @@ def _run_prompt_step(
             last_error = str(exc)
             retry_payload["retry_feedback"] = (
                 f"직전 {attempt}회차 {step_label} 결과 검증 실패: {last_error}. "
+                f"{_selection_retry_hint(last_error)}"
                 "다른 단계 결과를 만들지 말고 현재 단계 JSON만 수정해 다시 생성하세요."
             )
         else:
@@ -844,6 +845,37 @@ def _run_prompt_step(
             failure_snapshot,
         )
     raise SelectionPlanningError(error_message, failure_snapshot)
+
+
+def _selection_retry_hint(error: str) -> str:
+    if "DB 메타데이터에 없는 source column" in error:
+        return (
+            "dataset은 schema_metadata.dataset의 정식 논리명을, column은 해당 dataset의 "
+            "columns.name에 실제 존재하는 값을 그대로 사용하세요. "
+        )
+    if "selection_query.columns" in error:
+        return (
+            "selection_query.columns를 source_columns의 column 목록과 중복 없이 정확히 "
+            "일치시키세요. "
+        )
+    if "필터" in error:
+        return (
+            "필터 키는 선택된 source column만 사용하고 operator/value/reason/evidence를 "
+            "반환 계약에 맞게 작성하세요. "
+        )
+    if "derivation" in error or "derived column" in error:
+        return (
+            "각 파생 컬럼은 승인된 source column 또는 앞에서 정의한 파생 컬럼만 참조하고, "
+            "derivation_spec 1.0의 operation/parameters/evidence 계약을 지키세요. "
+        )
+    if "sample" in error or "샘플" in error:
+        return (
+            "sample_rows를 정확히 5건 만들고 모든 행의 키를 sample_columns의 name과 "
+            "정확히 일치시키며 실제 개인정보처럼 보이는 값은 사용하지 마세요. "
+        )
+    if "키" in error or "key" in error:
+        return "현재 단계 반환 계약의 키만 빠짐없이 포함하고 추가 키는 제거하세요. "
+    return "오류에 언급된 필드만 현재 단계 반환 계약에 맞게 수정하세요. "
 
 
 def _step_summary(step_code: str, result: dict) -> dict:
