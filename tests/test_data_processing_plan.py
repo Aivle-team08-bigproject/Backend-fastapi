@@ -241,6 +241,100 @@ def test_processing_compare_symbol_alias_is_normalized():
     assert normalized["parameters"]["operator"] == "gte"
 
 
+@pytest.mark.parametrize(
+    ("operation_type", "parameters", "expected"),
+    [
+        (
+            "compare",
+            {"operator": "gte", "left": "amount", "right": 10000},
+            {
+                "operator": "gte",
+                "left": {"column": "amount"},
+                "right": {"literal": 10000},
+            },
+        ),
+        (
+            "arithmetic",
+            {"operator": "add", "operands": ["amount", 100]},
+            {
+                "operator": "add",
+                "operands": [{"column": "amount"}, {"literal": 100}],
+            },
+        ),
+        (
+            "conditional",
+            {"condition": "amount", "true_value": "고액", "false_value": "일반"},
+            {
+                "condition": {"column": "amount"},
+                "true_value": {"literal": "고액"},
+                "false_value": {"literal": "일반"},
+            },
+        ),
+        (
+            "map_values",
+            {"source": "amount", "mapping": {}, "default": "미분류"},
+            {
+                "source": {"column": "amount"},
+                "mapping": {},
+                "default": {"literal": "미분류"},
+            },
+        ),
+    ],
+)
+def test_processing_expression_primitive_operands_are_safely_normalized(
+    operation_type, parameters, expected
+):
+    item = {
+        "id": "derived-1",
+        "type": operation_type,
+        "source_columns": ["amount"],
+        "target_column": "derived_amount",
+        "parameters": parameters,
+        "reason": "계약 정규화 검증",
+    }
+
+    normalized = planning_agent._normalize_operation_item(item)
+
+    assert normalized["parameters"] == expected
+
+
+def test_processing_nested_expression_operands_are_normalized():
+    item = {
+        "id": "derived-1",
+        "type": "logical",
+        "source_columns": ["amount"],
+        "target_column": "is_target",
+        "parameters": {
+            "operator": "and",
+            "operands": [
+                {
+                    "operation": "compare",
+                    "parameters": {
+                        "operator": "gte",
+                        "left": "amount",
+                        "right": 10000,
+                    },
+                }
+            ],
+        },
+        "reason": "중첩식 계약 정규화 검증",
+    }
+
+    normalized = planning_agent._normalize_operation_item(item)
+    compare = normalized["parameters"]["operands"][0]["parameters"]
+
+    assert compare["left"] == {"column": "amount"}
+    assert compare["right"] == {"literal": 10000}
+
+
+def test_processing_operand_failure_has_actionable_retry_hint():
+    hint = planning_agent._contract_retry_hint("expression operand must be an object")
+
+    assert '{"column":"컬럼"}' in hint
+    assert '{"literal":값}' in hint
+    assert "conditional" in hint
+
+
 def test_processing_plan_drives_operation_order():
     result = run(
         {
