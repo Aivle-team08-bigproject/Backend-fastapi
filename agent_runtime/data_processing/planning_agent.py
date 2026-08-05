@@ -58,6 +58,10 @@ Python·SQL·유사 operation으로 대체하지 않는다.
 compare operator는 eq, neq, gt, gte, lt, lte, in만 사용하며 비교 기호를 쓰지 않는다.
 derive_date_part의 part는 year, month, day, weekday, hour 중 하나다.
 logical은 operands, conditional은 condition, true_value, false_value 키를 사용한다.
+- parameters.column과 parameters.value를 사용하지 않는다. 입력 컬럼은 source_columns에 넣는다.
+- sort parameters에는 direction만, derive_date_part parameters에는 part와 timezone만 넣는다.
+- compare parameters는 operator, left, right만 사용하고 컬럼·상수는 각각
+  {{"column":"컬럼"}}, {{"literal":"값"}} operand로 표현한다.
 각 approved_selection.derived_columns를 의존 순서대로 실행 operation으로 변환하고 name을
 target_column으로 사용한다. compare/logical/conditional/arithmetic/map_values의 parameters는
 derivation_spec.parameters를 의미 변경 없이 사용한다. 파생이나 집계가 필요 없으면
@@ -159,7 +163,7 @@ def _validate_operations_result(
 
 
 def _normalize_operation_item(item: dict) -> dict:
-    """LLM의 의미가 명확한 cast 키 별칭만 엄격한 실행 계약으로 정규화한다."""
+    """LLM의 의미가 단일하게 결정되는 별칭만 실행 계약으로 정규화한다."""
     if not isinstance(item, dict):
         raise ValueError("processing operation은 JSON 객체여야 함")
     normalized = dict(item)
@@ -209,6 +213,37 @@ def _normalize_operation_item(item: dict) -> dict:
             normalize_expression_aliases(nested)
 
     normalize_expression_aliases(normalized)
+    operation_type = normalized.get("type")
+    source_columns = list(normalized.get("source_columns") or [])
+    if "column" in parameters:
+        column = parameters.get("column")
+        if not isinstance(column, str) or not column:
+            raise ValueError(f"{operation_type} parameters.column은 비어 있지 않은 문자열이어야 함")
+
+        if operation_type in {"sort", "derive_date_part", "bucketize"}:
+            if source_columns and source_columns != [column]:
+                raise ValueError(
+                    f"{operation_type} parameters.column이 source_columns와 충돌함"
+                )
+            normalized["source_columns"] = [column]
+            parameters.pop("column")
+        elif operation_type == "compare":
+            if "left" in parameters or "right" in parameters:
+                raise ValueError(
+                    "compare parameters에 column/value와 left/right를 함께 사용할 수 없음"
+                )
+            if "value" not in parameters:
+                raise ValueError("compare parameters.column 별칭에는 value가 함께 필요함")
+            if source_columns and source_columns != [column]:
+                raise ValueError("compare parameters.column이 source_columns와 충돌함")
+            normalized["source_columns"] = [column]
+            parameters["left"] = {"column": column}
+            parameters["right"] = {"literal": parameters.pop("value")}
+            parameters.pop("column")
+        elif operation_type == "aggregate":
+            raise ValueError(
+                "aggregate parameters.column은 의미가 모호함; group_by와 metrics 계약을 사용해야 함"
+            )
     if normalized.get("type") == "cast" and "type" in parameters:
         if "data_type" in parameters:
             raise ValueError("cast parameters에 type과 data_type을 함께 사용할 수 없음")
@@ -285,6 +320,7 @@ def _run_prompt_step(
             )
             retry_feedback = (
                 f"직전 {attempt}회차 {step_label} 검증 실패: {last_error}. "
+                f"{_contract_retry_hint(last_error)}"
                 "현재 단계 JSON만 수정해 다시 생성하세요."
             )
         else:
@@ -329,6 +365,20 @@ def _run_prompt_step(
     raise ProcessingPlanningError(
         f"{step_label} 단계를 {MAX_ATTEMPTS}회 생성했지만 실패했습니다: {last_error}",
         failure_snapshot,
+    )
+
+
+def _contract_retry_hint(error: str) -> str:
+    if "unsupported parameters: column" not in error and "parameters.column" not in error:
+        return ""
+    return (
+        "parameters.column을 제거하고 입력 컬럼은 source_columns에 넣으세요. "
+        "sort는 parameters={\"direction\":\"asc|desc\"}, "
+        "derive_date_part는 parameters={\"part\":\"year|month|day|weekday|hour\","
+        "\"timezone\":\"UTC|Asia/Seoul\"}, "
+        "compare는 parameters={\"operator\":\"eq|neq|gt|gte|lt|lte|in\","
+        "\"left\":{\"column\":\"컬럼\"},\"right\":{\"literal\":값}} 형식입니다. "
+        "aggregate는 group_by와 metrics를 사용하세요. "
     )
 
 
