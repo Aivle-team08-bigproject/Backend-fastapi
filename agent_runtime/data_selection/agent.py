@@ -230,6 +230,46 @@ SOURCE_COLUMN_SELECTION_PROMPT = """당신은 하나 데이터 마켓 데이터 
 - JSON 외 텍스트를 출력하지 않는다."""
 
 
+DERIVATION_SPEC_OPERATION_CONTRACT = """operation별 parameters 정식 계약:
+- compare:
+  {"operator":"eq|neq|gt|gte|lt|lte|in",
+   "left":{"column":"컬럼명"}, "right":{"literal":"값"}}
+  컬럼끼리 비교할 때만 right에 {"column":"다른 컬럼명"}을 사용할 수 있다.
+- logical:
+  {"operator":"and|or|not", "operands":[
+    {"operation":"compare|logical", "parameters":{"각 operation의 정식 parameters"}}
+  ]}
+  conditions 키나 {"column":"...","operator":"...","value":...} 평면 조건은 사용하지 않는다.
+- conditional:
+  {"condition":{"operation":"compare|logical", "parameters":{"정식 parameters"}},
+   "true_value":{"literal":"값"}, "false_value":{"literal":"값"}}
+  컬럼값을 결과로 반환할 때만 true_value 또는 false_value에 {"column":"컬럼명"}을 쓴다.
+- arithmetic:
+  {"operator":"add|subtract|multiply|divide", "operands":[
+    {"column":"컬럼명"}, {"literal":0}
+  ], "on_divide_by_zero":"null|zero|error"}
+  on_divide_by_zero는 divide일 때만 선택적으로 사용한다.
+- date_part:
+  {"source":{"column":"날짜·시간 컬럼명"},
+   "part":"year|month|day|weekday|hour", "timezone":"UTC|Asia/Seoul"}
+  timezone은 선택 사항이다. column, date_part 키를 parameters 최상위에 사용하지 않는다.
+- bucketize:
+  {"source":{"column":"수치 컬럼명"}, "bins":[0,100,1000],
+   "labels":["낮음","중간"]}
+- aggregate:
+  {"group_by":[{"column":"그룹 컬럼명"}], "metrics":[
+    {"source":{"column":"집계 컬럼명"},
+     "function":"sum|count|count_distinct|avg|min|max", "target":"파생 컬럼명"}
+  ]}
+- map_values:
+  {"source":{"column":"컬럼명"}, "mapping":{"원본값":"변환값"},
+   "default":{"literal":null}}
+
+모든 컬럼 참조는 정확히 {"column":"컬럼명"} 객체로 표현한다. source_columns에는
+parameters 전체에서 참조한 모든 컬럼을 중복 없이 정확히 넣고 상수는 넣지 않는다.
+위에 명시하지 않은 별칭 키나 평면형 표현을 만들지 않는다."""
+
+
 DERIVED_COLUMN_DESIGN_PROMPT = """당신은 하나 데이터 마켓 데이터 선별 Agent의
 파생 컬럼 정의 단계다. 입력의 source_selection은 앞 단계에서 이미 검증된 결과다.
 그 범위를 변경하거나 새 원본 컬럼을 추가하지 말고 고객 목적에 필요한 파생 컬럼만 설계한다.
@@ -262,7 +302,9 @@ hitl_feedback이 있으면 승인된 원본 범위 안에서 우선 반영하고
 - 파생 컬럼 간 순환 참조나 뒤에서 정의할 컬럼의 선행 참조를 만들지 않는다.
 - 단순 이름 변경은 파생 컬럼으로 만들지 않는다.
 - 이름은 중복될 수 없고 원본 컬럼명과도 충돌하지 않게 한다.
-- JSON 외 텍스트를 출력하지 않는다."""
+- JSON 외 텍스트를 출력하지 않는다.
+
+""" + DERIVATION_SPEC_OPERATION_CONTRACT
 
 
 SYNTHETIC_SAMPLE_GENERATION_PROMPT = """당신은 하나 데이터 마켓 데이터 선별 Agent의
@@ -577,6 +619,7 @@ def _validate_derivation_spec(column: dict, declared_sources: set[str]) -> None:
         raise ValueError("derivation_spec.parameters는 비어 있지 않은 객체여야 함")
     if not spec.get("evidence"):
         raise ValueError("derivation_spec에는 실제 판단 evidence가 필요함")
+    _validate_derivation_parameters(spec)
     _validate_spec_operators(spec)
 
     referenced: set[str] = set()
@@ -594,7 +637,13 @@ def _validate_derivation_spec(column: dict, declared_sources: set[str]) -> None:
 
     collect(parameters)
     if referenced != declared_sources:
-        raise ValueError("derivation_spec 컬럼 참조는 source_columns와 정확히 일치해야 함")
+        missing = sorted(declared_sources - referenced)
+        undeclared = sorted(referenced - declared_sources)
+        raise ValueError(
+            f"derived column '{column.get('name')}' source mismatch: "
+            f"declared={sorted(declared_sources)}, referenced={sorted(referenced)}, "
+            f"missing_in_expression={missing}, undeclared_in_expression={undeclared}"
+        )
 
     result_type_by_operation = {
         "compare": {"boolean"},
@@ -610,8 +659,113 @@ def _validate_derivation_spec(column: dict, declared_sources: set[str]) -> None:
         raise ValueError("derived column data_type이 derivation_spec 결과 타입과 맞지 않음")
 
 
+def _validate_derivation_parameters(spec: dict) -> None:
+    """정규화 이후 operation별 parameters가 단일 계약만 사용하는지 검증한다."""
+
+    def exact(parameters: dict, required: set[str], optional: set[str], operation: str):
+        missing = required - set(parameters)
+        extra = set(parameters) - required - optional
+        if missing or extra:
+            raise ValueError(
+                f"{operation} parameters 계약 불일치: "
+                f"missing={sorted(missing)}, extra={sorted(extra)}"
+            )
+
+    def validate_operand(value, field: str, *, expression_allowed: bool = True) -> None:
+        if not isinstance(value, dict):
+            raise ValueError(f"{field} operand는 객체여야 함")
+        if set(value) == {"column"} and isinstance(value["column"], str) and value["column"]:
+            return
+        if set(value) == {"literal"}:
+            return
+        if expression_allowed and set(value) == {"operation", "parameters"}:
+            validate_expression(value)
+            return
+        raise ValueError(f"{field} operand 계약이 올바르지 않음")
+
+    def validate_expression(expression: dict) -> None:
+        operation = expression.get("operation")
+        parameters = expression.get("parameters")
+        if not isinstance(parameters, dict):
+            raise ValueError(f"{operation} parameters는 객체여야 함")
+        if operation == "compare":
+            exact(parameters, {"operator", "left", "right"}, set(), operation)
+            validate_operand(parameters["left"], "compare.left", expression_allowed=False)
+            validate_operand(parameters["right"], "compare.right", expression_allowed=False)
+        elif operation == "logical":
+            exact(parameters, {"operator", "operands"}, set(), operation)
+            operands = parameters["operands"]
+            if not isinstance(operands, list) or not operands:
+                raise ValueError("logical.operands는 비어 있지 않은 배열이어야 함")
+            for value in operands:
+                validate_operand(value, "logical.operands")
+        elif operation == "conditional":
+            exact(
+                parameters,
+                {"condition", "true_value", "false_value"},
+                set(),
+                operation,
+            )
+            validate_operand(parameters["condition"], "conditional.condition")
+            validate_operand(parameters["true_value"], "conditional.true_value")
+            validate_operand(parameters["false_value"], "conditional.false_value")
+        elif operation == "arithmetic":
+            exact(parameters, {"operator", "operands"}, {"on_divide_by_zero"}, operation)
+            operands = parameters["operands"]
+            if not isinstance(operands, list) or len(operands) < 2:
+                raise ValueError("arithmetic.operands는 2개 이상의 배열이어야 함")
+            for value in operands:
+                validate_operand(value, "arithmetic.operands")
+        elif operation == "date_part":
+            exact(parameters, {"source", "part"}, {"timezone"}, operation)
+            validate_operand(parameters["source"], "date_part.source", expression_allowed=False)
+            if parameters["part"] not in {"year", "month", "day", "weekday", "hour"}:
+                raise ValueError("date_part.part가 허용 값이 아님")
+            if parameters.get("timezone", "UTC") not in {"UTC", "Asia/Seoul"}:
+                raise ValueError("date_part.timezone이 허용 값이 아님")
+        elif operation == "bucketize":
+            exact(parameters, {"source", "bins", "labels"}, set(), operation)
+            validate_operand(parameters["source"], "bucketize.source", expression_allowed=False)
+            bins, labels = parameters["bins"], parameters["labels"]
+            if (
+                not isinstance(bins, list)
+                or len(bins) < 2
+                or not all(isinstance(value, (int, float)) for value in bins)
+                or not isinstance(labels, list)
+                or len(labels) != len(bins) - 1
+            ):
+                raise ValueError("bucketize bins/labels 계약이 올바르지 않음")
+        elif operation == "aggregate":
+            exact(parameters, {"group_by", "metrics"}, set(), operation)
+            group_by, metrics = parameters["group_by"], parameters["metrics"]
+            if not isinstance(group_by, list) or not isinstance(metrics, list) or not metrics:
+                raise ValueError("aggregate group_by/metrics 계약이 올바르지 않음")
+            for value in group_by:
+                validate_operand(value, "aggregate.group_by", expression_allowed=False)
+            for metric in metrics:
+                if not isinstance(metric, dict):
+                    raise ValueError("aggregate metric은 객체여야 함")
+                exact(metric, {"source", "function", "target"}, set(), "aggregate metric")
+                validate_operand(metric["source"], "aggregate.metric.source", expression_allowed=False)
+                if metric["function"] not in {
+                    "sum", "count", "count_distinct", "avg", "min", "max"
+                } or not isinstance(metric["target"], str) or not metric["target"]:
+                    raise ValueError("aggregate metric function/target이 올바르지 않음")
+        elif operation == "map_values":
+            exact(parameters, {"source", "mapping"}, {"default"}, operation)
+            validate_operand(parameters["source"], "map_values.source", expression_allowed=False)
+            if not isinstance(parameters["mapping"], dict):
+                raise ValueError("map_values.mapping은 객체여야 함")
+            if "default" in parameters:
+                validate_operand(parameters["default"], "map_values.default", expression_allowed=False)
+        else:
+            raise ValueError(f"지원하지 않는 derivation_spec operation: {operation}")
+
+    validate_expression(spec)
+
+
 def _normalize_derivation_spec(column: dict) -> None:
-    """명확한 비교 기호 별칭을 executor의 단일 operator 계약으로 정규화한다."""
+    """의미가 단일하게 결정되는 LLM 별칭만 derivation_spec 계약으로 정규화한다."""
 
     spec = column.get("derivation_spec")
     if not isinstance(spec, dict):
@@ -621,33 +775,148 @@ def _normalize_derivation_spec(column: dict) -> None:
         ">": "gt", ">=": "gte", "<": "lt", "<=": "lte",
     }
 
-    def normalize(value) -> None:
-        if isinstance(value, dict):
-            operator = value.get("operator")
-            if operator in aliases:
-                value["operator"] = aliases[operator]
-            operation = value.get("operation")
-            parameters = value.get("parameters")
-            if isinstance(parameters, dict):
-                if operation == "logical" and "conditions" in parameters:
-                    if "operands" in parameters:
-                        raise ValueError("logical parameters에 conditions와 operands를 함께 사용할 수 없음")
-                    parameters["operands"] = parameters.pop("conditions")
-                if operation == "conditional":
-                    for old, new in {
-                        "if": "condition", "then": "true_value", "else": "false_value"
-                    }.items():
-                        if old in parameters:
-                            if new in parameters:
-                                raise ValueError(f"conditional parameters에 {old}와 {new}를 함께 사용할 수 없음")
-                            parameters[new] = parameters.pop(old)
-            for nested in value.values():
-                normalize(nested)
-        elif isinstance(value, list):
-            for nested in value:
-                normalize(nested)
+    declared_sources = {
+        str(source) for source in column.get("source_columns") or [] if source
+    }
 
-    normalize(spec)
+    def operand(value, *, prefer_literal: bool = False):
+        if isinstance(value, dict):
+            if "operation" in value:
+                normalize_expression(value)
+            return value
+        if isinstance(value, str) and value in declared_sources and not prefer_literal:
+            return {"column": value}
+        if isinstance(value, (str, int, float, bool, list)) or value is None:
+            return {"literal": value}
+        return value
+
+    def move(parameters: dict, old: str, new: str, operation: str) -> None:
+        if old not in parameters:
+            return
+        if new in parameters:
+            raise ValueError(
+                f"{operation} parameters에 {old}와 {new}를 함께 사용할 수 없음"
+            )
+        parameters[new] = parameters.pop(old)
+
+    def flat_compare(value: dict) -> dict:
+        if "operation" in value:
+            normalize_expression(value)
+            return value
+        if not {"column", "operator", "value"}.issubset(value):
+            return value
+        if set(value) - {"column", "operator", "value"}:
+            raise ValueError("평면 비교 조건에 허용되지 않은 키가 있음")
+        column_name = value["column"]
+        if not isinstance(column_name, str) or not column_name:
+            raise ValueError("평면 비교 조건 column은 비어 있지 않은 문자열이어야 함")
+        right = value["value"]
+        if not isinstance(right, dict):
+            right = {"literal": right}
+        return {
+            "operation": "compare",
+            "parameters": {
+                "operator": aliases.get(value["operator"], value["operator"]),
+                "left": {"column": column_name},
+                "right": right,
+            },
+        }
+
+    def normalize_expression(expression: dict) -> None:
+        operation = expression.get("operation")
+        parameters = expression.get("parameters")
+        if not isinstance(operation, str) or not isinstance(parameters, dict):
+            return
+        if parameters.get("operator") in aliases:
+            parameters["operator"] = aliases[parameters["operator"]]
+
+        if operation == "date_part":
+            move(parameters, "date_part", "part", operation)
+            if "column" in parameters:
+                if "source" in parameters:
+                    raise ValueError("date_part parameters에 column과 source를 함께 사용할 수 없음")
+                parameters["source"] = {"column": parameters.pop("column")}
+            elif "source" in parameters:
+                parameters["source"] = operand(parameters["source"])
+        elif operation == "bucketize":
+            if "column" in parameters:
+                if "source" in parameters:
+                    raise ValueError("bucketize parameters에 column과 source를 함께 사용할 수 없음")
+                parameters["source"] = {"column": parameters.pop("column")}
+            elif "source" in parameters:
+                parameters["source"] = operand(parameters["source"])
+        elif operation == "compare":
+            if "column" in parameters or "value" in parameters:
+                if "left" in parameters or "right" in parameters:
+                    raise ValueError("compare parameters에 column/value와 left/right를 함께 사용할 수 없음")
+                if "column" not in parameters or "value" not in parameters:
+                    raise ValueError("compare column 별칭에는 value가 함께 필요함")
+                parameters["left"] = {"column": parameters.pop("column")}
+                parameters["right"] = operand(parameters.pop("value"), prefer_literal=True)
+            else:
+                if "left" in parameters:
+                    parameters["left"] = operand(parameters["left"])
+                if "right" in parameters:
+                    parameters["right"] = operand(parameters["right"], prefer_literal=True)
+        elif operation == "logical":
+            move(parameters, "conditions", "operands", operation)
+            values = parameters.get("operands")
+            if isinstance(values, list):
+                parameters["operands"] = [
+                    flat_compare(value) if isinstance(value, dict) else operand(value)
+                    for value in values
+                ]
+        elif operation == "conditional":
+            for old, new in {
+                "if": "condition", "then": "true_value", "else": "false_value"
+            }.items():
+                move(parameters, old, new, operation)
+            condition = parameters.get("condition")
+            if isinstance(condition, dict):
+                parameters["condition"] = flat_compare(condition)
+            elif condition is not None:
+                parameters["condition"] = operand(condition)
+            for key in ("true_value", "false_value"):
+                if key in parameters:
+                    parameters[key] = operand(parameters[key])
+        elif operation == "arithmetic":
+            values = parameters.get("operands")
+            if isinstance(values, list):
+                parameters["operands"] = [operand(value) for value in values]
+        elif operation == "map_values":
+            if "column" in parameters:
+                if "source" in parameters:
+                    raise ValueError("map_values parameters에 column과 source를 함께 사용할 수 없음")
+                parameters["source"] = {"column": parameters.pop("column")}
+            elif "source" in parameters:
+                parameters["source"] = operand(parameters["source"])
+            if "default" in parameters:
+                parameters["default"] = operand(parameters["default"], prefer_literal=True)
+        elif operation == "aggregate":
+            group_by = parameters.get("group_by")
+            if isinstance(group_by, list):
+                parameters["group_by"] = [operand(value) for value in group_by]
+            metrics = parameters.get("metrics")
+            if isinstance(metrics, list):
+                for metric in metrics:
+                    if not isinstance(metric, dict):
+                        continue
+                    if "column" in metric:
+                        if "source" in metric:
+                            raise ValueError("aggregate metric에 column과 source를 함께 사용할 수 없음")
+                        metric["source"] = {"column": metric.pop("column")}
+                    elif "source" in metric:
+                        metric["source"] = operand(metric["source"])
+
+        for nested in parameters.values():
+            if isinstance(nested, dict) and "operation" in nested:
+                normalize_expression(nested)
+            elif isinstance(nested, list):
+                for item in nested:
+                    if isinstance(item, dict) and "operation" in item:
+                        normalize_expression(item)
+
+    normalize_expression(spec)
 
 
 def _validate_spec_operators(spec: dict) -> None:
@@ -862,6 +1131,32 @@ def _selection_retry_hint(error: str) -> str:
         return (
             "필터 키는 선택된 source column만 사용하고 operator/value/reason/evidence를 "
             "반환 계약에 맞게 작성하세요. "
+        )
+    if "source mismatch" in error:
+        return (
+            "source_columns를 임의 변경하지 말고 derivation_spec의 모든 컬럼 참조를 "
+            "{\"column\":\"컬럼명\"} 객체로 표현하세요. date_part는 "
+            "parameters={\"source\":{\"column\":\"컬럼명\"},\"part\":\"month\"}를 "
+            "사용하고 column/date_part 키를 최상위 parameters에 쓰지 마세요. logical은 "
+            "operands 안에 operation=compare인 중첩 expression을 사용하세요. "
+        )
+    if "parameters 계약 불일치" in error or "operand 계약" in error:
+        return (
+            "operation별 정식 parameters 계약만 사용하세요. 평면형 column/operator/value "
+            "조건과 conditions 키를 만들지 말고, 컬럼은 {\"column\":\"컬럼명\"}, "
+            "상수는 {\"literal\":값} 객체로 표현하세요. "
+        )
+    if "date_part" in error:
+        return (
+            "date_part parameters는 source={\"column\":\"날짜컬럼\"}, "
+            "part=year|month|day|weekday|hour, 선택적 timezone만 사용하세요. "
+        )
+    if "logical" in error or "평면 비교" in error:
+        return (
+            "logical parameters는 operator와 operands만 사용하고 각 비교 조건은 "
+            "{\"operation\":\"compare\",\"parameters\":{\"operator\":\"eq\","
+            "\"left\":{\"column\":\"컬럼\"},\"right\":{\"literal\":값}}} "
+            "형식으로 만드세요. "
         )
     if "derivation" in error or "derived column" in error:
         return (
