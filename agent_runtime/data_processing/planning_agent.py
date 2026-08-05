@@ -62,7 +62,7 @@ cast의 parameters는 반드시 {{"data_type":"string|integer|number|date|dateti
 DERIVED_COLUMN_ORDER_PROMPT = f"""당신은 데이터 가공 Agent의 파생 컬럼 생성 순서 결정 단계다.
 앞의 중복·결측 계획을 변경하지 않고, 승인된 파생 컬럼 정의와 고객 목적을 만족하도록 의존관계
 순서대로 operation을 설계한다. 허용 operation은 derive_date_part, bucketize, compare, logical,
-conditional, arithmetic, map_values, aggregate, sort다.
+conditional, arithmetic, map_values, window_aggregate, aggregate, sort다.
 approved_selection.derived_columns의 derivation_spec은 고객이 승인한 의미 계약이므로 자연어
 derivation만 보고 다른 의미로 변경하지 않는다. spec_version, operation, parameters, evidence와
 파생 컬럼 간 의존 순서를 함께 확인한다. 현재 executor가 지원하지 않는 operation을 임의의
@@ -78,7 +78,10 @@ logical은 operands, conditional은 condition, true_value, false_value 키를 �
 target_column으로 사용한다. compare/logical/conditional/arithmetic/map_values의 parameters는
 derivation_spec.parameters를 의미 변경 없이 사용한다. 파생이나 집계가 필요 없으면
 operations를 빈 배열로 반환한다.
-aggregate parameters는 반드시 {{"group_by":["컬럼"],"metrics":[{{"column":"컬럼",
+파생 집계 컬럼은 원본 행을 유지하는 window_aggregate를 사용한다. 서로 다른 group_by의
+집계 컬럼이 여러 개여도 각각 window_aggregate로 만들 수 있다. aggregate는 행을 축약하므로
+최종 결과 자체가 단일 집계표일 때만 최대 한 번 사용한다.
+window_aggregate와 aggregate parameters는 반드시 {{"group_by":["컬럼"],"metrics":[{{"column":"컬럼",
 "function":"sum|count|count_distinct|avg|min|max","target":"새컬럼"}}]}} 형식이다.
 
 {EXPRESSION_OPERAND_RULES}
@@ -182,6 +185,10 @@ def _normalize_operation_item(item: dict) -> dict:
         raise ValueError("processing operation은 JSON 객체여야 함")
     normalized = dict(item)
     parameters = dict(normalized.get("parameters") or {})
+    if normalized.get("type") == "aggregate" and normalized.get("target_column"):
+        # 승인된 '파생 컬럼' 집계는 행 축약이 아니라 그룹 통계를 각 행에 붙이는 의미다.
+        # LLM이 legacy aggregate를 반환해도 실행 의미가 단일한 경우 안전하게 정규화한다.
+        normalized["type"] = "window_aggregate"
     aliases = {
         "==": "eq", "=": "eq", "!=": "neq", "<>": "neq",
         ">": "gt", ">=": "gte", "<": "lt", "<=": "lte",
@@ -254,7 +261,7 @@ def _normalize_operation_item(item: dict) -> dict:
             parameters["left"] = {"column": column}
             parameters["right"] = {"literal": parameters.pop("value")}
             parameters.pop("column")
-        elif operation_type == "aggregate":
+        elif operation_type in {"aggregate", "window_aggregate"}:
             raise ValueError(
                 "aggregate parameters.column은 의미가 모호함; group_by와 metrics 계약을 사용해야 함"
             )
@@ -262,7 +269,7 @@ def _normalize_operation_item(item: dict) -> dict:
         if "data_type" in parameters:
             raise ValueError("cast parameters에 type과 data_type을 함께 사용할 수 없음")
         parameters["data_type"] = parameters.pop("type")
-    if normalized.get("type") == "aggregate" and "aggregation" in parameters:
+    if normalized.get("type") in {"aggregate", "window_aggregate"} and "aggregation" in parameters:
         if "metrics" in parameters:
             raise ValueError("aggregate parameters에 aggregation과 metrics를 함께 사용할 수 없음")
         aggregation = parameters.pop("aggregation")
@@ -529,7 +536,7 @@ def create_processing_plan(payload: dict, on_step=None) -> dict:
         "파생 컬럼 생성 순서 결정",
         {
             "derive_date_part", "bucketize", "compare", "logical", "conditional",
-            "arithmetic", "map_values", "aggregate", "sort",
+            "arithmetic", "map_values", "window_aggregate", "aggregate", "sort",
         },
         {"deduplication_plan": dedup, "missing_value_plan": missing},
         order_by_dependency=True,
