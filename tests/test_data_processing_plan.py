@@ -536,3 +536,111 @@ def test_planning_agent_normalizes_unambiguous_aggregate_parameter_alias():
     )
 
     assert operations[0].parameters["metrics"][0]["target"] == "monthly_amount"
+
+
+def test_derived_aggregates_are_normalized_to_row_preserving_windows():
+    selection = {
+        "source_columns": [
+            {"column": "transaction_id"},
+            {"column": "transaction_datetime"},
+            {"column": "merchant_id"},
+        ],
+        "selection_query": {
+            "columns": ["transaction_id", "transaction_datetime", "merchant_id"]
+        },
+        "derived_columns": [
+            {"name": "transaction_month"},
+            {"name": "merchant_visit_count"},
+            {"name": "monthly_visit_count"},
+        ],
+    }
+    result = {"operations": [
+        {
+            "id": "derived-1", "type": "derive_date_part",
+            "source_columns": ["transaction_datetime"],
+            "target_column": "transaction_month", "parameters": {"part": "month"},
+            "reason": "월 파생",
+        },
+        {
+            "id": "derived-2", "type": "aggregate",
+            "source_columns": ["merchant_id", "transaction_id"],
+            "target_column": "merchant_visit_count",
+            "parameters": {"group_by": ["merchant_id"], "metrics": [
+                {"column": "transaction_id", "function": "count", "target": "merchant_visit_count"}
+            ]}, "reason": "가맹점별 방문 수",
+        },
+        {
+            "id": "derived-3", "type": "aggregate",
+            "source_columns": ["transaction_month", "transaction_id"],
+            "target_column": "monthly_visit_count",
+            "parameters": {"group_by": ["transaction_month"], "metrics": [
+                {"column": "transaction_id", "function": "count", "target": "monthly_visit_count"}
+            ]}, "reason": "월별 방문 수",
+        },
+    ]}
+
+    operations = planning_agent._validate_operations_result(
+        result,
+        allowed_types={"derive_date_part", "window_aggregate", "aggregate"},
+        previous_operations=[], selection=selection,
+        order_by_dependency=True, validate_coverage=True,
+    )
+
+    assert [operation.type for operation in operations] == [
+        "derive_date_part", "window_aggregate", "window_aggregate"
+    ]
+
+
+def test_multiple_window_aggregates_preserve_rows_and_columns():
+    selection = {
+        "source_columns": [
+            {"column": "transaction_id"}, {"column": "transaction_month"},
+            {"column": "merchant_id"},
+        ],
+        "selection_query": {"columns": ["transaction_id", "transaction_month", "merchant_id"]},
+    }
+    plan = {
+        "plan_version": "1.0", "objective": "복수 집계 파생",
+        "operations": [
+            {
+                "id": "derived-1", "type": "window_aggregate",
+                "source_columns": ["merchant_id", "transaction_id"],
+                "target_column": "merchant_visit_count",
+                "parameters": {"group_by": ["merchant_id"], "metrics": [
+                    {"column": "transaction_id", "function": "count", "target": "merchant_visit_count"}
+                ]}, "reason": "가맹점별 건수",
+            },
+            {
+                "id": "derived-2", "type": "window_aggregate",
+                "source_columns": ["transaction_month", "transaction_id"],
+                "target_column": "monthly_visit_count",
+                "parameters": {"group_by": ["transaction_month"], "metrics": [
+                    {"column": "transaction_id", "function": "count", "target": "monthly_visit_count"}
+                ]}, "reason": "월별 건수",
+            },
+            {
+                "id": "final-1", "type": "select_columns", "source_columns": [],
+                "target_column": None,
+                "parameters": {"columns": ["transaction_id", "merchant_visit_count", "monthly_visit_count"]},
+                "reason": "최종 컬럼",
+            },
+        ],
+        "output": {"columns": ["transaction_id", "merchant_visit_count", "monthly_visit_count"], "formats": ["api"]},
+        "quality_checks": [], "explanation": "두 기준의 집계를 행에 결합",
+    }
+    result = run({
+        "raw_requirement": "복수 집계", "selection": selection,
+        "processing_plan": plan,
+        "selected_rows": [
+            {"transaction_id": "t1", "transaction_month": "2026-01", "merchant_id": "m1"},
+            {"transaction_id": "t2", "transaction_month": "2026-01", "merchant_id": "m1"},
+            {"transaction_id": "t3", "transaction_month": "2026-02", "merchant_id": "m2"},
+        ],
+    })
+
+    assert result["ok"] is True
+    assert result["data"]["api_result"]["items"] == [
+        {"transaction_id": "t1", "merchant_visit_count": 2, "monthly_visit_count": 2},
+        {"transaction_id": "t2", "merchant_visit_count": 2, "monthly_visit_count": 2},
+        {"transaction_id": "t3", "merchant_visit_count": 1, "monthly_visit_count": 1},
+    ]

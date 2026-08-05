@@ -1,3 +1,6 @@
+from datetime import datetime
+from decimal import Decimal
+
 import pytest
 
 from agent_runtime.query import DatabaseQueryExecutor, QueryPolicyError, SelectionPlan
@@ -100,6 +103,63 @@ def test_database_executor_builds_bound_starts_with_filter():
 
     assert "서울특별시" not in str(statement)
     assert statement.compile().params
+
+
+def test_query_layer_coerces_datetime_between_values_before_binding():
+    plan = SelectionPlan.from_agent_output(
+        _selection(
+            columns=["transaction_id"],
+            filters={
+                "transaction_datetime": {
+                    "operator": "between",
+                    "value": [
+                        "2026-01-01T00:00:00+09:00",
+                        "2026-06-30T23:59:59+09:00",
+                    ],
+                }
+            },
+        )
+    )
+
+    params = DatabaseQueryExecutor.build_statement(plan).compile().params
+    date_values = [value for value in params.values() if isinstance(value, datetime)]
+
+    assert len(date_values) == 2
+    assert all(value.tzinfo is not None for value in date_values)
+
+
+def test_query_layer_coerces_numeric_filter_values_before_binding():
+    plan = SelectionPlan.from_agent_output(
+        _selection(
+            columns=["transaction_id"],
+            filters={
+                "mcc_code": {"operator": "in", "value": ["5812", "7011"]},
+                "transaction_amount": {"operator": "gte", "value": "10000.50"},
+            },
+        )
+    )
+
+    params = DatabaseQueryExecutor.build_statement(plan).compile().params
+
+    assert [5812, 7011] in params.values()
+    assert Decimal("10000.50") in params.values()
+
+
+def test_query_layer_rejects_invalid_datetime_before_database_execution():
+    plan = SelectionPlan.from_agent_output(
+        _selection(
+            columns=["transaction_id"],
+            filters={
+                "transaction_datetime": {
+                    "operator": "gte",
+                    "value": "not-a-date",
+                }
+            },
+        )
+    )
+
+    with pytest.raises(QueryPolicyError, match="invalid filter value for transaction_datetime"):
+        DatabaseQueryExecutor.build_statement(plan)
 
 
 def test_privacy_count_uses_distinct_customer_before_row_query():

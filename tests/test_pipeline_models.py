@@ -20,7 +20,6 @@ def test_service_tables_are_registered_on_service_database_base():
         "employees",
         "employee_permissions",
         "login_sessions",
-        "requirements_analysis_runs",
         "dashboard_alerts",
         "dashboard_insights",
         "system_dashboard_snapshots",
