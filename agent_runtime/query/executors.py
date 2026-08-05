@@ -1,10 +1,11 @@
 from __future__ import annotations
 
 import os
+from datetime import date, datetime
 from decimal import Decimal
 from typing import Any
 
-from sqlalchemy import ColumnElement, Select, distinct, func, select, tuple_
+from sqlalchemy import Boolean, ColumnElement, Date, DateTime, Integer, Numeric, Select, distinct, func, select, tuple_
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from agent_runtime.query.plan import FilterCondition, QueryPolicyError, SelectionPlan
@@ -183,19 +184,70 @@ def _joined_source(dataset_names: tuple[str, ...]):
 
 
 def _sql_condition(column: ColumnElement, condition: FilterCondition):
+    value = _coerce_filter_value(column, condition.value, condition.operator)
     if condition.operator == "eq":
-        return column == condition.value
+        return column == value
     if condition.operator == "in":
-        return column.in_(condition.value)
+        return column.in_(value)
     if condition.operator == "gte":
-        return column >= condition.value
+        return column >= value
     if condition.operator == "lte":
-        return column <= condition.value
+        return column <= value
     if condition.operator == "between":
-        return column.between(condition.value[0], condition.value[1])
+        return column.between(value[0], value[1])
     if condition.operator == "starts_with":
-        return column.startswith(condition.value, autoescape=True)
+        return column.startswith(value, autoescape=True)
     raise QueryPolicyError(f"unsupported filter operator: {condition.operator}")
+
+
+def _coerce_filter_value(column: ColumnElement, value: Any, operator: str) -> Any:
+    """Agent JSON 값을 실제 SQL 컬럼 타입으로 변환한다.
+
+    JSON에는 날짜와 숫자가 문자열로 올 수 있다. 그대로 바인딩하면 PostgreSQL이
+    ``timestamptz >= varchar`` 같은 비교를 거부하므로 SQL 생성 전에 변환한다.
+    """
+    values = list(value) if operator in {"in", "between"} else [value]
+    try:
+        converted = [_coerce_scalar(column, item) for item in values]
+    except (TypeError, ValueError, ArithmeticError) as exc:
+        raise QueryPolicyError(
+            f"invalid filter value for {column.name} ({column.type}): {value!r}"
+        ) from exc
+    return converted if operator in {"in", "between"} else converted[0]
+
+
+def _coerce_scalar(column: ColumnElement, value: Any) -> Any:
+    column_type = column.type
+    if value is None:
+        return None
+    if isinstance(column_type, DateTime):
+        if isinstance(value, datetime):
+            return value
+        return datetime.fromisoformat(str(value).strip().replace("Z", "+00:00"))
+    if isinstance(column_type, Date):
+        if isinstance(value, datetime):
+            return value.date()
+        if isinstance(value, date):
+            return value
+        return date.fromisoformat(str(value).strip())
+    if isinstance(column_type, Boolean):
+        if isinstance(value, bool):
+            return value
+        normalized = str(value).strip().lower()
+        if normalized in {"true", "1", "yes", "y"}:
+            return True
+        if normalized in {"false", "0", "no", "n"}:
+            return False
+        raise ValueError("boolean value must be true or false")
+    if isinstance(column_type, Integer):
+        if isinstance(value, bool):
+            raise ValueError("boolean is not an integer filter value")
+        return int(value)
+    if isinstance(column_type, Numeric):
+        if isinstance(value, bool):
+            raise ValueError("boolean is not a numeric filter value")
+        return Decimal(str(value))
+    return value
 
 
 def _json_safe(row: dict[str, Any]) -> dict[str, Any]:

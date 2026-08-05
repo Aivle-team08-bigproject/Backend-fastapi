@@ -20,6 +20,7 @@ OperationType = Literal[
     "conditional",
     "arithmetic",
     "map_values",
+    "window_aggregate",
     "aggregate",
     "sort",
     "select_columns",
@@ -81,6 +82,7 @@ DERIVED_OPERATION_TYPES = {
     "conditional",
     "arithmetic",
     "map_values",
+    "window_aggregate",
 }
 
 
@@ -161,7 +163,7 @@ def validate_approved_derived_coverage(
         if operation.type in DERIVED_OPERATION_TYPES and operation.target_column
     }
     for operation in operations:
-        if operation.type != "aggregate":
+        if operation.type not in {"aggregate", "window_aggregate"}:
             continue
         for metric in operation.parameters.get("metrics") or []:
             if isinstance(metric, dict) and metric.get("target"):
@@ -218,27 +220,37 @@ def validate_processing_operations(
             )
         _validate_operation(operation)
 
-        if operation.type == "aggregate":
-            group_by = _string_list(operation.parameters.get("group_by"), "aggregate.group_by")
+        if operation.type in {"aggregate", "window_aggregate"}:
+            field_prefix = operation.type
+            group_by = _string_list(operation.parameters.get("group_by"), f"{field_prefix}.group_by")
             if set(group_by) - available:
                 raise ProcessingPlanError(
-                    "aggregate group_by references unavailable columns; "
+                    f"{field_prefix} group_by references unavailable columns; "
                     "group_by may use only source columns or targets created by earlier operations"
                 )
             metrics = operation.parameters.get("metrics")
             if not isinstance(metrics, list) or not metrics:
-                raise ProcessingPlanError("aggregate.metrics must be a non-empty list")
+                raise ProcessingPlanError(f"{field_prefix}.metrics must be a non-empty list")
+            metric_targets: set[str] = set()
             targets = set(group_by)
             for metric in metrics:
                 if not isinstance(metric, dict):
-                    raise ProcessingPlanError("aggregate metric must be an object")
+                    raise ProcessingPlanError(f"{field_prefix} metric must be an object")
                 column = str(metric.get("column") or "")
                 function = str(metric.get("function") or "")
                 target = str(metric.get("target") or "")
                 if column not in available or function not in {"sum", "count", "count_distinct", "avg", "min", "max"} or not target:
-                    raise ProcessingPlanError("aggregate metric is invalid")
+                    raise ProcessingPlanError(f"{field_prefix} metric is invalid")
                 targets.add(target)
-            available = targets
+                metric_targets.add(target)
+            if operation.type == "window_aggregate":
+                if not operation.target_column or operation.target_column not in metric_targets:
+                    raise ProcessingPlanError(
+                        "window_aggregate target_column must match one of its metric targets"
+                    )
+                available.update(metric_targets)
+            else:
+                available = targets
         elif operation.type == "select_columns":
             columns = _string_list(operation.parameters.get("columns"), "select_columns.columns")
             if set(columns) - available:
@@ -271,6 +283,7 @@ def _validate_operation(operation: ProcessingOperation) -> None:
         "conditional": {"condition", "true_value", "false_value"},
         "arithmetic": {"operator", "operands", "on_divide_by_zero"},
         "map_values": {"source", "mapping", "default"},
+        "window_aggregate": {"group_by", "metrics"},
         "aggregate": {"group_by", "metrics"},
         "sort": {"direction"},
         "select_columns": {"columns"},

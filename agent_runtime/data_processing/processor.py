@@ -309,6 +309,12 @@ def _execute_plan(
             if target not in columns:
                 columns.append(target)
             detail = {"target_column": target, "affected_rows": len(rows)}
+        elif operation.type == "window_aggregate":
+            rows, added_columns = _window_aggregate(rows, operation)
+            for column in added_columns:
+                if column not in columns:
+                    columns.append(column)
+            detail = {"target_columns": added_columns, "affected_rows": len(rows)}
         elif operation.type == "aggregate":
             rows, columns = _aggregate(rows, operation)
             detail = {"affected_rows": before - len(rows), "output_rows": len(rows)}
@@ -504,6 +510,25 @@ def _aggregate(
             output[metric["target"]] = value
         result.append(output)
     return result, group_by + [str(metric["target"]) for metric in metrics]
+
+
+def _window_aggregate(
+    rows: list[dict[str, Any]], operation: ProcessingOperation
+) -> tuple[list[dict[str, Any]], list[str]]:
+    """그룹 집계값을 원본 행에 붙여 서로 다른 집계 기준이 공존하게 한다."""
+    group_by = list(operation.parameters["group_by"])
+    metrics = list(operation.parameters["metrics"])
+    grouped_rows, _ = _aggregate(rows, operation)
+    metrics_by_group = {
+        tuple(row.get(column) for column in group_by): {
+            str(metric["target"]): row.get(str(metric["target"])) for metric in metrics
+        }
+        for row in grouped_rows
+    }
+    for row in rows:
+        values = metrics_by_group[tuple(row.get(column) for column in group_by)]
+        row.update(values)
+    return rows, [str(metric["target"]) for metric in metrics]
 
 
 def _sortable(value: Any) -> tuple[bool, str]:
