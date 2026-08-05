@@ -30,6 +30,10 @@ class Settings(BaseSettings):
     upload_root: str = "/app/uploads"
     database_host_override: str | None = None
 
+    # --- 문서 텍스트 추출 (documents 도메인) ---
+    # 원본 파일은 디스크에 저장하지 않고 메모리에서 바로 파싱 후 폐기한다(A안).
+    document_upload_max_bytes: int = 10 * 1024 * 1024  # 10MB
+
     # --- 개발자 대시보드 ---
     dashboard_usd_to_krw_rate: Decimal = Decimal("1330")
     dashboard_timezone: str = "Asia/Seoul"
