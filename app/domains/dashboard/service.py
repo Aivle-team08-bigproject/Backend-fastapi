@@ -85,9 +85,9 @@ DETAIL_ROUTE_BY_STAGE_GROUP = {
     "COMPLETED": "/tasks/complete",
 }
 PRIORITY_LABEL_BY_CODE = {
-    "REQUIREMENT": "요구사항 승인·반려",
-    "SAMPLE": "샘플 데이터 승인·반려",
-    "FINAL": "최종 산출물 승인·반려",
+    "REQUIREMENT": "요구사항 검토 필요",
+    "SAMPLE": "샘플 데이터 검토 필요",
+    "FINAL": "최종 산출물 검토 필요",
 }
 WAITING_PRIORITY_BY_STATUS = {
     "WAITING_REQUIREMENT_REVIEW": "REQUIREMENT",
