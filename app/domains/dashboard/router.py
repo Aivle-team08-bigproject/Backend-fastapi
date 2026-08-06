@@ -1,7 +1,7 @@
 from datetime import date
 from typing import Literal
 
-from fastapi import APIRouter, Depends, Query
+from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.common.security_deps import CurrentAuth, get_current_auth, require_permission
@@ -71,11 +71,14 @@ async def dashboard_tasks(
     db: AsyncSession = Depends(get_db),
 ) -> DashboardTaskListResponse:
     if page_size not in (30, 50, 100):
-        from fastapi import HTTPException
-
         raise HTTPException(
             status_code=422,
             detail="page_size must be one of 30, 50, or 100",
+        )
+    if priority is not None and status is not None and status != "waiting_review":
+        raise HTTPException(
+            status_code=422,
+            detail="priority filter is only meaningful with status=waiting_review (a task has a pending priority action only while awaiting review); combining it with another status always returns zero results",
         )
     query = DashboardTaskQuery(
         scope=scope,
