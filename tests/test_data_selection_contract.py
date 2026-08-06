@@ -53,6 +53,18 @@ def _selection():
                 "data_type": "number",
                 "source_columns": ["krw_converted_amount"],
                 "derivation": "원화 환산 금액 합계",
+                "derivation_spec": {
+                    "spec_version": "1.0",
+                    "operation": "arithmetic",
+                    "parameters": {
+                        "operator": "add",
+                        "operands": [
+                            {"column": "krw_converted_amount"},
+                            {"literal": 0},
+                        ],
+                    },
+                    "evidence": "원화 환산 금액이라는 DB COMMENT와 고객 요청",
+                },
                 "description": "고객 결제 금액",
             }
         ],
@@ -128,7 +140,7 @@ def test_column_design_contract_rejects_unselected_derived_source():
     selection = _selection()
     selection["derived_columns"][0]["source_columns"] = ["transaction_amount"]
 
-    with pytest.raises(ValueError, match="선택된 source column"):
+    with pytest.raises(ValueError, match="원본 또는 앞에서 정의된 파생 컬럼"):
         _validate_contract(selection, SCHEMA_METADATA)
 
 
@@ -430,3 +442,178 @@ def test_run_steps_reports_ordered_statuses_and_small_summaries(monkeypatch):
     assert events[1][2] == {"selected_table_count": 1, "source_column_count": 2}
     assert events[3][2] == {"derived_column_count": 1}
     assert events[5][2] == {"sample_count": 5}
+
+
+def test_derived_comparison_symbol_is_normalized_to_executor_contract():
+    selection = _selection()
+    spec = selection["derived_columns"][0]["derivation_spec"]
+    spec["operation"] = "compare"
+    spec["parameters"] = {
+        "operator": ">=",
+        "left": {"column": "krw_converted_amount"},
+        "right": {"literal": 10000},
+    }
+    selection["derived_columns"][0]["data_type"] = "boolean"
+
+    _validate_contract(selection, SCHEMA_METADATA)
+
+    assert spec["parameters"]["operator"] == "gte"
+
+
+def test_deepseek_date_part_aliases_are_normalized_to_single_contract():
+    column = {
+        "name": "transaction_month",
+        "data_type": "integer",
+        "source_columns": ["transaction_datetime"],
+        "derivation_spec": {
+            "spec_version": "1.0",
+            "operation": "date_part",
+            "parameters": {
+                "column": "transaction_datetime",
+                "date_part": "month",
+            },
+            "evidence": "거래 일시 COMMENT",
+        },
+    }
+
+    selection_agent._normalize_derivation_spec(column)
+    selection_agent._validate_derivation_spec(column, {"transaction_datetime"})
+
+    assert column["derivation_spec"]["parameters"] == {
+        "source": {"column": "transaction_datetime"},
+        "part": "month",
+    }
+
+
+def test_deepseek_flat_logical_conditions_are_normalized_recursively():
+    column = {
+        "name": "is_gangnam_dining",
+        "data_type": "boolean",
+        "source_columns": ["mcc_code", "merchant_region"],
+        "derivation_spec": {
+            "spec_version": "1.0",
+            "operation": "logical",
+            "parameters": {
+                "operator": "and",
+                "conditions": [
+                    {
+                        "column": "mcc_code",
+                        "operator": "eq",
+                        "value": {"literal": 5812},
+                    },
+                    {
+                        "column": "merchant_region",
+                        "operator": "eq",
+                        "value": {"literal": "서울특별시 강남구"},
+                    },
+                ],
+            },
+            "evidence": "MCC 카탈로그와 지역 COMMENT",
+        },
+    }
+
+    selection_agent._normalize_derivation_spec(column)
+    selection_agent._validate_derivation_spec(
+        column, {"mcc_code", "merchant_region"}
+    )
+
+    operands = column["derivation_spec"]["parameters"]["operands"]
+    assert [operand["operation"] for operand in operands] == ["compare", "compare"]
+    assert operands[0]["parameters"]["left"] == {"column": "mcc_code"}
+    assert operands[1]["parameters"]["left"] == {"column": "merchant_region"}
+
+
+def test_derivation_alias_conflict_is_rejected_instead_of_overwritten():
+    column = {
+        "source_columns": ["transaction_datetime"],
+        "derivation_spec": {
+            "spec_version": "1.0",
+            "operation": "date_part",
+            "parameters": {
+                "column": "transaction_datetime",
+                "source": {"column": "transaction_datetime"},
+                "part": "month",
+            },
+            "evidence": "거래 일시 COMMENT",
+        },
+    }
+
+    with pytest.raises(ValueError, match="column과 source를 함께"):
+        selection_agent._normalize_derivation_spec(column)
+
+
+def test_derivation_source_mismatch_reports_declared_and_referenced_columns():
+    column = {
+        "name": "transaction_month",
+        "data_type": "integer",
+        "source_columns": ["approved_at"],
+        "derivation_spec": {
+            "spec_version": "1.0",
+            "operation": "date_part",
+            "parameters": {
+                "source": {"column": "transaction_datetime"},
+                "part": "month",
+            },
+            "evidence": "거래 일시 COMMENT",
+        },
+    }
+
+    with pytest.raises(ValueError) as exc_info:
+        selection_agent._validate_derivation_spec(column, {"approved_at"})
+
+    message = str(exc_info.value)
+    assert "declared=['approved_at']" in message
+    assert "referenced=['transaction_datetime']" in message
+    assert "missing_in_expression=['approved_at']" in message
+    assert "undeclared_in_expression=['transaction_datetime']" in message
+
+
+def test_derived_prompt_contains_operation_specific_single_contracts():
+    prompt = selection_agent.DERIVED_COLUMN_DESIGN_PROMPT
+
+    assert '"source":{"column":"날짜·시간 컬럼명"}' in prompt
+    assert '"part":"year|month|day|weekday|hour"' in prompt
+    assert "conditions 키" in prompt
+    assert '"operation":"compare|logical"' in prompt
+
+
+def test_source_mismatch_retry_hint_contains_correct_date_and_logical_examples():
+    hint = selection_agent._selection_retry_hint(
+        "derived column 'transaction_month' source mismatch"
+    )
+
+    assert '"source":{"column":"컬럼명"}' in hint
+    assert '"part":"month"' in hint
+    assert "operation=compare" in hint
+
+
+def test_selection_failure_keeps_safe_model_response_diagnostics(monkeypatch):
+    class EmptyResult:
+        stop_reason = "max_tokens"
+
+        def __str__(self):
+            return "응답에 JSON이 없습니다"
+
+    monkeypatch.setattr(selection_agent, "build_agent", lambda _prompt: lambda _message: EmptyResult())
+    events = []
+
+    with pytest.raises(selection_agent.SelectionPlanningError) as raised:
+        selection_agent._run_prompt_step(
+            system_prompt="test",
+            request_payload={},
+            validate=lambda _value: None,
+            step_label="파생 컬럼 정의",
+            step_code="DERIVED_COLUMN_DESIGN",
+            on_step=lambda code, status, metadata: events.append((code, status, metadata)),
+        )
+
+    snapshot = raised.value.failure_snapshot
+    assert snapshot["failed_step"] == "DERIVED_COLUMN_DESIGN"
+    assert snapshot["retry_count"] == 3
+    assert snapshot["failure_code"] == "SELECTION_RULE_INVALID"
+    assert snapshot["model_response"] == {
+        "length": len("응답에 JSON이 없습니다"),
+        "excerpt": "응답에 JSON이 없습니다",
+        "finish_reason": "max_tokens",
+    }
+    assert events[-1][1] == "FAILED"

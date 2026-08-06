@@ -12,6 +12,7 @@ from app.common.security_deps import CurrentAuth, get_current_auth
 from app.core.config import settings
 from app.db.session import get_db
 from app.domains.pipeline.model import PipelineEvent, PipelineRun, StageRun
+from app.domains.pipeline.failure import public_failure
 from app.domains.pipeline.selection_steps import (
     SELECTION_STEP_ORDER,
     initial_selection_steps_snapshot,
@@ -122,6 +123,8 @@ def _stored_event_payload(event: PipelineEvent) -> str:
             "progress_percent": payload.get("progress_percent"),
             "message": event.message,
             "step_metadata": payload.get("step_metadata"),
+            "failure": payload.get("failure"),
+            "rollback_to_stage": payload.get("rollback_to_stage"),
             "occurred_at": event.occurred_at.isoformat(),
         },
         ensure_ascii=False,
@@ -238,6 +241,14 @@ async def stream_run_events(
                     "attempt_no": stage.attempt_no if stage else None,
                     "items": items,
                     "message": "현재 파이프라인 상태입니다.",
+                    "error_message": run.error_message,
+                    "failure": public_failure(
+                        stage=stage.stage_code if stage else run.current_stage,
+                        result=stage.output_payload if stage else None,
+                        validation_result=stage.validation_result if stage else None,
+                        rollback_to_stage=run.rollback_to_stage,
+                        error_message=(stage.error_message if stage else None) or run.error_message,
+                    ),
                     "occurred_at": run.updated_at.isoformat(),
                 },
                 ensure_ascii=False,

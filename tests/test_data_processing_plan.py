@@ -111,6 +111,230 @@ def _planning_step_result(prompt: str) -> dict:
     }
 
 
+def test_structured_derived_operations_execute_in_dependency_order():
+    selection = {
+        "source_columns": [{"column": "country_code"}, {"column": "transaction_hour"}],
+        "selection_query": {"columns": ["country_code", "transaction_hour"], "filters": {}},
+    }
+    plan = {
+        "plan_version": "1.0",
+        "objective": "거래 위험 신호 생성",
+        "operations": [
+            {
+                "id": "derived-1",
+                "type": "compare",
+                "source_columns": ["country_code"],
+                "target_column": "is_overseas_txn",
+                "parameters": {
+                    "operator": "neq",
+                    "left": {"column": "country_code"},
+                    "right": {"literal": "KR"},
+                },
+                "reason": "해외 거래 여부",
+            },
+            {
+                "id": "derived-2",
+                "type": "compare",
+                "source_columns": ["transaction_hour"],
+                "target_column": "is_late_night_txn",
+                "parameters": {
+                    "operator": "gte",
+                    "left": {"column": "transaction_hour"},
+                    "right": {"literal": 23},
+                },
+                "reason": "심야 거래 여부",
+            },
+            {
+                "id": "derived-3",
+                "type": "arithmetic",
+                "source_columns": ["is_overseas_txn", "is_late_night_txn"],
+                "target_column": "fraud_risk_score",
+                "parameters": {
+                    "operator": "add",
+                    "operands": [
+                        {
+                            "operation": "conditional",
+                            "parameters": {
+                                "condition": {"column": "is_overseas_txn"},
+                                "true_value": {"literal": 60},
+                                "false_value": {"literal": 0},
+                            },
+                        },
+                        {
+                            "operation": "conditional",
+                            "parameters": {
+                                "condition": {"column": "is_late_night_txn"},
+                                "true_value": {"literal": 40},
+                                "false_value": {"literal": 0},
+                            },
+                        },
+                    ],
+                },
+                "reason": "승인된 위험 신호 가중 합산",
+            },
+            {
+                "id": "derived-4",
+                "type": "compare",
+                "source_columns": ["fraud_risk_score"],
+                "target_column": "is_fraud_suspected",
+                "parameters": {
+                    "operator": "gte",
+                    "left": {"column": "fraud_risk_score"},
+                    "right": {"literal": 60},
+                },
+                "reason": "위험 점수 임계치 적용",
+            },
+            {
+                "id": "final-1",
+                "type": "select_columns",
+                "source_columns": [],
+                "target_column": None,
+                "parameters": {
+                    "columns": ["fraud_risk_score", "is_fraud_suspected"]
+                },
+                "reason": "최종 결과 선택",
+            },
+        ],
+        "output": {
+            "columns": ["fraud_risk_score", "is_fraud_suspected"],
+            "formats": ["api"],
+        },
+        "quality_checks": [],
+        "explanation": "구조화된 승인 규칙으로 위험 신호를 생성합니다.",
+    }
+
+    result = run(
+        {
+            "analysis": {"delivery_channel": "api"},
+            "selection": selection,
+            "processing_plan": plan,
+            "selected_rows": [
+                {"country_code": "US", "transaction_hour": 23},
+                {"country_code": "KR", "transaction_hour": 12},
+            ],
+        }
+    )
+
+    assert result["ok"] is True
+    assert result["data"]["api_result"]["items"] == [
+        {"fraud_risk_score": 100.0, "is_fraud_suspected": True},
+        {"fraud_risk_score": 0.0, "is_fraud_suspected": False},
+    ]
+
+
+def test_processing_compare_symbol_alias_is_normalized():
+    item = {
+        "id": "derived-1",
+        "type": "compare",
+        "source_columns": ["amount"],
+        "target_column": "is_high_amount",
+        "parameters": {
+            "operator": ">=",
+            "left": {"column": "amount"},
+            "right": {"literal": 10000},
+        },
+        "reason": "고액 여부",
+    }
+
+    normalized = planning_agent._normalize_operation_item(item)
+
+    assert normalized["parameters"]["operator"] == "gte"
+
+
+@pytest.mark.parametrize(
+    ("operation_type", "parameters", "expected"),
+    [
+        (
+            "compare",
+            {"operator": "gte", "left": "amount", "right": 10000},
+            {
+                "operator": "gte",
+                "left": {"column": "amount"},
+                "right": {"literal": 10000},
+            },
+        ),
+        (
+            "arithmetic",
+            {"operator": "add", "operands": ["amount", 100]},
+            {
+                "operator": "add",
+                "operands": [{"column": "amount"}, {"literal": 100}],
+            },
+        ),
+        (
+            "conditional",
+            {"condition": "amount", "true_value": "고액", "false_value": "일반"},
+            {
+                "condition": {"column": "amount"},
+                "true_value": {"literal": "고액"},
+                "false_value": {"literal": "일반"},
+            },
+        ),
+        (
+            "map_values",
+            {"source": "amount", "mapping": {}, "default": "미분류"},
+            {
+                "source": {"column": "amount"},
+                "mapping": {},
+                "default": {"literal": "미분류"},
+            },
+        ),
+    ],
+)
+def test_processing_expression_primitive_operands_are_safely_normalized(
+    operation_type, parameters, expected
+):
+    item = {
+        "id": "derived-1",
+        "type": operation_type,
+        "source_columns": ["amount"],
+        "target_column": "derived_amount",
+        "parameters": parameters,
+        "reason": "계약 정규화 검증",
+    }
+
+    normalized = planning_agent._normalize_operation_item(item)
+
+    assert normalized["parameters"] == expected
+
+
+def test_processing_nested_expression_operands_are_normalized():
+    item = {
+        "id": "derived-1",
+        "type": "logical",
+        "source_columns": ["amount"],
+        "target_column": "is_target",
+        "parameters": {
+            "operator": "and",
+            "operands": [
+                {
+                    "operation": "compare",
+                    "parameters": {
+                        "operator": "gte",
+                        "left": "amount",
+                        "right": 10000,
+                    },
+                }
+            ],
+        },
+        "reason": "중첩식 계약 정규화 검증",
+    }
+
+    normalized = planning_agent._normalize_operation_item(item)
+    compare = normalized["parameters"]["operands"][0]["parameters"]
+
+    assert compare["left"] == {"column": "amount"}
+    assert compare["right"] == {"literal": 10000}
+
+
+def test_processing_operand_failure_has_actionable_retry_hint():
+    hint = planning_agent._contract_retry_hint("expression operand must be an object")
+
+    assert '{"column":"컬럼"}' in hint
+    assert '{"literal":값}' in hint
+    assert "conditional" in hint
+
+
 def test_processing_plan_drives_operation_order():
     result = run(
         {
@@ -302,3 +526,111 @@ def test_planning_agent_normalizes_unambiguous_aggregate_parameter_alias():
     )
 
     assert operations[0].parameters["metrics"][0]["target"] == "monthly_amount"
+
+
+def test_derived_aggregates_are_normalized_to_row_preserving_windows():
+    selection = {
+        "source_columns": [
+            {"column": "transaction_id"},
+            {"column": "transaction_datetime"},
+            {"column": "merchant_id"},
+        ],
+        "selection_query": {
+            "columns": ["transaction_id", "transaction_datetime", "merchant_id"]
+        },
+        "derived_columns": [
+            {"name": "transaction_month"},
+            {"name": "merchant_visit_count"},
+            {"name": "monthly_visit_count"},
+        ],
+    }
+    result = {"operations": [
+        {
+            "id": "derived-1", "type": "derive_date_part",
+            "source_columns": ["transaction_datetime"],
+            "target_column": "transaction_month", "parameters": {"part": "month"},
+            "reason": "월 파생",
+        },
+        {
+            "id": "derived-2", "type": "aggregate",
+            "source_columns": ["merchant_id", "transaction_id"],
+            "target_column": "merchant_visit_count",
+            "parameters": {"group_by": ["merchant_id"], "metrics": [
+                {"column": "transaction_id", "function": "count", "target": "merchant_visit_count"}
+            ]}, "reason": "가맹점별 방문 수",
+        },
+        {
+            "id": "derived-3", "type": "aggregate",
+            "source_columns": ["transaction_month", "transaction_id"],
+            "target_column": "monthly_visit_count",
+            "parameters": {"group_by": ["transaction_month"], "metrics": [
+                {"column": "transaction_id", "function": "count", "target": "monthly_visit_count"}
+            ]}, "reason": "월별 방문 수",
+        },
+    ]}
+
+    operations = planning_agent._validate_operations_result(
+        result,
+        allowed_types={"derive_date_part", "window_aggregate", "aggregate"},
+        previous_operations=[], selection=selection,
+        order_by_dependency=True, validate_coverage=True,
+    )
+
+    assert [operation.type for operation in operations] == [
+        "derive_date_part", "window_aggregate", "window_aggregate"
+    ]
+
+
+def test_multiple_window_aggregates_preserve_rows_and_columns():
+    selection = {
+        "source_columns": [
+            {"column": "transaction_id"}, {"column": "transaction_month"},
+            {"column": "merchant_id"},
+        ],
+        "selection_query": {"columns": ["transaction_id", "transaction_month", "merchant_id"]},
+    }
+    plan = {
+        "plan_version": "1.0", "objective": "복수 집계 파생",
+        "operations": [
+            {
+                "id": "derived-1", "type": "window_aggregate",
+                "source_columns": ["merchant_id", "transaction_id"],
+                "target_column": "merchant_visit_count",
+                "parameters": {"group_by": ["merchant_id"], "metrics": [
+                    {"column": "transaction_id", "function": "count", "target": "merchant_visit_count"}
+                ]}, "reason": "가맹점별 건수",
+            },
+            {
+                "id": "derived-2", "type": "window_aggregate",
+                "source_columns": ["transaction_month", "transaction_id"],
+                "target_column": "monthly_visit_count",
+                "parameters": {"group_by": ["transaction_month"], "metrics": [
+                    {"column": "transaction_id", "function": "count", "target": "monthly_visit_count"}
+                ]}, "reason": "월별 건수",
+            },
+            {
+                "id": "final-1", "type": "select_columns", "source_columns": [],
+                "target_column": None,
+                "parameters": {"columns": ["transaction_id", "merchant_visit_count", "monthly_visit_count"]},
+                "reason": "최종 컬럼",
+            },
+        ],
+        "output": {"columns": ["transaction_id", "merchant_visit_count", "monthly_visit_count"], "formats": ["api"]},
+        "quality_checks": [], "explanation": "두 기준의 집계를 행에 결합",
+    }
+    result = run({
+        "raw_requirement": "복수 집계", "selection": selection,
+        "processing_plan": plan,
+        "selected_rows": [
+            {"transaction_id": "t1", "transaction_month": "2026-01", "merchant_id": "m1"},
+            {"transaction_id": "t2", "transaction_month": "2026-01", "merchant_id": "m1"},
+            {"transaction_id": "t3", "transaction_month": "2026-02", "merchant_id": "m2"},
+        ],
+    })
+
+    assert result["ok"] is True
+    assert result["data"]["api_result"]["items"] == [
+        {"transaction_id": "t1", "merchant_visit_count": 2, "monthly_visit_count": 2},
+        {"transaction_id": "t2", "merchant_visit_count": 2, "monthly_visit_count": 2},
+        {"transaction_id": "t3", "merchant_visit_count": 1, "monthly_visit_count": 1},
+    ]
