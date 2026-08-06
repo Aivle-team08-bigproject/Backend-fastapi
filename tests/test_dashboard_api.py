@@ -8,6 +8,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from tests.dashboard_fixtures import DashboardFixtureFactory
+from tests.test_dashboard_auth import _login_as_fixture_employee
 from tests.test_auth_flow import _login_as_admin
 
 
@@ -132,6 +133,7 @@ def test_dashboard_deadline_tasks_exclude_completed_work_and_sort_by_due_at(
     )
     imminent = dashboard_factory.create(
         analysis_condition={"due_at": (now + timedelta(hours=3)).isoformat()},
+        owner_employee=overdue.employee,
     )
     completed = dashboard_factory.create(
         pipeline_status="COMPLETED",
@@ -139,9 +141,13 @@ def test_dashboard_deadline_tasks_exclude_completed_work_and_sort_by_due_at(
         stage_code="COMPLETED",
         stage_status="COMPLETED",
         analysis_condition={"due_at": (now - timedelta(days=1)).isoformat()},
+        owner_employee=overdue.employee,
     )
 
-    response = client.get("/api/v1/dashboard", headers=_login_as_admin(client))
+    response = client.get(
+        "/api/v1/dashboard",
+        headers=_login_as_fixture_employee(client, overdue),
+    )
 
     assert response.status_code == 200, response.text
     deadline_tasks = response.json()["deadline_tasks"]
