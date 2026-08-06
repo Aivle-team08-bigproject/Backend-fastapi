@@ -17,6 +17,7 @@ from app.domains.dashboard.schema import (
     AgentFailureRateResponse,
     AgentStatusResponse,
     DashboardDeadlineTaskResponse,
+    DashboardCalendarEventResponse,
     DashboardResponse,
     DashboardTaskItemResponse,
     DashboardTaskListResponse,
@@ -50,6 +51,7 @@ from app.domains.pipeline.model import (
     AgentMetric,
     Artifact,
     Client,
+    Contract,
     DataRequest,
     EventType,
     PipelineEvent,
@@ -132,6 +134,8 @@ class _ProjectedTask:
     created_at: datetime
     updated_at: datetime
     due_at: datetime | None
+    contract_start_date: date | None
+    contract_end_date: date | None
 
 
 def _detail_route_for_task(stage_group_code: str, request_no: str, run_id: int | None) -> str:
@@ -272,6 +276,15 @@ def _projection_query():
         DataRequest.analysis_condition["due_at"].as_string(),
         SqlDateTime(timezone=True),
     )
+    active_contract = (
+        select(
+            Contract.data_request_id.label("data_request_id"),
+            Contract.start_date.label("start_date"),
+            Contract.end_date.label("end_date"),
+        )
+        .where(Contract.status == "ACTIVE")
+        .subquery("active_contract")
+    )
 
     return (
         select(
@@ -299,8 +312,11 @@ def _projection_query():
             decision_status.label("decision_status"),
             requires_action.label("requires_action"),
             due_at.label("due_at"),
+            active_contract.c.start_date.label("contract_start_date"),
+            active_contract.c.end_date.label("contract_end_date"),
         )
         .join(Client, Client.id == DataRequest.client_id)
+        .outerjoin(active_contract, active_contract.c.data_request_id == DataRequest.id)
         .outerjoin(Employee, Employee.id == DataRequest.owner_id)
         .outerjoin(latest_run, latest_run.c.data_request_id == DataRequest.id)
         .outerjoin(latest_stage, latest_stage.c.pipeline_run_id == latest_run.c.run_id)
@@ -345,6 +361,8 @@ def _task_projection_from_row(row) -> _ProjectedTask:
         created_at=values["created_at"],
         updated_at=values["updated_at"],
         due_at=values["due_at"],
+        contract_start_date=values["contract_start_date"],
+        contract_end_date=values["contract_end_date"],
     )
 
 
@@ -376,6 +394,8 @@ def _legacy_task_row(task: _ProjectedTask) -> TaskRowResponse:
     metadata = task.analysis_condition
     return TaskRowResponse(
         request_no=task.request_no,
+        run_id=task.run_id,
+        detail_route=task.detail_route,
         client=task.client,
         data_type=metadata.get("data_type", "데이터 분석"),
         detail=metadata.get("detail", task.title),
@@ -509,6 +529,30 @@ def _deadline_tasks(tasks: list[_ProjectedTask]) -> list[DashboardDeadlineTaskRe
     ]
 
 
+def _calendar_events(tasks: list[_ProjectedTask]) -> list[DashboardCalendarEventResponse]:
+    tz = ZoneInfo(settings.dashboard_timezone)
+    events: list[DashboardCalendarEventResponse] = []
+    for task in tasks:
+        if _is_completed(task):
+            continue
+        dates = (
+            ("CONTRACT_START", task.contract_start_date),
+            ("CONTRACT_END", task.contract_end_date),
+            ("DELIVERY_DUE", task.due_at.date() if task.due_at else None),
+        )
+        for event_type, event_date in dates:
+            if event_date is not None:
+                events.append(
+                    DashboardCalendarEventResponse(
+                        request_no=task.request_no,
+                        title=task.title,
+                        client=task.client,
+                        event_type=event_type,
+                        event_date=datetime.combine(event_date, time.min, tzinfo=tz),
+                        detail_route=task.detail_route,
+                    )
+                )
+    return sorted(events, key=lambda event: (event.event_date, event.request_no, event.event_type))
 async def get_dashboard_tasks(
     db: AsyncSession,
     query: DashboardTaskQuery,
@@ -612,6 +656,7 @@ async def get_practitioner_dashboard(db: AsyncSession, employee: Employee) -> Da
         ),
         approval_tasks=[_dashboard_task_item(task) for task in approval_items[:5]],
         deadline_tasks=_deadline_tasks(projected_tasks),
+        calendar_events=_calendar_events(projected_tasks),
         active_task_count=sum(not _is_completed(task) for task in projected_tasks),
     )
 
