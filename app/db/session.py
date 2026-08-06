@@ -6,7 +6,6 @@ from app.core.config import settings
 # 도메인 모델을 import해 metadata에 등록한다.
 from app.domains.employees import model as employee_model  # noqa: F401
 from app.domains.auth.model import session_model  # noqa: F401
-from app.domains.automation.model import requirements_analysis_model  # noqa: F401
 from app.domains.pipeline import model as pipeline_model  # noqa: F401
 from app.domains.dashboard import model as dashboard_model  # noqa: F401
 

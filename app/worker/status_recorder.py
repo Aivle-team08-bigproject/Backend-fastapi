@@ -32,6 +32,7 @@ from app.domains.pipeline.model import (
     StageRunStatus,
 )
 from app.worker.status_event import PipelineStatusEvent
+from app.domains.pipeline.failure import public_failure, public_step_metadata
 from app.worker.status_publisher import publish_to_screen
 from app.domains.pipeline.analysis_steps import initial_analysis_steps_snapshot
 from app.domains.pipeline.selection_steps import initial_selection_steps_snapshot
@@ -252,10 +253,12 @@ async def persist_status_event(db: AsyncSession, event: PipelineStatusEvent) -> 
             else None,
             "attempt_no": event.attempt_no,
             "stage_run_id": event.stage_run_id,
-            "step_metadata": event.step_metadata,
+            "step_metadata": public_step_metadata(event.step_metadata),
             "progress_percent": event.progress_percent,
-            "result": event.result,
+            # 상세 산출물과 실패 후보 계획은 StageRun에만 저장한다.
             "error_message": event.error_message,
+            "failure": event.failure,
+            "rollback_to_stage": event.rollback_to_stage,
         },
         occurred_at=now,
     )
@@ -316,6 +319,13 @@ async def record_status(
 
     run을 못 찾거나 celery_task_id가 안 맞으면 아무것도 발행하지 않고 None을 돌려준다.
     """
+    failure = public_failure(
+        stage=current_stage,
+        result=result,
+        validation_result=validation_result,
+        rollback_to_stage=rollback_to_stage,
+        error_message=error_message,
+    )
     event = PipelineStatusEvent(
         run_id=run_id,
         celery_task_id=celery_task_id,
@@ -336,6 +346,7 @@ async def record_status(
         error_message=error_message,
         validation_result=validation_result,
         rollback_to_stage=rollback_to_stage,
+        failure=failure,
         occurred_at=utcnow(),
     )
     if not await persist_status_event(db, event):

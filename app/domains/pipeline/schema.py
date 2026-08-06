@@ -33,6 +33,7 @@ class RunStageResponse(BaseModel):
     status: StageRunStatus
     executor: str
     created_at: datetime
+    failure: dict | None = None
 
 
 class RunEventResponse(BaseModel):
@@ -56,6 +57,8 @@ class PipelineRunResponse(BaseModel):
     celery_task_id: str | None
     created_at: datetime
     updated_at: datetime
+    error_message: str | None = None
+    failure: dict | None = None
     stages: list[RunStageResponse]
     events: list[RunEventResponse]
 

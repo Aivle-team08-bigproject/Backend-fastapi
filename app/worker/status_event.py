@@ -38,6 +38,8 @@ class PipelineStatusEvent(BaseModel):
     validation_result: dict | None = None
     # 검증 실패 시 되돌아갈 단계(FailureCode -> StageName 판정 결과)
     rollback_to_stage: str | None = None
+    # 프론트 공개용 실패 계약. 내부 후보 계획은 포함하지 않는다.
+    failure: dict | None = None
     occurred_at: datetime
 
     @model_validator(mode="after")

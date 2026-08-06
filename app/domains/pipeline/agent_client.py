@@ -100,17 +100,26 @@ class AgentRuntimeClient(AgentClient):
                 "_failure_code": "INSUFFICIENT_DATA",
             }
 
-        result = await asyncio.to_thread(
-            run_data_selection_steps,
-            payload["raw_requirement"],
-            payload.get("analysis", {}),
-            available_data,
-            schema_metadata,
-            payload.get("hitl_feedback"),
-            reference_catalogs,
-            self.selection_step_callback,
-        )
-        return result
+        try:
+            return await asyncio.to_thread(
+                run_data_selection_steps,
+                payload["raw_requirement"],
+                payload.get("analysis", {}),
+                available_data,
+                schema_metadata,
+                payload.get("hitl_feedback"),
+                reference_catalogs,
+                self.selection_step_callback,
+            )
+        except Exception as exc:
+            failure = {
+                "_agent_error": f"selection agent failed: {exc}",
+                "_failure_code": "SELECTION_RULE_INVALID",
+            }
+            failure_snapshot = getattr(exc, "failure_snapshot", None)
+            if isinstance(failure_snapshot, dict):
+                failure["failure_snapshot"] = failure_snapshot
+            return failure
 
     async def _run_data_processing(self, payload: dict) -> dict:
         """LLM이 가공 계획을 설계한 뒤 실제 행은 결정론적 executor로만 처리한다."""
@@ -126,10 +135,14 @@ class AgentRuntimeClient(AgentClient):
                 "model_id": processing_settings.data_processing_model_id,
             }
         except Exception as exc:
-            return {
+            failure = {
                 "_agent_error": f"processing plan agent failed: {exc}",
                 "_failure_code": "PROCESSING_RULE_INVALID",
             }
+            failure_snapshot = getattr(exc, "failure_snapshot", None)
+            if isinstance(failure_snapshot, dict):
+                failure["failure_snapshot"] = failure_snapshot
+            return failure
 
         try:
             from app.db.hanacard_agent_session import AsyncSessionLocal as AgentSessionLocal
