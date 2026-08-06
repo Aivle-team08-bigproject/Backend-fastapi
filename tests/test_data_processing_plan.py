@@ -375,6 +375,16 @@ def test_processing_plan_rejects_unapproved_column():
         validate_processing_plan(plan, _selection())
 
 
+def test_processing_plan_rejects_reference_before_derived_column_is_created():
+    raw = _plan()
+    raw["operations"][0]["target_column"] = "generated_later"
+    raw["operations"][0]["source_columns"] = ["generated_later"]
+    plan = ProcessingPlan.model_validate(raw)
+
+    with pytest.raises(ProcessingPlanError, match="available_before_operation"):
+        validate_processing_plan(plan, _selection())
+
+
 def test_processing_plan_rejects_arbitrary_operation_parameter():
     raw = _plan()
     raw["operations"][0]["parameters"]["python_code"] = "do_not_execute()"

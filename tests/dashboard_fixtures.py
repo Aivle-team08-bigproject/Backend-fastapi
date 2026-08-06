@@ -14,6 +14,7 @@ from app.domains.dashboard.model import TaskViewSnapshot
 from app.domains.employees.model import Department, Employee, EmployeePermission, EmployeeStatus
 from app.domains.pipeline.model import (
     Client,
+    Contract,
     DataRequest,
     PipelineRun,
     Review,
@@ -50,6 +51,7 @@ class DashboardFixtureFactory:
     def __init__(self) -> None:
         self._counter = 0
         self._created_request_ids: list[int] = []
+        self._created_contract_ids: list[int] = []
         self._created_client_ids: list[int] = []
         self._created_employee_ids: list[int] = []
 
@@ -97,6 +99,10 @@ class DashboardFixtureFactory:
                         TaskViewSnapshot.data_request_id.in_(request_ids)
                     )
                 )
+                if self._created_contract_ids:
+                    await db.execute(
+                        delete(Contract).where(Contract.id.in_(self._created_contract_ids))
+                    )
                 await db.execute(delete(DataRequest).where(DataRequest.id.in_(request_ids)))
 
             if self._created_employee_ids:
@@ -119,8 +125,28 @@ class DashboardFixtureFactory:
             await db.commit()
 
         self._created_request_ids.clear()
+        self._created_contract_ids.clear()
         self._created_client_ids.clear()
         self._created_employee_ids.clear()
+
+    def create_contract(self, data_request_id: int, *, status: str) -> Contract:
+        return asyncio.run(self.acreate_contract(data_request_id, status=status))
+
+    async def acreate_contract(self, data_request_id: int, *, status: str) -> Contract:
+        now = datetime.now(timezone.utc).replace(microsecond=0)
+        contract = Contract(
+            data_request_id=data_request_id,
+            contract_no=f"CONTRACT-{uuid4().hex[:12].upper()}",
+            status=status,
+            created_at=now,
+            updated_at=now,
+        )
+        async with AsyncSessionLocal() as db:
+            db.add(contract)
+            await db.commit()
+            await db.refresh(contract)
+        self._created_contract_ids.append(contract.id)
+        return contract
 
     def create(
         self,
@@ -131,6 +157,7 @@ class DashboardFixtureFactory:
         include_pipeline: bool = True,
         include_stage: bool = True,
         include_owner: bool = True,
+        owner_employee: Employee | None = None,
         pipeline_status: str = "RUNNING",
         current_stage: str | None = "DATA_PROCESSING",
         stage_code: str = "DATA_PROCESSING",
@@ -150,6 +177,7 @@ class DashboardFixtureFactory:
                 include_pipeline=include_pipeline,
                 include_stage=include_stage,
                 include_owner=include_owner,
+                owner_employee=owner_employee,
                 pipeline_status=pipeline_status,
                 current_stage=current_stage,
                 stage_code=stage_code,
@@ -170,6 +198,7 @@ class DashboardFixtureFactory:
         include_pipeline: bool = True,
         include_stage: bool = True,
         include_owner: bool = True,
+        owner_employee: Employee | None = None,
         pipeline_status: str = "RUNNING",
         current_stage: str | None = "DATA_PROCESSING",
         stage_code: str = "DATA_PROCESSING",
@@ -195,7 +224,7 @@ class DashboardFixtureFactory:
             created_at=now,
             updated_at=now,
         )
-        employee = Employee(
+        employee = owner_employee or Employee(
             employee_code=f"DASH-{marker}",
             name=f"대시보드 담당자 {marker}",
             email=f"dash-{marker}@company.com".lower(),
@@ -218,9 +247,12 @@ class DashboardFixtureFactory:
                 db.add(department)
                 await db.flush()
                 department_id = department.id
-            employee.department_id = department_id
+            if owner_employee is None:
+                employee.department_id = department_id
 
-            db.add_all([customer, employee])
+            db.add(customer)
+            if owner_employee is None:
+                db.add(employee)
             await db.flush()
 
             data_request = DataRequest(

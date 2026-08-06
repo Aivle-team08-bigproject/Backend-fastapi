@@ -3,6 +3,8 @@ from unittest.mock import Mock
 
 from fastapi.testclient import TestClient
 
+from tests.test_auth_flow import _login_as_admin
+
 
 def test_create_request_then_read_pipeline_run(client: TestClient, monkeypatch):
     apply_async = Mock()
@@ -11,8 +13,10 @@ def test_create_request_then_read_pipeline_run(client: TestClient, monkeypatch):
         apply_async,
     )
     marker = uuid4().hex[:8]
+    headers = _login_as_admin(client)
     created = client.post(
         "/api/v1/data-requests",
+        headers=headers,
         json={
             "raw_requirement": f"서울 지역 시간대별 결제 밀도를 분석해주세요. {marker}",
             "title": f"프론트 연동 테스트 {marker}",

@@ -86,13 +86,22 @@ class StubAgents:
                     },
                 ],
                 "derived_columns": [
-                    {
-                        "name": "결제건수",
-                        "data_type": "integer",
-                        "source_columns": ["transaction_id"],
-                        "derivation": "merchant_region별 transaction_id 개수",
-                        "description": "지역별 결제 건수",
-                    }
+                {
+                    "name": "결제건수",
+                    "data_type": "integer",
+                    "source_columns": ["transaction_id"],
+                    "derivation": "merchant_region별 transaction_id 개수",
+                    "derivation_spec": {
+                        "spec_version": "1.0",
+                        "operation": "aggregate",
+                        "parameters": {
+                            "function": "count",
+                            "column": {"column": "transaction_id"},
+                        },
+                        "evidence": "테스트 요구사항의 지역별 결제 건수 집계",
+                    },
+                    "description": "지역별 결제 건수",
+                }
                 ],
                 "selection_query": {
                     "columns": ["transaction_id", "merchant_region"],
@@ -165,8 +174,10 @@ def stub_agents(monkeypatch):
 
 def _create_run(client: TestClient) -> int:
     marker = uuid.uuid4().hex[:8]
+    headers = _login_as_admin(client)
     response = client.post(
         "/api/v1/data-requests",
+        headers=headers,
         json={
             "raw_requirement": f"서울 지역 결제 데이터를 CSV로 주세요. {marker}",
             "title": f"수퍼바이저 흐름 테스트 {marker}",
@@ -214,6 +225,16 @@ def test_full_approval_path_walks_every_stage_and_completes(client, stub_agents)
     assert rollback is None
     assert stub_agents.calls == ["requirement-analysis-agent"]
 
+    run_response = client.get(f"/api/v1/runs/{run_id}")
+    assert run_response.status_code == 200, run_response.text
+    assert run_response.json()["requirement_analysis"] == {
+        "usage_purpose": "consumption_trend",
+        "requested_data_sentence": "서울 지역 결제 데이터",
+        "categories": {"region": ["capital_area"]},
+        "delivery_channel": "FILE_DOWNLOAD",
+        "output_formats": ["csv"],
+    }
+
     # 1차 승인 -> 데이터 선별이 돌고 두 번째 게이트에서 멈춘다.
     response = client.post(f"/api/v1/runs/{run_id}/review", json={"approved": True}, headers=headers)
     assert response.status_code == 200, response.text
@@ -249,6 +270,14 @@ def test_full_approval_path_walks_every_stage_and_completes(client, stub_agents)
     assert response.json()["next_stage"] == "DATA_PROCESSING"
     assert _run_row(run_id)[0] == "WAITING_FINAL_REVIEW"
     assert stub_agents.calls[-1] == "data-processing-agent"
+
+    processing_response = client.get(f"/api/v1/runs/{run_id}/processing-result")
+    assert processing_response.status_code == 200, processing_response.text
+    processing_result = processing_response.json()
+    assert processing_result["stage"] == "DATA_PROCESSING"
+    assert processing_result["processed_columns"] == ["지역", "결제건수"]
+    assert processing_result["api_result"] == {"items": [], "meta": {}}
+    assert processing_result["quality_report"]["output_row_count"] == 5
 
     # 최종 승인 -> COMPLETED, 더 진행할 단계 없음.
     response = client.post(f"/api/v1/runs/{run_id}/review", json={"approved": True}, headers=headers)
