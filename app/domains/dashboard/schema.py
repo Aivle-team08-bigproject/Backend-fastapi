@@ -43,6 +43,8 @@ class SupplementItemResponse(BaseModel):
 
 class TaskRowResponse(BaseModel):
     request_no: str
+    run_id: int | None = None
+    detail_route: str | None = None
     client: str
     data_type: str
     detail: str
@@ -109,6 +111,15 @@ class DashboardDeadlineTaskResponse(BaseModel):
     detail_route: str
 
 
+class DashboardCalendarEventResponse(BaseModel):
+    request_no: str
+    title: str
+    client: str
+    event_type: Literal["CONTRACT_START", "CONTRACT_END", "DELIVERY_DUE"]
+    event_date: datetime
+    detail_route: str
+
+
 class DashboardResponse(BaseModel):
     scope: Literal["mine"] = "mine"
     generated_at: datetime
@@ -120,6 +131,7 @@ class DashboardResponse(BaseModel):
     popular_products_unavailable_message: str
     approval_tasks: list[DashboardTaskItemResponse]
     deadline_tasks: list[DashboardDeadlineTaskResponse]
+    calendar_events: list[DashboardCalendarEventResponse]
     active_task_count: int = Field(ge=0)
 
 
