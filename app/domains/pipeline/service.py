@@ -155,7 +155,7 @@ async def create_data_request(
         analysis_condition={
             "async_pipeline": True,
             **(
-                {"due_at": payload.contract.delivery_due_at}
+                {"due_at": payload.contract.delivery_due_at.isoformat()}
                 if payload.contract and payload.contract.delivery_due_at
                 else {}
             ),
