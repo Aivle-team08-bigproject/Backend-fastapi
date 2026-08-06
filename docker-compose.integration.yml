@@ -32,12 +32,7 @@ services:
       DEEPSEEK_API_KEY: ${DEEPSEEK_API_KEY:-}
       DEEPSEEK_BASE_URL: ${DEEPSEEK_BASE_URL:-https://api.deepseek.com}
       DATA_ANONYMIZATION_KEY: ${DATA_ANONYMIZATION_KEY:-}
-    command: >-
-      sh -c 'python -m scripts.prepare_test_database
-      && alembic upgrade head
-      && python -m scripts.seed_test_admin
-      && python -m scripts.seed_frontend_e2e_data
-      && gunicorn app.main:app --workers 1 --worker-class uvicorn.workers.UvicornWorker --bind 0.0.0.0:8000'
+    command: gunicorn app.main:app --workers 1 --worker-class uvicorn.workers.UvicornWorker --bind 0.0.0.0:8000
     ports:
       - "8001:8000"
     depends_on:
