@@ -13,9 +13,15 @@ from app.domains.pipeline.model import (
 
 
 class CreateDataRequestContract(BaseModel):
-    """캘린더 마감일 큐가 읽는 값. 계약 본 레코드(Contract 테이블)와는 별개 — analysis_condition에만 적재된다."""
+    """캘린더 마감일 큐가 읽는 값. 계약 본 레코드(Contract 테이블)와는 별개 — analysis_condition에만 적재된다.
 
-    delivery_due_at: str | None = Field(default=None, max_length=40)
+    datetime으로 받아 Pydantic이 API 경계에서 형식을 검증한다 — 원래 str이었을 때는
+    형식 검증이 전혀 없어서 깨진 값이 그대로 DB에 저장됐고, 대시보드가 그 값을
+    SQL에서 timestamptz로 CAST할 때 그제서야 500으로 터졌다(그것도 owner 필터가
+    없는 관리자 조회에서는 그 값을 만든 사람이 아닌 다른 사람의 화면이 죽었다).
+    """
+
+    delivery_due_at: datetime | None = None
 
 
 class CreateDataRequestRequest(BaseModel):
