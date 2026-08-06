@@ -14,6 +14,7 @@ from app.domains.dashboard.model import TaskViewSnapshot
 from app.domains.employees.model import Department, Employee, EmployeePermission, EmployeeStatus
 from app.domains.pipeline.model import (
     Client,
+    Contract,
     DataRequest,
     PipelineRun,
     Review,
@@ -50,6 +51,7 @@ class DashboardFixtureFactory:
     def __init__(self) -> None:
         self._counter = 0
         self._created_request_ids: list[int] = []
+        self._created_contract_ids: list[int] = []
         self._created_client_ids: list[int] = []
         self._created_employee_ids: list[int] = []
 
@@ -97,6 +99,10 @@ class DashboardFixtureFactory:
                         TaskViewSnapshot.data_request_id.in_(request_ids)
                     )
                 )
+                if self._created_contract_ids:
+                    await db.execute(
+                        delete(Contract).where(Contract.id.in_(self._created_contract_ids))
+                    )
                 await db.execute(delete(DataRequest).where(DataRequest.id.in_(request_ids)))
 
             if self._created_employee_ids:
@@ -119,8 +125,28 @@ class DashboardFixtureFactory:
             await db.commit()
 
         self._created_request_ids.clear()
+        self._created_contract_ids.clear()
         self._created_client_ids.clear()
         self._created_employee_ids.clear()
+
+    def create_contract(self, data_request_id: int, *, status: str) -> Contract:
+        return asyncio.run(self.acreate_contract(data_request_id, status=status))
+
+    async def acreate_contract(self, data_request_id: int, *, status: str) -> Contract:
+        now = datetime.now(timezone.utc).replace(microsecond=0)
+        contract = Contract(
+            data_request_id=data_request_id,
+            contract_no=f"CONTRACT-{uuid4().hex[:12].upper()}",
+            status=status,
+            created_at=now,
+            updated_at=now,
+        )
+        async with AsyncSessionLocal() as db:
+            db.add(contract)
+            await db.commit()
+            await db.refresh(contract)
+        self._created_contract_ids.append(contract.id)
+        return contract
 
     def create(
         self,
