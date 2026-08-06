@@ -28,8 +28,8 @@ QUEUED
 
 ## 구성
 
-`docker-compose.yml`이 실행하는 서비스는 세 개다. PostgreSQL은 NeonDB(관리형)를
-사용하므로 Compose에 포함하지 않는다.
+통합 Docker 실행은 Backend 저장소가 아닌 프로젝트 루트의 `docker-compose.yml`에서 관리한다.
+PostgreSQL은 NeonDB(관리형)를 사용하므로 Compose에 포함하지 않는다.
 
 - `redis`: Celery broker/result backend 및 SSE 화면 갱신 채널
 - `api`: FastAPI/Gunicorn
@@ -58,7 +58,7 @@ Backend-fastapi/
 ├── scripts/                     # 마이그레이션·데모 데이터 도구
 ├── tests/                       # API·도메인·파이프라인 테스트
 ├── examples.http                # API 호출 예시
-└── docker-compose.yml
+└── Dockerfile                    # 루트 Compose가 Backend 이미지를 빌드할 때 사용
 ```
 
 ## 로컬 실행
@@ -103,7 +103,7 @@ DATA_SELECTION_MODEL_ID=deepseek-v4-flash
 ### 3. DB 준비
 
 `mart`·`anon`·`service` 스키마와 역할·권한은 NeonDB에 이미 구성돼 있다. 별도의 로컬
-PostgreSQL을 띄우지 않으며, `docker-compose.yml`도 DB 컨테이너를 포함하지 않는다.
+PostgreSQL을 띄우지 않으며, 루트 `docker-compose.yml`도 DB 컨테이너를 포함하지 않는다.
 2번에서 설정한 세 DB URL이 그대로 사용된다.
 
 `service` 스키마 변경은 Alembic으로 관리한다.
@@ -114,28 +114,33 @@ alembic upgrade head
 
 ### 4. 서비스 실행
 
+Frontend와 Backend를 함께 실행하는 Compose는 프로젝트 루트에서 실행한다.
+
 ```bash
-docker compose up -d --build
-docker compose ps
+cd <프로젝트 루트경로>
+docker compose -f docker-compose.yml up -d --build
+docker compose -f docker-compose.yml ps
 ```
 
-Compose가 실행하는 서비스는 `redis`, `api`, `celery-worker` 세 개이며 DB는 NeonDB에
-직접 접속한다.
+루트 Compose가 실행하는 서비스는 Frontend, Backend API, Celery Worker, Redis이며 DB는
+NeonDB에 직접 접속한다. Backend 저장소에는 Compose 파일을 두지 않는다.
 
 확인 주소:
 
-- Swagger UI: <http://127.0.0.1:8000/docs>
-- Health check: <http://127.0.0.1:8000/health>
+- Frontend: <http://localhost:3001>
+- Swagger UI: <http://localhost:8001/docs>
+- Health check: <http://localhost:8001/health>
 
-API와 Worker를 호스트에서 직접 실행하려면 Redis만 먼저 띄운다.
+루트 `scripts`에는 전체·Backend·Frontend를 분리해 재기동하는 스크립트가 있다.
 
 ```bash
-docker compose up -d redis
-uvicorn app.main:app --host 127.0.0.1 --port 8000 --reload
-celery -A app.worker.celery_app:celery_app worker --loglevel=INFO --concurrency=2
+cd <프로젝트 루트경로>
+./scripts/docker-up.sh
+./scripts/backend-up.sh
+./scripts/frontend-up.sh
+./scripts/docker-stop.sh
 ```
 
-두 프로세스는 각각 별도 터미널에서 실행한다.
 
 ## AWS 운영 환경 초기 구축
 
@@ -152,8 +157,8 @@ NeonDB에서 RDS PostgreSQL 또는 Aurora PostgreSQL로 이전하는 신규 운�
 
 ```bash
 alembic upgrade head
-docker compose up -d --build
-curl http://127.0.0.1:8000/health
+docker compose -f docker-compose.yml up -d --build
+curl http://127.0.0.1:8001/health
 ```
 
 5. Health check가 성공한 뒤 SSM Session Manager로 EC2에 접속해 최초 관리자 프로비저닝을
@@ -177,7 +182,7 @@ python -m app.ops.provision_admin \
 입력하며 비워두면 임시 비밀번호를 한 번 출력하고 `must_change_password`를 활성화한다.
 비밀번호를 명령행 인자나 로그에 기록하지 말고, 실행 후 임시 비밀번호를 안전하게 폐기한다.
 
-개발용 `docker-compose.yml`은 편의를 위해 `.env`를 전체 주입할 수 있지만, AWS 운영 환경에서는
+개발용 루트 `docker-compose.yml`은 편의를 위해 `.env`를 전체 주입할 수 있지만, AWS 운영 환경에서는
 이 방식을 사용하지 않는다. `PORTFOLIO_MIGRATION_DATABASE_URL`은 일반 `api`·`celery-worker`
 컨테이너에 상시 주입하지 않고, SSM에서 운영 명령을 실행하는 순간에만 제한적으로 전달한다.
 

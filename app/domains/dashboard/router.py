@@ -1,10 +1,14 @@
+from datetime import date
+from typing import Literal
+
 from fastapi import APIRouter, Depends, Query
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.common.security_deps import CurrentAuth, get_current_auth
+from app.common.security_deps import CurrentAuth, get_current_auth, require_permission
 from app.db.session import get_db
 from app.domains.dashboard.schema import (
     DashboardResponse,
+    AdminDashboardResponse,
     DashboardTaskListResponse,
     DashboardTaskQuery,
     DeveloperDashboardResponse,
@@ -13,17 +17,22 @@ from app.domains.dashboard.schema import (
     MyTaskStatusResponse,
     PriorityCode,
     StageGroupCode,
+    StatusGroupCode,
     TaskLookupResponse,
+    TaskDetailResponse,
     TaskViewResponse,
 )
+from app.domains.employees.model import PermissionCode
 from app.domains.dashboard.service import (
     get_dashboard_tasks,
+    get_admin_dashboard,
     get_developer_dashboard,
     get_member_management,
     get_my_task_status,
     get_practitioner_dashboard,
     get_task_lookup,
     get_task_view,
+    get_task_detail,
 )
 
 
@@ -35,13 +44,27 @@ async def practitioner_dashboard(
     auth: CurrentAuth = Depends(get_current_auth),
     db: AsyncSession = Depends(get_db),
 ) -> DashboardResponse:
-    return await get_practitioner_dashboard(db)
+    return await get_practitioner_dashboard(db, auth.employee)
+
+
+@router.get("/dashboard/overview", response_model=AdminDashboardResponse)
+async def admin_dashboard_overview(
+    auth: CurrentAuth = Depends(require_permission(PermissionCode.CONTRACT_MANAGE)),
+    db: AsyncSession = Depends(get_db),
+) -> AdminDashboardResponse:
+    return await get_admin_dashboard(db)
 
 
 @router.get("/dashboard/tasks", response_model=DashboardTaskListResponse)
 async def dashboard_tasks(
+    scope: Literal["mine", "all"] = Query(default="mine"),
     priority: PriorityCode | None = Query(default=None),
     stage: StageGroupCode | None = Query(default=None),
+    search: str | None = Query(default=None, max_length=100),
+    status: StatusGroupCode | None = Query(default=None),
+    assignee: str | None = Query(default=None, max_length=40),
+    created_from: date | None = Query(default=None),
+    created_to: date | None = Query(default=None),
     page: int = Query(default=1, ge=1),
     page_size: int = Query(default=30),
     auth: CurrentAuth = Depends(get_current_auth),
@@ -55,12 +78,18 @@ async def dashboard_tasks(
             detail="page_size must be one of 30, 50, or 100",
         )
     query = DashboardTaskQuery(
+        scope=scope,
         priority=priority,
         stage=stage,
+        search=search,
+        status=status,
+        assignee=assignee,
+        created_from=created_from,
+        created_to=created_to,
         page=page,
         page_size=page_size,
     )
-    return await get_dashboard_tasks(db, query)
+    return await get_dashboard_tasks(db, query, auth.employee, auth.permissions)
 
 
 @router.get("/dashboard/my-tasks", response_model=MyTaskStatusResponse)
@@ -100,3 +129,16 @@ async def task_view(
     db: AsyncSession = Depends(get_db),
 ) -> TaskViewResponse:
     return await get_task_view(db, request_no, view_code)
+
+
+@router.get(
+    "/tasks/{request_no:path}/runs/{run_id}/detail",
+    response_model=TaskDetailResponse,
+)
+async def task_detail(
+    request_no: str,
+    run_id: int,
+    auth: CurrentAuth = Depends(get_current_auth),
+    db: AsyncSession = Depends(get_db),
+) -> TaskDetailResponse:
+    return await get_task_detail(db, request_no, run_id, auth.employee, auth.permissions)

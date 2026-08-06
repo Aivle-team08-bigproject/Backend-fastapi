@@ -1,13 +1,15 @@
 from collections import Counter
 from dataclasses import dataclass
-from datetime import datetime, timedelta
+from datetime import date, datetime, time, timedelta
 from decimal import Decimal
+from urllib.parse import quote
 from zoneinfo import ZoneInfo
 
-from sqlalchemy import case, func, literal, select
+from sqlalchemy import case, cast, func, literal, or_, select
+from sqlalchemy.types import DateTime as SqlDateTime
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.common.errors import not_found
+from app.common.errors import forbidden, not_found
 from app.common.time_utils import as_utc, utcnow
 from app.core.config import settings
 from app.domains.dashboard.model import TaskViewSnapshot
@@ -15,6 +17,7 @@ from app.domains.dashboard.schema import (
     AgentFailureRateResponse,
     AgentStatusResponse,
     DashboardDeadlineTaskResponse,
+    DashboardCalendarEventResponse,
     DashboardResponse,
     DashboardTaskItemResponse,
     DashboardTaskListResponse,
@@ -31,12 +34,24 @@ from app.domains.dashboard.schema import (
     TaskLookupResponse,
     TaskRowResponse,
     TaskViewResponse,
+    TaskDetailResponse,
+    TaskStageDetailResponse,
+    TaskArtifactDetailResponse,
+    TaskHistoryResponse,
+    AdminDashboardResponse,
+    AssigneeProgressResponse,
+    DashboardSummaryResponse,
+    DashboardProgressResponse,
+    DashboardStageProgressResponse,
+    PersonalDashboardSummaryResponse,
     TokenUsagePointResponse,
     TokenUsageSummaryResponse,
 )
 from app.domains.pipeline.model import (
     AgentMetric,
+    Artifact,
     Client,
+    Contract,
     DataRequest,
     EventType,
     PipelineEvent,
@@ -94,6 +109,7 @@ STAGE_GROUP_BY_STAGE_CODE = {
 @dataclass(frozen=True)
 class _ProjectedTask:
     request_no: str
+    run_id: int | None
     client: str
     title: str
     analysis_condition: dict
@@ -104,6 +120,12 @@ class _ProjectedTask:
     stage_group_code: str
     stage_label: str
     status_code: str | None
+    run_status: str | None
+    current_stage: str | None
+    progress_percent: int
+    attempt_no: int | None
+    rollback_to_stage: str | None
+    stage_attempt_no: int | None
     status_group_code: str
     priority_code: str | None
     decision_status: str
@@ -111,10 +133,15 @@ class _ProjectedTask:
     detail_route: str
     created_at: datetime
     updated_at: datetime
+    due_at: datetime | None
+    contract_start_date: date | None
+    contract_end_date: date | None
 
 
-def _detail_route_for_stage_group(stage_group_code: str) -> str:
-    return DETAIL_ROUTE_BY_STAGE_GROUP.get(stage_group_code, UNKNOWN_DETAIL_ROUTE)
+def _detail_route_for_task(stage_group_code: str, request_no: str, run_id: int | None) -> str:
+    if stage_group_code in DETAIL_ROUTE_BY_STAGE_GROUP and run_id is not None:
+        return f"/tasks/{quote(request_no, safe='')}/runs/{run_id}/detail"
+    return UNKNOWN_DETAIL_ROUTE
 
 
 def _latest_pipeline_run_subquery():
@@ -122,7 +149,10 @@ def _latest_pipeline_run_subquery():
         PipelineRun.id.label("run_id"),
         PipelineRun.data_request_id.label("data_request_id"),
         PipelineRun.status.label("run_status"),
+        PipelineRun.current_stage.label("current_stage"),
+        PipelineRun.progress_percent.label("progress_percent"),
         PipelineRun.attempt_no.label("attempt_no"),
+        PipelineRun.rollback_to_stage.label("rollback_to_stage"),
         func.row_number()
         .over(
             partition_by=PipelineRun.data_request_id,
@@ -143,13 +173,20 @@ def _latest_stage_run_subquery():
         StageRun.pipeline_run_id.label("pipeline_run_id"),
         StageRun.stage_code.label("stage_code"),
         StageRun.status.label("stage_status"),
+        StageRun.attempt_no.label("stage_attempt_no"),
+        PipelineRun.current_stage.label("pipeline_current_stage"),
         func.row_number()
         .over(
             partition_by=StageRun.pipeline_run_id,
-            order_by=(StageRun.created_at.desc(), StageRun.id.desc()),
+            order_by=(
+                case((StageRun.stage_code == PipelineRun.current_stage, 0), else_=1),
+                StageRun.attempt_no.desc(),
+                StageRun.created_at.desc(),
+                StageRun.id.desc(),
+            ),
         )
         .label("stage_rank"),
-    ).subquery("ranked_stage_runs")
+    ).join(PipelineRun, PipelineRun.id == StageRun.pipeline_run_id).subquery("ranked_stage_runs")
     return select(ranked).where(ranked.c.stage_rank == 1).subquery("latest_stage_runs")
 
 
@@ -235,10 +272,24 @@ def _projection_query():
         (decision_status.in_(("pending", "changes_requested")), literal(True)),
         else_=literal(False),
     )
+    due_at = cast(
+        DataRequest.analysis_condition["due_at"].as_string(),
+        SqlDateTime(timezone=True),
+    )
+    active_contract = (
+        select(
+            Contract.data_request_id.label("data_request_id"),
+            Contract.start_date.label("start_date"),
+            Contract.end_date.label("end_date"),
+        )
+        .where(Contract.status == "ACTIVE")
+        .subquery("active_contract")
+    )
 
     return (
         select(
             DataRequest.request_no.label("request_no"),
+            latest_run.c.run_id.label("run_id"),
             DataRequest.title.label("title"),
             DataRequest.analysis_condition.label("analysis_condition"),
             DataRequest.owner_id.label("owner_id"),
@@ -250,12 +301,22 @@ def _projection_query():
             latest_stage.c.stage_code.label("stage_code"),
             stage_group.label("stage_group_code"),
             status_code.label("status_code"),
+            latest_run.c.run_status.label("run_status"),
+            latest_run.c.current_stage.label("current_stage"),
+            func.coalesce(latest_run.c.progress_percent, 0).label("progress_percent"),
+            latest_run.c.attempt_no.label("attempt_no"),
+            latest_run.c.rollback_to_stage.label("rollback_to_stage"),
+            latest_stage.c.stage_attempt_no.label("stage_attempt_no"),
             status_group.label("status_group_code"),
             priority.label("priority_code"),
             decision_status.label("decision_status"),
             requires_action.label("requires_action"),
+            due_at.label("due_at"),
+            active_contract.c.start_date.label("contract_start_date"),
+            active_contract.c.end_date.label("contract_end_date"),
         )
         .join(Client, Client.id == DataRequest.client_id)
+        .outerjoin(active_contract, active_contract.c.data_request_id == DataRequest.id)
         .outerjoin(Employee, Employee.id == DataRequest.owner_id)
         .outerjoin(latest_run, latest_run.c.data_request_id == DataRequest.id)
         .outerjoin(latest_stage, latest_stage.c.pipeline_run_id == latest_run.c.run_id)
@@ -275,6 +336,7 @@ def _task_projection_from_row(row) -> _ProjectedTask:
     }.get(stage_group_code, "상태 확인 필요")
     return _ProjectedTask(
         request_no=values["request_no"],
+        run_id=values["run_id"],
         client=values["client"],
         title=values["title"],
         analysis_condition=values["analysis_condition"] or {},
@@ -285,19 +347,29 @@ def _task_projection_from_row(row) -> _ProjectedTask:
         stage_group_code=stage_group_code,
         stage_label=stage_label,
         status_code=values["status_code"],
+        run_status=values["run_status"],
+        current_stage=values["current_stage"],
+        progress_percent=int(values["progress_percent"] or 0),
+        attempt_no=values["attempt_no"],
+        rollback_to_stage=values["rollback_to_stage"],
+        stage_attempt_no=values["stage_attempt_no"],
         status_group_code=values["status_group_code"],
         priority_code=values["priority_code"],
         decision_status=values["decision_status"],
         requires_action=bool(values["requires_action"]),
-        detail_route=_detail_route_for_stage_group(stage_group_code),
+        detail_route=_detail_route_for_task(stage_group_code, values["request_no"], values["run_id"]),
         created_at=values["created_at"],
         updated_at=values["updated_at"],
+        due_at=values["due_at"],
+        contract_start_date=values["contract_start_date"],
+        contract_end_date=values["contract_end_date"],
     )
 
 
 def _dashboard_task_item(task: _ProjectedTask) -> DashboardTaskItemResponse:
     return DashboardTaskItemResponse(
         request_no=task.request_no,
+        run_id=task.run_id,
         client=task.client,
         title=task.title,
         assignee_code=task.assignee_code,
@@ -310,6 +382,8 @@ def _dashboard_task_item(task: _ProjectedTask) -> DashboardTaskItemResponse:
         priority_code=task.priority_code,
         decision_status=task.decision_status,
         requires_action=task.requires_action,
+        progress_percent=task.progress_percent,
+        due_at=task.due_at,
         detail_route=task.detail_route,
         created_at=task.created_at,
         updated_at=task.updated_at,
@@ -320,6 +394,8 @@ def _legacy_task_row(task: _ProjectedTask) -> TaskRowResponse:
     metadata = task.analysis_condition
     return TaskRowResponse(
         request_no=task.request_no,
+        run_id=task.run_id,
+        detail_route=task.detail_route,
         client=task.client,
         data_type=metadata.get("data_type", "데이터 분석"),
         detail=metadata.get("detail", task.title),
@@ -340,19 +416,64 @@ def _is_completed(task: _ProjectedTask) -> bool:
     return task.status_group_code == "completed" or task.status_code == "COMPLETED"
 
 
-async def _load_projected_tasks(db: AsyncSession) -> list[_ProjectedTask]:
-    result = await db.execute(
-        _projection_query().order_by(DataRequest.created_at.desc(), DataRequest.request_no.desc())
-    )
+async def _load_projected_tasks(
+    db: AsyncSession,
+    owner_id: int | None = None,
+) -> list[_ProjectedTask]:
+    query = _projection_query()
+    if owner_id is not None:
+        query = query.where(DataRequest.owner_id == owner_id)
+    result = await db.execute(query.order_by(DataRequest.created_at.desc(), DataRequest.request_no.desc()))
     return [_task_projection_from_row(row) for row in result]
 
 
-def _task_filters(projection, query: DashboardTaskQuery) -> list:
+def _task_filters(projection, query: DashboardTaskQuery, owner_id: int | None = None) -> list:
     predicates = []
+    if owner_id is not None:
+        predicates.append(projection.c.owner_id == owner_id)
     if query.priority is not None:
-        predicates.append(projection.c.priority_code == query.priority)
+        predicates.extend((
+            projection.c.priority_code == query.priority,
+            projection.c.requires_action.is_(True),
+            projection.c.status_group_code != "completed",
+        ))
     if query.stage is not None:
         predicates.append(projection.c.stage_group_code == query.stage)
+    if query.status is not None:
+        if query.status == "overdue":
+            predicates.append(
+                projection.c.due_at.is_not(None)
+                & (projection.c.due_at < utcnow())
+                & (projection.c.status_group_code != "completed")
+            )
+        else:
+            predicates.append(projection.c.status_group_code == query.status)
+    if query.assignee is not None:
+        predicates.append(projection.c.assignee_code == query.assignee)
+    if query.search:
+        term = f"%{query.search.replace(' ', '').strip().lower()}%"
+
+        def compact(column):
+            return func.replace(func.lower(column), " ", "")
+
+        predicates.append(
+            or_(
+                compact(projection.c.request_no).like(term),
+                compact(projection.c.client).like(term),
+                compact(projection.c.title).like(term),
+                compact(projection.c.assignee_name).like(term),
+            )
+        )
+    if query.created_from is not None:
+        predicates.append(
+            projection.c.created_at >= datetime.combine(query.created_from, time.min, tzinfo=ZoneInfo("UTC"))
+        )
+    if query.created_to is not None:
+        predicates.append(
+            projection.c.created_at < datetime.combine(
+                query.created_to + timedelta(days=1), time.min, tzinfo=ZoneInfo("UTC")
+            )
+        )
     return predicates
 
 
@@ -408,12 +529,41 @@ def _deadline_tasks(tasks: list[_ProjectedTask]) -> list[DashboardDeadlineTaskRe
     ]
 
 
+def _calendar_events(tasks: list[_ProjectedTask]) -> list[DashboardCalendarEventResponse]:
+    tz = ZoneInfo(settings.dashboard_timezone)
+    events: list[DashboardCalendarEventResponse] = []
+    for task in tasks:
+        if _is_completed(task):
+            continue
+        dates = (
+            ("CONTRACT_START", task.contract_start_date),
+            ("CONTRACT_END", task.contract_end_date),
+            ("DELIVERY_DUE", task.due_at.date() if task.due_at else None),
+        )
+        for event_type, event_date in dates:
+            if event_date is not None:
+                events.append(
+                    DashboardCalendarEventResponse(
+                        request_no=task.request_no,
+                        title=task.title,
+                        client=task.client,
+                        event_type=event_type,
+                        event_date=datetime.combine(event_date, time.min, tzinfo=tz),
+                        detail_route=task.detail_route,
+                    )
+                )
+    return sorted(events, key=lambda event: (event.event_date, event.request_no, event.event_type))
 async def get_dashboard_tasks(
     db: AsyncSession,
     query: DashboardTaskQuery,
+    employee: Employee,
+    permissions: set[PermissionCode] | None = None,
 ) -> DashboardTaskListResponse:
     projection = _projection_query().subquery("dashboard_task_projection")
-    predicates = _task_filters(projection, query)
+    if query.scope == "all" and not (permissions and PermissionCode.CONTRACT_MANAGE in permissions):
+        raise forbidden("FORBIDDEN", "전체 작업 조회 권한이 없습니다.")
+    owner_id = None if query.scope == "all" else employee.id
+    predicates = _task_filters(projection, query, owner_id=owner_id)
     filtered = select(projection).where(*predicates)
     total_count = int(
         await db.scalar(select(func.count()).select_from(filtered.subquery("filtered_dashboard_tasks"))) or 0
@@ -426,6 +576,7 @@ async def get_dashboard_tasks(
     )
     items = [_dashboard_task_item(_task_projection_from_row(row)) for row in result]
     return DashboardTaskListResponse(
+        scope=query.scope,
         items=items,
         total_count=total_count,
         page=query.page,
@@ -433,8 +584,33 @@ async def get_dashboard_tasks(
     )
 
 
-async def get_practitioner_dashboard(db: AsyncSession) -> DashboardResponse:
-    projected_tasks = await _load_projected_tasks(db)
+def _personal_stage_progress(tasks: list[_ProjectedTask]) -> list[DashboardStageProgressResponse]:
+    stage_codes = ("REQUIREMENT_ANALYSIS", "DATA_SELECTION", "DATA_PROCESSING")
+    result: list[DashboardStageProgressResponse] = []
+    for stage_code in stage_codes:
+        current = [task for task in tasks if task.current_stage == stage_code]
+        if any(task.status_group_code == "waiting_review" for task in current):
+            status = "WAITING_REVIEW"
+        elif any(task.status_group_code == "failed" for task in current):
+            status = "FAILED"
+        elif current:
+            status = "RUNNING"
+        elif tasks and all(_is_completed(task) for task in tasks):
+            status = "COMPLETED"
+        else:
+            status = "PENDING"
+        result.append(
+            DashboardStageProgressResponse(
+                code=stage_code,
+                status=status,
+                progress_percent=max((task.progress_percent for task in current), default=0),
+            )
+        )
+    return result
+
+
+async def get_practitioner_dashboard(db: AsyncSession, employee: Employee) -> DashboardResponse:
+    projected_tasks = await _load_projected_tasks(db, owner_id=employee.id)
     popular_products = _popular_products(projected_tasks)
     action_items = [
         task for task in projected_tasks if task.requires_action and not _is_completed(task)
@@ -452,7 +628,26 @@ async def get_practitioner_dashboard(db: AsyncSession) -> DashboardResponse:
         for priority_code in PRIORITY_LABEL_BY_CODE
     ]
     return DashboardResponse(
+        scope="mine",
         generated_at=utcnow(),
+        summary=PersonalDashboardSummaryResponse(
+            total_count=len(projected_tasks),
+            active_count=sum(not _is_completed(task) for task in projected_tasks),
+            approval_count=sum(task.status_group_code == "waiting_review" for task in projected_tasks),
+            failed_count=sum(task.status_group_code == "failed" for task in projected_tasks),
+            completion_rate=round(
+                sum(_is_completed(task) for task in projected_tasks) / len(projected_tasks) * 100,
+                1,
+            ) if projected_tasks else 0,
+        ),
+        progress=DashboardProgressResponse(
+            percent=round(sum(task.progress_percent for task in projected_tasks) / len(projected_tasks)) if projected_tasks else 0,
+            current_stage=next(
+                (task.current_stage for task in projected_tasks if not _is_completed(task)),
+                "COMPLETED" if projected_tasks and all(_is_completed(task) for task in projected_tasks) else None,
+            ),
+            stages=_personal_stage_progress(projected_tasks),
+        ),
         priority_cards=priority_cards,
         priority_actions=[_dashboard_task_item(task) for task in action_items[:5]],
         popular_products=popular_products,
@@ -461,7 +656,189 @@ async def get_practitioner_dashboard(db: AsyncSession) -> DashboardResponse:
         ),
         approval_tasks=[_dashboard_task_item(task) for task in approval_items[:5]],
         deadline_tasks=_deadline_tasks(projected_tasks),
+        calendar_events=_calendar_events(projected_tasks),
         active_task_count=sum(not _is_completed(task) for task in projected_tasks),
+    )
+
+
+async def get_admin_dashboard(db: AsyncSession) -> AdminDashboardResponse:
+    tasks = await _load_projected_tasks(db)
+    now = utcnow()
+    deadline_soon_limit = now + timedelta(hours=48)
+    active = [task for task in tasks if not _is_completed(task)]
+    waiting = [task for task in tasks if task.status_group_code == "waiting_review"]
+    failed = [task for task in tasks if task.status_group_code == "failed"]
+    overdue = [
+        task for task in active
+        if task.due_at is not None and task.due_at < now
+    ]
+    deadline_soon = [
+        task for task in active
+        if task.due_at is not None and now <= task.due_at <= deadline_soon_limit
+    ]
+
+    assignee_groups: dict[str | None, list[_ProjectedTask]] = {}
+    for task in tasks:
+        assignee_groups.setdefault(task.assignee_code, []).append(task)
+    assignee_progress = []
+    for assignee_code, group in sorted(
+        assignee_groups.items(),
+        key=lambda item: (item[0] is None, item[0] or ""),
+    ):
+        assignee_progress.append(
+            AssigneeProgressResponse(
+                assignee_code=assignee_code,
+                assignee_name=group[0].assignee_name,
+                total_count=len(group),
+                completed_count=sum(_is_completed(task) for task in group),
+                waiting_review_count=sum(task.status_group_code == "waiting_review" for task in group),
+                failed_count=sum(task.status_group_code == "failed" for task in group),
+                progress_percent=round(sum(task.progress_percent for task in group) / len(group), 1),
+            )
+        )
+
+    return AdminDashboardResponse(
+        scope="all",
+        generated_at=now,
+        summary=DashboardSummaryResponse(
+            total_count=len(tasks),
+            active_count=len(active),
+            waiting_review_count=len(waiting),
+            failed_count=len(failed),
+            overdue_count=len(overdue),
+            deadline_soon_count=len(deadline_soon),
+        ),
+        assignee_progress=assignee_progress,
+        attention_items={
+            "deadline_soon": [_dashboard_task_item(task) for task in sorted(deadline_soon, key=lambda task: task.due_at or now)],
+            "overdue": [_dashboard_task_item(task) for task in sorted(overdue, key=lambda task: task.due_at or now)],
+            "repeated_failures": [
+                _dashboard_task_item(task)
+                for task in failed
+                if (task.stage_attempt_no or 0) >= 3
+            ],
+            "final_outputs_for_review": [
+                _dashboard_task_item(task)
+                for task in tasks
+                if task.stage_group_code == "FINAL_OUTPUT" and task.status_group_code == "waiting_review"
+            ],
+        },
+    )
+
+
+async def get_task_detail(
+    db: AsyncSession,
+    request_no: str,
+    run_id: int,
+    employee: Employee,
+    permissions: set[PermissionCode],
+) -> TaskDetailResponse:
+    run = await db.get(PipelineRun, run_id)
+    request = await db.scalar(select(DataRequest).where(DataRequest.request_no == request_no))
+    if run is None or request is None or run.data_request_id != request.id:
+        raise not_found("TASK_NOT_FOUND", "작업을 찾을 수 없습니다.")
+
+    is_admin = PermissionCode.CONTRACT_MANAGE in permissions
+    if not is_admin and request.owner_id != employee.id:
+        raise not_found("TASK_NOT_FOUND", "작업을 찾을 수 없습니다.")
+
+    assignee = await db.get(Employee, request.owner_id) if request.owner_id else None
+    stage_runs = list(
+        (
+            await db.scalars(
+                select(StageRun)
+                .where(StageRun.pipeline_run_id == run.id)
+                .order_by(StageRun.stage_code, StageRun.attempt_no)
+            )
+        ).all()
+    )
+    artifacts = list(
+        (
+            await db.scalars(
+                select(Artifact)
+                .where(Artifact.pipeline_run_id == run.id)
+                .order_by(Artifact.created_at, Artifact.id)
+            )
+        ).all()
+    )
+    reviews = list(
+        (
+            await db.scalars(
+                select(Review)
+                .where(Review.data_request_id == request.id)
+                .order_by(Review.created_at, Review.id)
+            )
+        ).all()
+    )
+    review_by_stage = {
+        review.stage_run_id: review.decision
+        for review in reviews
+        if review.stage_run_id is not None
+    }
+    available_actions: list[str] = []
+    if run.status in WAITING_PRIORITY_BY_STATUS:
+        available_actions = ["APPROVE", "REQUEST_CHANGES"]
+    elif run.status == "FAILED":
+        available_actions = ["RETRY"]
+    elif run.status == "COMPLETED":
+        available_actions = ["DOWNLOAD"]
+
+    return TaskDetailResponse(
+        request_no=request.request_no,
+        run_id=run.id,
+        title=request.title,
+        assignee_code=assignee.employee_code if assignee else None,
+        assignee_name=assignee.name if assignee else "미배정",
+        run_status=run.status,
+        current_stage=run.current_stage,
+        progress_percent=run.progress_percent,
+        attempt_no=run.attempt_no,
+        rollback_to_stage=run.rollback_to_stage,
+        error_message=run.error_message,
+        stages=[
+            TaskStageDetailResponse(
+                stage_code=stage.stage_code,
+                status=stage.status,
+                progress_percent=(
+                    run.progress_percent
+                    if stage.stage_code == run.current_stage
+                    else 100
+                    if stage.status == "COMPLETED"
+                    else 0
+                ),
+                attempt_no=stage.attempt_no,
+                executor=stage.executor,
+                review_status=review_by_stage.get(stage.id),
+                artifacts=[
+                    TaskArtifactDetailResponse(
+                        artifact_id=artifact.id,
+                        artifact_type=artifact.artifact_type,
+                        storage_key=artifact.storage_key,
+                        mime_type=artifact.mime_type,
+                        size_bytes=artifact.size_bytes,
+                        pii_scan_status=artifact.pii_scan_status,
+                    )
+                    for artifact in artifacts
+                    if artifact.stage_run_id == stage.id
+                ],
+                created_at=stage.created_at,
+                started_at=stage.started_at,
+                completed_at=stage.completed_at,
+                error_message=stage.error_message,
+            )
+            for stage in stage_runs
+        ],
+        available_actions=available_actions,
+        history=[
+            TaskHistoryResponse(
+                review_type=review.review_type,
+                decision=review.decision,
+                feedback=review.feedback,
+                reviewer_name=review.reviewer_name,
+                created_at=review.created_at,
+            )
+            for review in reviews
+        ],
     )
 
 

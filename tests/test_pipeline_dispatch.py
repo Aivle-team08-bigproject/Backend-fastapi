@@ -1,4 +1,5 @@
 import asyncio
+from types import SimpleNamespace
 from unittest.mock import Mock
 
 from app.domains.pipeline.model import DataRequest, PipelineRun, StageRun
@@ -41,6 +42,7 @@ def test_create_data_request_persists_id_before_celery_publish(monkeypatch):
                 title="서울 결제 데이터",
                 requester_name="테스트 요청자",
             ),
+            SimpleNamespace(id=42, name="테스트 담당자"),
         )
     )
 
@@ -52,6 +54,8 @@ def test_create_data_request_persists_id_before_celery_publish(monkeypatch):
     assert response.celery_task_id == run.celery_task_id
     assert response.run_status.value == "QUEUED"
     assert data_request.status.value == "QUEUED"
+    assert data_request.owner_id == 42
+    assert data_request.owner_name == "테스트 담당자"
     assert [stage.status.value for stage in stages] == ["PENDING"] * 3
     apply_async.assert_called_once_with(args=[run.id], task_id=run.celery_task_id)
     assert db.commits == 1
