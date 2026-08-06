@@ -12,10 +12,17 @@ from app.domains.pipeline.model import (
 )
 
 
+class CreateDataRequestContract(BaseModel):
+    """캘린더 마감일 큐가 읽는 값. 계약 본 레코드(Contract 테이블)와는 별개 — analysis_condition에만 적재된다."""
+
+    delivery_due_at: str | None = Field(default=None, max_length=40)
+
+
 class CreateDataRequestRequest(BaseModel):
     raw_requirement: str = Field(min_length=1, max_length=8000)
     title: str | None = Field(default=None, max_length=200)
     requester_name: str = Field(default="프론트엔드 데모 요청자", min_length=1, max_length=80)
+    contract: CreateDataRequestContract | None = None
 
 
 class CreateDataRequestResponse(BaseModel):

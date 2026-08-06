@@ -413,7 +413,11 @@ def _legacy_task_row(task: _ProjectedTask) -> TaskRowResponse:
 
 
 def _is_completed(task: _ProjectedTask) -> bool:
-    return task.status_group_code == "completed" or task.status_code == "COMPLETED"
+    # status_code는 stage_status(현재 단계 자체의 실행 결과)까지 합쳐놓은 값이라
+    # WAITING_*_REVIEW로 멈춘 작업도 "해당 단계는 COMPLETED"라서 status_code == "COMPLETED"가
+    # 참이 된다. 전체 작업이 끝났는지는 waiting_review를 이미 우선 처리한 status_group_code로만
+    # 판단해야 한다 — 아니면 검토 대기 중인 작업이 전부 "완료"로 잘못 걸러진다.
+    return task.status_group_code == "completed"
 
 
 async def _load_projected_tasks(

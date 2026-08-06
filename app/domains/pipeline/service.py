@@ -152,7 +152,14 @@ async def create_data_request(
         raw_requirement=payload.raw_requirement.strip(),
         output_formats=["CSV", "XLSX"],
         delivery_channels=["FILE_DOWNLOAD"],
-        analysis_condition={"async_pipeline": True},
+        analysis_condition={
+            "async_pipeline": True,
+            **(
+                {"due_at": payload.contract.delivery_due_at}
+                if payload.contract and payload.contract.delivery_due_at
+                else {}
+            ),
+        },
         status=DataRequestStatus.QUEUED,
         created_at=now,
         updated_at=now,
