@@ -146,7 +146,26 @@ def test_dashboard_deadline_tasks_exclude_completed_work_and_sort_by_due_at(
     assert response.status_code == 200, response.text
     deadline_tasks = response.json()["deadline_tasks"]
     request_nos = [item["request_no"] for item in deadline_tasks]
-    assert request_nos == []
+    assert request_nos == [overdue.request_no, imminent.request_no]
+
+
+def test_dashboard_task_list_does_not_duplicate_requests_for_contract_history(
+    client: TestClient,
+    dashboard_factory: DashboardFixtureFactory,
+):
+    record = dashboard_factory.create(analysis_condition={"due_at": datetime.now(timezone.utc).isoformat()})
+    dashboard_factory.create_contract(record.data_request.id, status="EXPIRED")
+    dashboard_factory.create_contract(record.data_request.id, status="ACTIVE")
+
+    response = client.get(
+        f"/api/v1/dashboard/tasks?scope=all&search={quote(record.request_no)}",
+        headers=_login_as_admin(client),
+    )
+
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert body["total_count"] == 1
+    assert [item["request_no"] for item in body["items"]] == [record.request_no]
 
 
 @pytest.mark.parametrize(
