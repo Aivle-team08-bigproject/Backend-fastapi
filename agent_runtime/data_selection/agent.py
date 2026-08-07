@@ -9,6 +9,7 @@ from strands import Agent, tool
 from strands.models.openai import OpenAIModel
 
 from agent_runtime.data_selection.config import settings
+from agent_runtime.query import SelectionPlan
 from agent_runtime.query.registry import canonical_dataset
 
 
@@ -183,13 +184,70 @@ FINAL_CONTRACT_REFERENCE = """당신은 '하나 데이터 마켓'의 DB 메타�
 - JSON 외의 텍스트, 마크다운, 서두 문구를 절대 출력하지 않는다."""
 
 
-SOURCE_COLUMN_SELECTION_PROMPT = """당신은 하나 데이터 마켓 데이터 선별 Agent의
-원본 컬럼 선별 단계다. 고객 요구사항, 요구사항 분석, DB COMMENT 메타데이터와 기준
-카탈로그만 사용해 필요한 테이블·원본 컬럼·필터를 결정한다. 파생 컬럼과 합성 샘플은
-만들지 않는다. hitl_feedback이 있으면 이전 해석보다 우선하고 retry_feedback이 있으면
-직전 검증 실패를 수정한다.
+SOURCE_COLUMN_SELECTION_PROMPT = """역할:
+당신은 하나 데이터 마켓의 데이터 선별 Agent다.
+고객 요구사항, 요구사항 분석, DB COMMENT 메타데이터, 기준 카탈로그를 근거로
+실행 가능한 데이터 조회 계획을 설계한다.
+당신의 결과는 이후 운영 DB에서 실제로 조회되고, 데이터 가공 단계의 입력으로 사용된다.
+파생 컬럼과 합성 샘플은 만들지 않는다.
+hitl_feedback이 있으면 이전 해석보다 우선하고, retry_feedback이 있으면 직전 오류를
+수정한 새로운 조회 계획을 만든다.
+역할END.
 
-반드시 다음 JSON 하나만 반환한다:
+규칙:
+- selected_tables는 available_data에 있는 논리 데이터셋만 사용한다.
+- source_columns는 schema_metadata에 실제 존재하는 컬럼만 사용한다.
+- DB COMMENT를 컬럼 의미 판단의 최우선 근거로 사용한다.
+- 고객 요구를 충족하는 데 필요한 최소 컬럼만 선택한다.
+- 자연어 카테고리는 reference_catalogs에 제공된 실제 항목만 사용한다.
+- 가장 가까운 실행 가능한 의미를 선택하고, 해석 근거와 확인 필요 여부는
+  interpretations에 기록한다.
+- 실행 근거가 없을 때만 해당 조건을 필터에서 제외하고 catalog_issues에 기록한다.
+- selection_query.columns는 source_columns의 column 목록과 중복 없이 정확히 일치해야 한다.
+- selection_query.columns와 source_columns는 운영 DB에서 실제로 함께 조회되는 컬럼이다.
+  파생 컬럼 계산이나 샘플 생성을 위한 내부 용도라는 예외는 없다.
+- 필터는 선택한 source column만 사용하며 operator, value, reason, evidence를 포함한다.
+- 허용 filter operator는 eq, in, gte, lte, between, starts_with다.
+- 문자열 접두 범위에는 starts_with를 사용하며 문자열에 수치 범위 연산을 사용하지 않는다.
+- top_k, limit, vector_similarity를 만들지 않는다.
+규칙END.
+
+제약사항:
+개인정보 보호 조회 정책을 반드시 준수한다.
+
+인적 속성:
+gender, age_band, resident_region, postal_code, occupation,
+annual_income_band, marital_status
+
+식별자 또는 고차원 컬럼:
+customer_id, card_number_masked, transaction_id,
+merchant_id, merchant_name, business_registration_number, ip_address,
+transaction_datetime, card_issue_month, merchant_open_month,
+franchise_hq_code
+
+- 인적 속성을 2개 이상 선택하면 식별자 또는 고차원 컬럼을 하나도 선택하지 않는다.
+- 위 금지 조합은 source_columns와 selection_query.columns 모두에 적용한다.
+- transaction_datetime처럼 파생 컬럼 계산에 필요한 원본 컬럼도 식별자 또는 고차원
+  컬럼으로 취급한다. 파생에 필요하다는 이유로 정책을 우회하지 않는다.
+- 시간·고객·가맹점 단위 컬럼이 반드시 필요하면 인적 속성은 최대 1개만 선택한다.
+- 고객 요청이 금지 조합을 요구하면 개인정보 보호 정책을 지키는 최소 컬럼 조합으로
+  단순화하고, interpretations에 제외 또는 단순화한 차원과 사유를 기록한다.
+
+금지 예시:
+["gender", "age_band", "customer_id"]
+["gender", "age_band", "merchant_id"]
+["gender", "age_band", "transaction_datetime"]
+
+허용 예시:
+["gender", "age_band", "mcc_name"]
+["gender", "transaction_datetime"]
+["age_band", "customer_id"]
+제약사항END.
+
+출력형식:
+반드시 아래 JSON 객체 하나만 반환한다. 마크다운, 코드 펜스, 설명 문장 등
+JSON 외의 내용은 절대 출력하지 않는다.
+
 {
   "selected_tables": [{"table": "available_data의 논리명", "reason": "COMMENT 근거"}],
   "source_columns": [{
@@ -217,18 +275,17 @@ SOURCE_COLUMN_SELECTION_PROMPT = """당신은 하나 데이터 마켓 데이터 
     "reason": "선택 근거", "requires_confirmation": true
   }]
 }
+출력형식END.
 
-규칙:
-- selected_tables는 available_data, source_columns는 schema_metadata에 실제 존재하는 값만 쓴다.
-- DB COMMENT를 의미 판단의 우선 근거로 사용하고 필요한 최소 컬럼만 선택한다.
-- 자연어 카테고리는 제공된 reference_catalogs의 실제 항목만 사용한다.
-- 가장 가까운 실행 가능한 의미를 선택하되 interpretations에 근거와 확인 필요 여부를 공개한다.
-- 실행 근거가 없을 때만 필터에서 제외하고 catalog_issues에 기록한다.
-- selection_query.columns는 source_columns와 정확히 일치시킨다.
-- top_k, limit, vector_similarity는 만들지 않는다.
-- 필터는 선택한 컬럼만 사용하고 reason과 evidence를 반드시 포함한다.
-- 문자열 접두 범위에는 starts_with를 사용하고 문자열에 수치 범위 연산을 쓰지 않는다.
-- JSON 외 텍스트를 출력하지 않는다."""
+긍정 강화:
+정확한 결과는 고객 요구를 충족하면서도 운영 DB 조회 정책을 위반하지 않는
+최소 컬럼 계획이다.
+출력 전에 내부적으로 다음을 확인하라.
+1. selection_query.columns와 source_columns가 정확히 일치하는가.
+2. 선택 컬럼이 개인정보 보호 조회 정책을 위반하지 않는가.
+3. 모든 컬럼·테이블·카탈로그 값이 제공된 메타데이터에 실제 존재하는가.
+4. JSON 외의 내용을 출력하지 않았는가.
+긍정 강화END."""
 
 
 DERIVATION_SPEC_OPERATION_CONTRACT = """operation별 parameters 정식 계약:
@@ -271,12 +328,28 @@ parameters 전체에서 참조한 모든 컬럼을 중복 없이 정확히 넣�
 위에 명시하지 않은 별칭 키나 평면형 표현을 만들지 않는다."""
 
 
-DERIVED_COLUMN_DESIGN_PROMPT = """당신은 하나 데이터 마켓 데이터 선별 Agent의
-파생 컬럼 정의 단계다. 입력의 source_selection은 앞 단계에서 이미 검증된 결과다.
-그 범위를 변경하거나 새 원본 컬럼을 추가하지 말고 고객 목적에 필요한 파생 컬럼만 설계한다.
-hitl_feedback이 있으면 승인된 원본 범위 안에서 우선 반영하고 retry_feedback의 실패를 수정한다.
+DERIVED_COLUMN_DESIGN_PROMPT = """역할:
+하나 데이터 마켓 데이터 선별 Agent의 파생 컬럼 정의 단계다. 검증된 source_selection 범위에서
+고객 목적에 필요한 파생 컬럼과 실행 의미를 설계한다.
+역할END.
 
-반드시 다음 JSON 하나만 반환한다:
+규칙:
+- source_selection.source_columns 또는 배열 앞쪽에서 정의한 파생 컬럼만 참조한다.
+- derived_columns는 최소 1개 만들고, 이름은 서로 및 원본 컬럼명과 충돌하지 않게 한다.
+- 단순 이름 변경, 순환 참조, 뒤에서 정의할 컬럼의 선행 참조를 만들지 않는다.
+- derivation_spec은 임의 Python·SQL·문자열 수식 없이 실행 의미를 구조화한다.
+- parameters에서 컬럼은 {"column":"컬럼명"}, 상수는 {"literal":값}으로 표현한다.
+- evidence에는 DB COMMENT, reference catalog, 고객 요구사항, HITL 중 실제 근거를 적는다.
+- hitl_feedback은 승인된 원본 범위 안에서 우선 반영하고 retry_feedback의 실패를 수정한다.
+규칙END.
+
+제약사항:
+- source_selection 범위를 변경하거나 새 원본 컬럼을 추가하지 않는다.
+- 비교 operator는 eq, neq, gt, gte, lt, lte, in만 사용하며 비교 기호를 쓰지 않는다.
+제약사항END.
+
+출력형식:
+JSON 하나만 출력한다. 부수적인 설명, Markdown, 코드 블록을 출력하지 않는다.
 {
   "derived_columns": [{
     "name": "새 파생 컬럼명",
@@ -292,28 +365,35 @@ hitl_feedback이 있으면 승인된 원본 범위 안에서 우선 반영하고
     "description": "고객에게 보여줄 설명"
   }]
 }
+출력형식END.
 
-규칙:
-- derived_columns는 최소 1개 만든다.
-- source_selection.source_columns 또는 배열 앞쪽에서 이미 정의한 파생 컬럼만 참조한다.
-- derivation_spec은 임의 Python·SQL·문자열 수식 없이 실행 의미를 구조화한다.
-- parameters 안에서 컬럼을 참조할 때는 {"column":"컬럼명"}, 상수는 {"literal":값} 형식을 쓴다.
-- 비교 operator는 eq, neq, gt, gte, lt, lte, in만 사용한다. ==, !=, >, >=, <, <= 기호는 쓰지 않는다.
-- evidence에는 DB COMMENT, reference catalog, 고객 요구사항 또는 HITL 중 실제 근거를 적는다.
-- 파생 컬럼 간 순환 참조나 뒤에서 정의할 컬럼의 선행 참조를 만들지 않는다.
-- 단순 이름 변경은 파생 컬럼으로 만들지 않는다.
-- 이름은 중복될 수 없고 원본 컬럼명과도 충돌하지 않게 한다.
-- JSON 외 텍스트를 출력하지 않는다.
+긍정 강화:
+승인된 원본 범위와 실행 계약을 함께 지킨 파생 정의는 후속 가공 계획을 안정적으로 만듭니다.
+모든 필수 키와 참조 순서를 점검한 뒤 JSON 하나만 반환하세요.
+긍정 강화END.
 
 """ + DERIVATION_SPEC_OPERATION_CONTRACT
 
 
-SYNTHETIC_SAMPLE_GENERATION_PROMPT = """당신은 하나 데이터 마켓 데이터 선별 Agent의
-합성 샘플 생성 단계다. 입력의 source_selection과 derived_design은 앞 단계에서 검증된
-컬럼 설계다. 설계를 변경하지 말고 고객이 형식을 검토할 수 있는 완전한 합성 데이터 5건을 만든다.
-hitl_feedback이 있으면 승인된 컬럼 설계 안에서 우선 반영하고 retry_feedback의 실패를 수정한다.
+SYNTHETIC_SAMPLE_GENERATION_PROMPT = """역할:
+하나 데이터 마켓 데이터 선별 Agent의 합성 샘플 생성 단계다. 검증된 source_selection과
+derived_design을 바꾸지 않고 고객이 형식을 검토할 수 있는 완전한 합성 데이터 5건을 만든다.
+역할END.
 
-반드시 다음 JSON 하나만 반환한다:
+규칙:
+- sample_columns는 검증된 원본·파생 컬럼 설계로만 구성한다.
+- sample_rows는 정확히 5건이며, 모든 행의 키는 sample_columns 이름과 정확히 일치한다.
+- hitl_feedback은 승인된 컬럼 설계 안에서 우선 반영하고 retry_feedback의 실패를 수정한다.
+규칙END.
+
+제약사항:
+- 실제 DB 행을 조회·복사하지 않는다.
+- 실제 고객ID, 카드번호, 전화번호, 이메일처럼 보이는 값을 만들지 않는다.
+- 컬럼 설계, 컬럼명, 데이터 타입을 임의로 바꾸지 않는다.
+제약사항END.
+
+출력형식:
+JSON 하나만 출력한다. 부수적인 설명, Markdown, 코드 블록을 출력하지 않는다.
 {
   "sample_columns": [{
     "name": "최종 표시명",
@@ -329,13 +409,12 @@ hitl_feedback이 있으면 승인된 컬럼 설계 안에서 우선 반영하고
     "notice": "실제 고객 데이터가 아닌 형식 확인용 예시 데이터입니다."
   }
 }
+출력형식END.
 
-규칙:
-- sample_columns는 검증된 원본·파생 컬럼 설계로만 구성한다.
-- sample_rows는 정확히 5건이고 모든 행의 키는 sample_columns 이름과 정확히 일치한다.
-- 실제 DB 행을 조회·복사하지 않는다.
-- 실제 고객ID, 카드번호, 전화번호, 이메일처럼 보이는 값을 만들지 않는다.
-- JSON 외 텍스트를 출력하지 않는다."""
+긍정 강화:
+안전하고 일관된 합성 샘플은 고객의 형식 검토를 돕고 실제 데이터 노출을 막습니다. 모든 행과
+메타데이터를 점검한 뒤 JSON 하나만 반환하세요.
+긍정 강화END."""
 
 
 _JSON_BLOCK_RE = re.compile(r"\{.*\}", re.DOTALL)
@@ -1004,6 +1083,9 @@ def _validate_source_contract(
         **_placeholder_sample(first_source),
     }
     _validate_contract(validation_payload, schema_metadata, reference_catalogs)
+    # 선별 결과는 승인 후 운영 DB에서 그대로 조회된다. 조회 직전까지 미루지 말고
+    # 여기서 동일 정책을 적용해 LLM 재시도 경로로 돌린다.
+    SelectionPlan.from_agent_output(data)
 
 
 def _validate_derived_contract(
@@ -1149,6 +1231,12 @@ def _run_prompt_step(
 
 
 def _selection_retry_hint(error: str) -> str:
+    if "인적 속성 여러 개와 개별 식별자" in error:
+        return (
+            "gender, age_band 등 인적 속성을 2개 이상 선택했다면 customer_id, "
+            "merchant_id, transaction_datetime 등 식별자·고차원 컬럼을 모두 빼세요. "
+            "시간·고객·가맹점 단위 컬럼이 필요하면 인적 속성은 최대 1개만 선택하세요. "
+        )
     if "DB 메타데이터에 없는 source column" in error:
         return (
             "dataset은 schema_metadata.dataset의 정식 논리명을, column은 해당 dataset의 "

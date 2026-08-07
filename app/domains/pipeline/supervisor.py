@@ -10,6 +10,7 @@
     단계 실행 -> 산출물 검증 -> WAITING_*_REVIEW -> 승인 -> 다음 단계
 """
 
+import asyncio
 import base64
 
 from sqlalchemy import select
@@ -20,6 +21,8 @@ from app.domains.pipeline.model import (
     FailureCode,
     PipelineRun,
     PipelineRunStatus,
+    ProcessingStepCode,
+    ProcessingStepStatus,
     ReviewDecision,
     StageName,
     StageRun,
@@ -252,7 +255,20 @@ async def run_stage(
             stage.model_name or "",
             payload,
         )
+        if stage_name == StageName.DATA_PROCESSING:
+            await _emit_processing_step(
+                processing_step_callback,
+                ProcessingStepCode.OUTPUT_VALIDATION,
+                ProcessingStepStatus.RUNNING,
+            )
         validation = validate_stage_output(stage_name, output)
+        if stage_name == StageName.DATA_PROCESSING:
+            await _emit_processing_step(
+                processing_step_callback,
+                ProcessingStepCode.OUTPUT_VALIDATION,
+                ProcessingStepStatus.COMPLETED if validation["passed"] else ProcessingStepStatus.FAILED,
+                {"validation_errors": validation["errors"]} if not validation["passed"] else None,
+            )
     except Exception as exc:  # noqa: BLE001 - 실패도 이벤트로 남겨야 한다
         output = {"_worker_error": str(exc)}
         validation = {"passed": False, "errors": [str(exc)], "failure_code": None}
@@ -271,7 +287,36 @@ async def run_stage(
 
     artifact = None
     if stage_name == StageName.DATA_PROCESSING:
-        artifact = _write_csv_artifact(stage.pipeline_run_id, output)
+        await _emit_processing_step(
+            processing_step_callback,
+            ProcessingStepCode.RESULT_FILE_GENERATION,
+            ProcessingStepStatus.RUNNING,
+        )
+        try:
+            artifact = _write_csv_artifact(stage.pipeline_run_id, output)
+        except Exception as exc:
+            await _emit_processing_step(
+                processing_step_callback,
+                ProcessingStepCode.RESULT_FILE_GENERATION,
+                ProcessingStepStatus.FAILED,
+                {"validation_errors": [str(exc)]},
+            )
+            return {
+                "stage_name": stage_name,
+                "passed": False,
+                "output": output,
+                "validation": {"passed": False, "errors": [str(exc)], "failure_code": None},
+                "run_status": PipelineRunStatus.FAILED,
+                "progress_percent": 0,
+                "artifact": None,
+                "error_message": str(exc),
+            }
+        await _emit_processing_step(
+            processing_step_callback,
+            ProcessingStepCode.RESULT_FILE_GENERATION,
+            ProcessingStepStatus.COMPLETED,
+            {"artifact_created": artifact is not None},
+        )
 
     return {
         "stage_name": stage_name,
@@ -296,6 +341,12 @@ def _write_csv_artifact(run_id: int, output: dict) -> dict | None:
         run_id,
         base64.b64decode(csv_artifact["content_base64"], validate=True),
     )
+
+
+async def _emit_processing_step(callback, step, status, metadata: dict | None = None) -> None:
+    """Supervisor의 이벤트 루프에서 checklist callback을 안전하게 호출한다."""
+    if callback is not None:
+        await asyncio.to_thread(callback, step.value, status.value, metadata)
 
 
 def rollback_target(failure_code: str | None) -> StageName:

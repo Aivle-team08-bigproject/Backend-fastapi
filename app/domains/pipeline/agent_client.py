@@ -41,6 +41,31 @@ class AgentRuntimeClient(AgentClient):
         self.processing_step_callback = processing_step_callback
         self.agent_log_callback = agent_log_callback
 
+    async def _log(self, level: str, message: str, detail: dict | None = None) -> None:
+        """기술 로그를 화면으로 보낸다. 콜백이 없으면(테스트 등) 조용히 넘어간다.
+
+        에이전트 재시도 루프 안쪽은 각 agent_runtime 모듈이 직접 로깅하고, 여기서는
+        그 바깥 — DB 메타데이터 조회·query layer·executor처럼 LLM이 아닌 실행 단계를
+        기록한다. 실무 실패는 오히려 이쪽에서 자주 난다.
+
+        agent_log_callback은 Worker 이벤트 루프에 코루틴을 예약한 뒤 완료를 기다리는
+        동기 callback이다. 여기서 이벤트 루프가 직접 호출하면 자기 자신이 완료되기를
+        기다리는 deadlock이 생기므로, 반드시 별도 스레드에서 호출한다.
+        """
+        if self.agent_log_callback is None:
+            return
+        await asyncio.to_thread(self.agent_log_callback, level, message, detail)
+
+    async def _processing_step(
+        self, step_code: str, status: str, metadata: dict | None = None
+    ) -> None:
+        """이벤트 루프에서 실행되는 가공 단계를 안전하게 체크리스트에 기록한다."""
+        if self.processing_step_callback is None:
+            return
+        await asyncio.to_thread(
+            self.processing_step_callback, step_code, status, metadata
+        )
+
     async def run(self, agent_name: str, model_name: str, payload: dict) -> dict:
         if agent_name == "requirement-analysis-agent":
             return await self._run_requirement_analysis(payload)
@@ -95,11 +120,18 @@ class AgentRuntimeClient(AgentClient):
                 schema_metadata = await load_dataset_metadata(db, available_data)
                 reference_catalogs = await load_reference_catalogs(db)
         except Exception as exc:
+            await self._log("ERROR", f"DB 메타데이터 조회 실패: {exc}", {"phase": "metadata"})
             return {
                 "_agent_error": f"database metadata lookup failed: {exc}",
                 "_failure_code": "INSUFFICIENT_DATA",
             }
         if not schema_metadata:
+            await self._log(
+                "ERROR",
+                "접근 가능한 컬럼이 없어 선별을 시작할 수 없습니다 — 계정 권한이나 "
+                "요청 데이터 범위를 확인해야 합니다.",
+                {"phase": "metadata", "available_data": available_data},
+            )
             return {
                 "_agent_error": "database metadata lookup returned no accessible columns",
                 "_failure_code": "INSUFFICIENT_DATA",
@@ -125,6 +157,11 @@ class AgentRuntimeClient(AgentClient):
             failure_snapshot = getattr(exc, "failure_snapshot", None)
             if isinstance(failure_snapshot, dict):
                 failure["failure_snapshot"] = failure_snapshot
+            else:
+                # failure_snapshot이 있으면 단계별 재시도 루프가 이미 사유를 로깅했다.
+                # 없는 경우는 세 단계를 다 통과한 뒤 최종 계약 검증에서 터진 것이라
+                # 여기서 남기지 않으면 아무 데도 안 남는다.
+                await self._log("ERROR", f"선별 결과 최종 검증 실패: {exc}", {"phase": "contract"})
             return failure
 
     async def _run_data_processing(self, payload: dict) -> dict:
@@ -144,6 +181,7 @@ class AgentRuntimeClient(AgentClient):
                 "model_id": processing_settings.data_processing_model_id,
             }
         except Exception as exc:
+            await self._log("ERROR", f"가공 계획 수립 실패: {exc}", {"phase": "planning"})
             failure = {
                 "_agent_error": f"processing plan agent failed: {exc}",
                 "_failure_code": "PROCESSING_RULE_INVALID",
@@ -158,21 +196,42 @@ class AgentRuntimeClient(AgentClient):
 
             from agent_runtime.query import DatabaseQueryExecutor, PrivacyThresholdError
 
+            await self._processing_step("SOURCE_DATA_RETRIEVAL", "RUNNING")
+            await self._log("INFO", "승인된 선별 계획으로 원천 데이터를 조회합니다.", {"phase": "query"})
             async with AgentSessionLocal() as db:
+                selected_rows = await DatabaseQueryExecutor(db).execute(
+                    payload.get("selection") or {}
+                )
                 payload = {
                     **payload,
                     "processing_plan": processing_plan,
                     "processing_agent": planning_audit,
-                    "selected_rows": await DatabaseQueryExecutor(db).execute(
-                        payload.get("selection") or {}
-                    ),
+                    "selected_rows": selected_rows,
                 }
+            await self._log(
+                "INFO",
+                f"원천 데이터 조회 완료: {len(selected_rows)}행",
+                {"phase": "query", "row_count": len(selected_rows)},
+            )
+            await self._processing_step(
+                "SOURCE_DATA_RETRIEVAL", "COMPLETED", {"row_count": len(selected_rows)}
+            )
         except PrivacyThresholdError as exc:
+            # 프라이버시 임계 미달은 설정 실수가 아니라 정책상 정상 차단이다 — 실무자가
+            # 조건을 어떻게 바꿔야 하는지 알 수 있게 사유를 그대로 보여준다.
+            await self._log("ERROR", f"프라이버시 기준 미달로 조회가 차단되었습니다: {exc}", {"phase": "query"})
+            await self._processing_step(
+                "SOURCE_DATA_RETRIEVAL", "FAILED", {"validation_errors": [str(exc)]}
+            )
             return {
                 "_agent_error": str(exc),
                 "_failure_code": "PRIVACY_THRESHOLD_NOT_MET",
             }
         except Exception as exc:
+            await self._log("ERROR", f"원천 데이터 조회 실패: {exc}", {"phase": "query"})
+            await self._processing_step(
+                "SOURCE_DATA_RETRIEVAL", "FAILED", {"validation_errors": [str(exc)]}
+            )
             return {
                 "_agent_error": f"query layer failed: {exc}",
                 "_failure_code": "INSUFFICIENT_DATA",
@@ -180,10 +239,23 @@ class AgentRuntimeClient(AgentClient):
 
         from agent_runtime.data_processing.agent import run as run_data_processing
 
+        await self._processing_step("DETERMINISTIC_PROCESSING", "RUNNING")
+        await self._log("INFO", "가공 계획을 실제 데이터에 적용합니다.", {"phase": "execute"})
         result = await asyncio.to_thread(run_data_processing, payload)
         if not result["ok"]:
+            error_message = result["error_message"] or "data processing agent failed"
+            await self._log("ERROR", f"가공 실행 실패: {error_message}", {"phase": "execute"})
+            await self._processing_step(
+                "DETERMINISTIC_PROCESSING", "FAILED", {"validation_errors": [error_message]}
+            )
             return {
-                "_agent_error": result["error_message"] or "data processing agent failed",
+                "_agent_error": error_message,
                 "_failure_code": result.get("failure_code", "PROCESSING_RULE_INVALID"),
             }
+        quality_report = result["data"].get("quality_report") or {}
+        await self._processing_step(
+            "DETERMINISTIC_PROCESSING",
+            "COMPLETED",
+            {"output_row_count": quality_report.get("output_row_count")},
+        )
         return result["data"]
