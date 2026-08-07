@@ -8,7 +8,6 @@ from collections.abc import Sequence
 
 import sqlalchemy as sa
 from alembic import op
-from sqlalchemy.dialects import postgresql
 
 
 revision: str = "3f8e1c2a7b90"
@@ -18,11 +17,6 @@ depends_on: str | Sequence[str] | None = None
 
 
 def upgrade() -> None:
-    op.add_column(
-        "data_requests",
-        sa.Column("structured_requirement", postgresql.JSONB(astext_type=sa.Text()), nullable=False, server_default="{}"),
-        schema="service",
-    )
     op.add_column(
         "data_requests",
         sa.Column("data_sensitivity", sa.String(length=20), nullable=False, server_default="UNKNOWN"),
@@ -38,4 +32,3 @@ def upgrade() -> None:
 def downgrade() -> None:
     op.drop_column("contracts", "delivery_due_at", schema="service")
     op.drop_column("data_requests", "data_sensitivity", schema="service")
-    op.drop_column("data_requests", "structured_requirement", schema="service")

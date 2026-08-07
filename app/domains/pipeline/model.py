@@ -205,7 +205,6 @@ class DataRequest(Base):
     output_formats: Mapped[list] = mapped_column(JSONB, nullable=False, default=list)
     delivery_channels: Mapped[list] = mapped_column(JSONB, nullable=False, default=list)
     usage_period: Mapped[str | None] = mapped_column(String(200))
-    structured_requirement: Mapped[dict] = mapped_column(JSONB, nullable=False, default=dict)
     data_sensitivity: Mapped[str] = mapped_column(String(20), nullable=False, default="UNKNOWN")
     analysis_condition: Mapped[dict] = mapped_column(JSONB, nullable=False, default=dict)
     sample_email: Mapped[str | None] = mapped_column(String(254))
