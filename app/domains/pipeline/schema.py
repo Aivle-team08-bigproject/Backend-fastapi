@@ -25,8 +25,6 @@ class ContractCreateRequest(BaseModel):
             raise ValueError("계약 종료일은 시작일보다 빠를 수 없습니다.")
         if self.delivery_due_at and self.end_date and self.delivery_due_at.date() > self.end_date:
             raise ValueError("최종 납기일은 계약 종료일 이후일 수 없습니다.")
-        if self.delivery_due_at and self.start_date and self.delivery_due_at.date() < self.start_date:
-            raise ValueError("최종 납기일은 계약 시작일보다 빠를 수 없습니다.")
         return self
 
 
