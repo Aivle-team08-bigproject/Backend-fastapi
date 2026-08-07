@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import re
+import time
 from copy import deepcopy
 
 from strands import Agent
@@ -340,6 +341,7 @@ def _run_prompt_step(
     step_code: str,
     step_label: str,
     on_step=None,
+    on_log=None,
 ) -> dict:
     if on_step is not None:
         on_step(step_code, "RUNNING", None)
@@ -356,6 +358,7 @@ def _run_prompt_step(
     for attempt in range(1, MAX_ATTEMPTS + 1):
         attempts_used = attempt
         parsed = False
+        started = time.monotonic()
         try:
             request = {**request_payload, "retry_feedback": retry_feedback}
             raw = build_agent(system_prompt)(json.dumps(request, ensure_ascii=False))
@@ -364,6 +367,20 @@ def _run_prompt_step(
             last_response_excerpt = raw_text[:2000] if raw_text else None
             finish_reason = getattr(raw, "stop_reason", None)
             last_finish_reason = str(finish_reason) if finish_reason else None
+            elapsed_ms = int((time.monotonic() - started) * 1000)
+            if on_log is not None:
+                on_log(
+                    "INFO",
+                    f"{step_label} LLM 응답 수신 ({attempt}/{MAX_ATTEMPTS}회차, "
+                    f"{elapsed_ms}ms, {last_response_length}자)",
+                    {
+                        "step": step_code,
+                        "attempt": attempt,
+                        "elapsed_ms": elapsed_ms,
+                        "response_length": last_response_length,
+                        "finish_reason": last_finish_reason,
+                    },
+                )
             result = _extract_json(raw_text)
             parsed = True
             last_raw_candidate = deepcopy(result)
@@ -382,6 +399,22 @@ def _run_prompt_step(
                     "candidate": deepcopy(last_candidate) if parsed else None,
                 }
             )
+            # 재시도는 실패가 아니지만 왜 다시 도는지는 화면에 보여야 한다 — 안 그러면
+            # 실무자 눈에는 몇 분간 아무 일도 안 일어나는 것처럼 보인다.
+            if on_log is not None:
+                remaining = MAX_ATTEMPTS - attempt
+                on_log(
+                    "WARN" if remaining > 0 else "ERROR",
+                    f"{step_label} 검증 실패 ({attempt}/{MAX_ATTEMPTS}회차): {last_error}"
+                    + (" — 재시도합니다." if remaining > 0 else ""),
+                    {
+                        "step": step_code,
+                        "attempt": attempt,
+                        "validation_error": last_error,
+                        "json_parsed": parsed,
+                        "retry_hint": _contract_retry_hint(last_error),
+                    },
+                )
             retry_feedback = (
                 f"직전 {attempt}회차 {step_label} 검증 실패: {last_error}. "
                 f"{_contract_retry_hint(last_error)}"
@@ -482,7 +515,7 @@ def _contract_retry_hint(error: str) -> str:
     return "오류에 언급된 필드만 반환 계약에 맞게 고치고 승인된 의미는 변경하지 마세요. "
 
 
-def create_processing_plan(payload: dict, on_step=None) -> dict:
+def create_processing_plan(payload: dict, on_step=None, on_log=None) -> dict:
     """실제 행을 제외하고 네 단계 결과를 기존 ProcessingPlan으로 조립한다."""
     common = {
         "raw_requirement": payload.get("raw_requirement", ""),
@@ -511,6 +544,7 @@ def create_processing_plan(payload: dict, on_step=None) -> dict:
             step_code=code,
             step_label=label,
             on_step=on_step,
+            on_log=on_log,
         )
         operations = [ProcessingOperation.model_validate(item) for item in result["operations"]]
         accumulated.extend(operations)
@@ -555,6 +589,7 @@ def create_processing_plan(payload: dict, on_step=None) -> dict:
         step_code="FINAL_COLUMN_VALIDATION",
         step_label="최종 컬럼·품질 검증 정의",
         on_step=on_step,
+        on_log=on_log,
     )
     final_operations = [
         ProcessingOperation.model_validate(item) for item in final_result["operations"]

@@ -1,4 +1,5 @@
 from datetime import datetime
+from typing import Literal
 
 from pydantic import BaseModel, Field, model_validator
 
@@ -18,6 +19,11 @@ class PipelineStatusEvent(BaseModel):
     event_id: int | None = Field(default=None, ge=1)
     run_id: int
     celery_task_id: str = Field(min_length=1, max_length=255)
+    # status  = 단계·진행률이 바뀌는 상태 전이(Timeline을 갱신한다)
+    # agent_log = 에이전트 내부에서 일어난 일에 대한 기술 로그. 상태는 안 바꾸고
+    #             화면 로그 패널에만 한 줄 쌓인다(재시도 사유 등).
+    event_kind: Literal["status", "agent_log"] = "status"
+    log_level: Literal["INFO", "WARN", "ERROR"] | None = None
     run_status: PipelineRunStatus
     current_stage: str | None = None
     stage_status: StageRunStatus | None = None

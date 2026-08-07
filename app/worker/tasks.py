@@ -11,6 +11,7 @@ process_pipeline_run은 run_id를 받아 다음 실행 단계를 발행한다.
 """
 
 import asyncio
+import logging
 from concurrent.futures import ThreadPoolExecutor
 
 from app.db.session import AsyncSessionLocal
@@ -47,7 +48,10 @@ from app.domains.pipeline.supervisor import (
     run_stage,
 )
 from app.worker.celery_app import celery_app
-from app.worker.status_recorder import record_status
+from app.worker.status_recorder import record_agent_log, record_status
+
+
+logger = logging.getLogger(__name__)
 
 
 def _run_async(coro):
@@ -214,12 +218,39 @@ async def _run_stage(stage_id: int, celery_task_id: str) -> dict:
                 )
                 future.result()
 
+        agent_log_loop = asyncio.get_running_loop()
+
+        def agent_log_callback(level: str, message: str, detail: dict | None) -> None:
+            """에이전트 기술 로그를 화면으로 흘려보낸다.
+
+            상태 저장 경로와 달리 여기서 실패해도 단계 실행은 계속돼야 한다 — 관찰용
+            로그 때문에 실제 작업이 죽으면 안 된다.
+            """
+            try:
+                future = asyncio.run_coroutine_threadsafe(
+                    record_agent_log(
+                        db,
+                        run_id=stage.pipeline_run_id,
+                        celery_task_id=celery_task_id,
+                        message=message,
+                        level=level,
+                        current_stage=stage.stage_code,
+                        stage_run_id=stage.id,
+                        detail=detail,
+                    ),
+                    agent_log_loop,
+                )
+                future.result()
+            except Exception:  # noqa: BLE001 - 로깅 실패가 파이프라인을 멈추면 안 된다
+                logger.exception("Failed to record agent log for run_id=%s", stage.pipeline_run_id)
+
         outcome = await run_stage(
             db,
             stage,
             requirement_analysis_step_callback=requirement_analysis_step_callback,
             selection_step_callback=selection_step_callback,
             processing_step_callback=processing_step_callback,
+            agent_log_callback=agent_log_callback,
         )
 
         if not outcome["passed"]:

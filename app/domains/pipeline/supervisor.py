@@ -219,6 +219,7 @@ async def run_stage(
     requirement_analysis_step_callback=None,
     selection_step_callback=None,
     processing_step_callback=None,
+    agent_log_callback=None,
 ) -> dict:
     """단계 에이전트를 실행하고 산출물을 검증한다.
 
@@ -240,6 +241,8 @@ async def run_stage(
         client, "processing_step_callback"
     ):
         client.processing_step_callback = processing_step_callback
+    if agent_log_callback is not None and hasattr(client, "agent_log_callback"):
+        client.agent_log_callback = agent_log_callback
     stage_name = StageName(stage.stage_code)
     payload = await build_stage_payload(db, stage)
 

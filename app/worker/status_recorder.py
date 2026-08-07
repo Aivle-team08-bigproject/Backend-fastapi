@@ -298,6 +298,65 @@ async def persist_status_event(db: AsyncSession, event: PipelineStatusEvent) -> 
     return True
 
 
+async def record_agent_log(
+    db: AsyncSession,
+    *,
+    run_id: int,
+    celery_task_id: str,
+    message: str,
+    level: str = "INFO",
+    current_stage: str | None = None,
+    stage_run_id: int | None = None,
+    detail: dict | None = None,
+) -> PipelineStatusEvent | None:
+    """에이전트 내부 기술 로그를 남긴다 — 상태 전이가 아니라 관찰 기록이다.
+
+    record_status와 달리 PipelineRun/StageRun을 일절 건드리지 않는다. 진행률이나 단계
+    상태는 그대로 두고 pipeline_events에 한 줄 남긴 뒤 화면 로그 패널로 발행만 한다.
+    재시도 사유처럼 "실패는 아니지만 실무자가 알아야 하는 일"이 이 경로로 나간다.
+    """
+    run = await db.get(PipelineRun, run_id)
+    if run is None or run.celery_task_id != celery_task_id:
+        logger.warning("Ignoring agent log for unknown or mismatched run_id=%s", run_id)
+        return None
+
+    now = utcnow()
+    pipeline_event = PipelineEvent(
+        pipeline_run_id=run.id,
+        stage_run_id=stage_run_id,
+        event_type=EventType.AGENT_LOG.value,
+        severity=level,
+        message=message,
+        payload={
+            "stage": current_stage,
+            "log_level": level,
+            "detail": detail,
+        },
+        occurred_at=now,
+    )
+    db.add(pipeline_event)
+    await db.flush()
+
+    event = PipelineStatusEvent(
+        event_id=pipeline_event.id,
+        run_id=run.id,
+        celery_task_id=celery_task_id,
+        event_kind="agent_log",
+        log_level=level,
+        # 로그는 상태를 바꾸지 않으므로 현재 값을 그대로 실어 보낸다.
+        run_status=PipelineRunStatus(run.status),
+        current_stage=current_stage or run.current_stage,
+        stage_run_id=stage_run_id,
+        step_metadata=detail,
+        progress_percent=run.progress_percent,
+        message=message,
+        occurred_at=now,
+    )
+    await db.commit()
+    publish_to_screen(event)
+    return event
+
+
 async def record_status(
     db: AsyncSession,
     *,

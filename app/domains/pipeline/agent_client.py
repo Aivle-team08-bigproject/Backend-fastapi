@@ -17,6 +17,8 @@ from typing import Protocol
 AnalysisStepCallback = Callable[[str, str, dict | None], None]
 SelectionStepCallback = Callable[[str, str, dict | None], None]
 ProcessingStepCallback = Callable[[str, str, dict | None], None]
+# (level, message, detail) — 단계 상태가 아니라 에이전트 내부 관찰 기록을 흘려보낸다.
+AgentLogCallback = Callable[[str, str, dict | None], None]
 
 
 class AgentClient(Protocol):
@@ -32,10 +34,12 @@ class AgentRuntimeClient(AgentClient):
         requirement_analysis_step_callback: AnalysisStepCallback | None = None,
         selection_step_callback: SelectionStepCallback | None = None,
         processing_step_callback: ProcessingStepCallback | None = None,
+        agent_log_callback: AgentLogCallback | None = None,
     ):
         self.requirement_analysis_step_callback = requirement_analysis_step_callback
         self.selection_step_callback = selection_step_callback
         self.processing_step_callback = processing_step_callback
+        self.agent_log_callback = agent_log_callback
 
     async def run(self, agent_name: str, model_name: str, payload: dict) -> dict:
         if agent_name == "requirement-analysis-agent":
@@ -66,6 +70,7 @@ class AgentRuntimeClient(AgentClient):
             run_requirements_analysis_steps,
             payload["raw_requirement"],
             self.requirement_analysis_step_callback,
+            self.agent_log_callback,
         )
         return {
             "usage_purpose": data["usage_purpose"],
@@ -110,6 +115,7 @@ class AgentRuntimeClient(AgentClient):
                 payload.get("hitl_feedback"),
                 reference_catalogs,
                 self.selection_step_callback,
+                self.agent_log_callback,
             )
         except Exception as exc:
             failure = {
@@ -128,7 +134,10 @@ class AgentRuntimeClient(AgentClient):
             from agent_runtime.data_processing.planning_agent import create_processing_plan
 
             processing_plan = await asyncio.to_thread(
-                create_processing_plan, payload, self.processing_step_callback
+                create_processing_plan,
+                payload,
+                self.processing_step_callback,
+                self.agent_log_callback,
             )
             planning_audit = {
                 "provider": processing_settings.data_processing_model_provider,
