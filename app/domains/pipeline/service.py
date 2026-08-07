@@ -174,7 +174,6 @@ async def create_data_request(
         raw_requirement=payload.raw_requirement.strip(),
         output_formats=["CSV", "XLSX"],
         delivery_channels=["FILE_DOWNLOAD"],
-        structured_requirement=payload.structured_requirement,
         data_sensitivity=payload.data_sensitivity,
         analysis_condition={"async_pipeline": True},
         status=DataRequestStatus.QUEUED,

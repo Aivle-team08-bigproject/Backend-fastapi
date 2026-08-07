@@ -42,7 +42,6 @@ class CreateDataRequestRequest(BaseModel):
     requester_name: str = Field(default="프론트엔드 데모 요청자", min_length=1, max_length=80)
     client: ClientCreateRequest | None = None
     contract: ContractCreateRequest | None = None
-    structured_requirement: dict = Field(default_factory=dict)
     data_sensitivity: Literal["NONE", "POSSIBLE", "UNKNOWN"] = "UNKNOWN"
 
 
