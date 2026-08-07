@@ -117,6 +117,17 @@ async def _dispatch(run_id: int) -> dict:
         }
 
 
+async def _record_agent_log_isolated(**kwargs):
+    """관찰 로그를 메인 파이프라인 트랜잭션과 분리해 저장한다."""
+    async with AsyncSessionLocal() as log_db:
+        try:
+            return await record_agent_log(log_db, **kwargs)
+        except Exception:
+            # flush/commit 실패로 세션이 invalid 상태여도 이 로그 전용 세션만 복구한다.
+            await log_db.rollback()
+            raise
+
+
 async def _run_stage(stage_id: int, celery_task_id: str) -> dict:
     async with AsyncSessionLocal() as db:
         stage = await db.get(StageRun, stage_id)
@@ -228,8 +239,7 @@ async def _run_stage(stage_id: int, celery_task_id: str) -> dict:
             """
             try:
                 future = asyncio.run_coroutine_threadsafe(
-                    record_agent_log(
-                        db,
+                    _record_agent_log_isolated(
                         run_id=stage.pipeline_run_id,
                         celery_task_id=celery_task_id,
                         message=message,

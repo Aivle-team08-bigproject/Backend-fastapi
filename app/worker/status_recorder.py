@@ -155,9 +155,18 @@ async def persist_status_event(db: AsyncSession, event: PipelineStatusEvent) -> 
                 flag_modified(stage, "output_payload")
             if event.current_stage == "DATA_PROCESSING":
                 stage_payload = dict(stage.output_payload or {})
-                steps = stage_payload.get("processing_steps")
-                if not isinstance(steps, dict):
-                    steps = initial_processing_steps_snapshot()
+                stored_steps = stage_payload.get("processing_steps")
+                if not isinstance(stored_steps, dict):
+                    stored_steps = {}
+                # 구버전 실행에는 계획 4단계만 저장돼 있을 수 있다. 현행 기본값을 먼저
+                # 채우고 기존 상태를 덮어써서 신규 실행 단계 이벤트도 안전하게 기록한다.
+                steps = dict(stored_steps)
+                for code, default_step in initial_processing_steps_snapshot().items():
+                    stored_step = stored_steps.get(code)
+                    steps[code] = {
+                        **default_step,
+                        **(stored_step if isinstance(stored_step, dict) else {}),
+                    }
                 if event.processing_step is not None:
                     step_payload = dict(steps[event.processing_step.value])
                     step_payload["status"] = event.processing_step_status.value

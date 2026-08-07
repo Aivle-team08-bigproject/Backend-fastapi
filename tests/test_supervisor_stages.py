@@ -1,6 +1,8 @@
 """Supervisor 단계 진행 로직 — DB 없이 단계 선택·payload 조립·검증 경로를 확인한다."""
 
 import asyncio
+import base64
+import hashlib
 from datetime import datetime, timezone
 
 import pytest
@@ -27,6 +29,7 @@ from app.domains.pipeline.plan_integrity import (
     snapshot_selection_plan,
 )
 from app.domains.pipeline.validation import validate_stage_output
+from agent_runtime.data_processing.plan import processing_plan_sha256
 
 
 NOW = datetime.now(timezone.utc)
@@ -438,6 +441,67 @@ def test_processing_agent_error_is_not_replaced_by_missing_output_errors():
         "failure_code": "PROCESSING_RULE_INVALID",
     }
     assert all("missing required key" not in error for error in validation["errors"])
+
+
+def _valid_processing_output() -> dict:
+    plan = {
+        "plan_version": "1.0",
+        "objective": "테스트 CSV 생성",
+        "operations": [
+            {
+                "id": "select-1",
+                "type": "select_columns",
+                "source_columns": ["지역", "결제건수"],
+                "target_column": None,
+                "parameters": {"columns": ["지역", "결제건수"]},
+                "reason": "최종 컬럼 선택",
+            }
+        ],
+        "output": {"columns": ["지역", "결제건수"], "formats": ["api"]},
+        "quality_checks": [],
+        "explanation": "API 요청이어도 저장 정본 CSV를 생성한다.",
+    }
+    content = "지역,결제건수\n서울,5\n".encode("utf-8-sig")
+    return {
+        "processing_plan": plan,
+        "processing_plan_sha256": processing_plan_sha256(plan),
+        "execution_audit": {},
+        "processed_columns": ["지역", "결제건수"],
+        "api_result": {"items": [], "meta": {"row_count": 1}},
+        "csv_columns": ["지역", "결제건수"],
+        "csv_artifact": {
+            "encoding": "utf-8-sig",
+            "content_base64": base64.b64encode(content).decode("ascii"),
+            "sha256": hashlib.sha256(content).hexdigest(),
+            "byte_size": len(content),
+        },
+        "visualization": None,
+        "report": None,
+        "processing_explanation": {"summary": "완료"},
+        "quality_report": {"input_row_count": 1, "output_row_count": 1},
+    }
+
+
+def test_processing_validation_requires_csv_artifact_for_api_only_output():
+    output = _valid_processing_output()
+    assert validate_stage_output(StageName.DATA_PROCESSING, output)["passed"] is True
+
+    output["csv_artifact"] = None
+
+    validation = validate_stage_output(StageName.DATA_PROCESSING, output)
+
+    assert validation["passed"] is False
+    assert "csv_artifact must be a JSON object" in validation["errors"]
+
+
+def test_processing_validation_rejects_tampered_csv_artifact():
+    output = _valid_processing_output()
+    output["csv_artifact"]["sha256"] = "0" * 64
+
+    validation = validate_stage_output(StageName.DATA_PROCESSING, output)
+
+    assert validation["passed"] is False
+    assert "csv_artifact.sha256 does not match decoded content" in validation["errors"]
 
 
 class ApprovingAgentClient:
