@@ -4,6 +4,12 @@ agent_runtime/의 각 에이전트는 자기 산출물이 쓸만한지 스스로
 주석에 명시). 그 판단을 여기서 한다.
 """
 
+import base64
+import binascii
+import csv
+import hashlib
+import io
+
 from app.domains.pipeline.model import FailureCode, StageName
 
 
@@ -163,6 +169,7 @@ def validate_stage_output(stage_name: StageName, output: dict) -> dict:
             "processed_columns",
             "api_result",
             "csv_columns",
+            "csv_artifact",
             "visualization",
             "report",
             "processing_explanation",
@@ -192,6 +199,11 @@ def validate_stage_output(stage_name: StageName, output: dict) -> dict:
                 errors.append(f"processing_plan is invalid: {exc}")
             if errors:
                 failure_code = FailureCode.PROCESSING_RULE_INVALID
+        csv_errors = _validate_csv_artifact(output)
+        if csv_errors:
+            errors.extend(csv_errors)
+            if failure_code is None:
+                failure_code = FailureCode.FORMAT_INVALID
         if errors and failure_code is None:
             raw_code = output.get("_failure_code")
             try:
@@ -216,6 +228,57 @@ def validate_stage_output(stage_name: StageName, output: dict) -> dict:
         passed = False
 
     return {"passed": passed, "errors": errors, "failure_code": failure_code.value if failure_code else None}
+
+
+def _validate_csv_artifact(output: dict) -> list[str]:
+    errors: list[str] = []
+    columns = output.get("csv_columns")
+    processed_columns = output.get("processed_columns")
+    plan_output_columns = (
+        ((output.get("processing_plan") or {}).get("output") or {}).get("columns")
+        if isinstance(output.get("processing_plan"), dict)
+        else None
+    )
+    if not isinstance(columns, list) or not columns or not all(
+        isinstance(column, str) and column for column in columns
+    ):
+        errors.append("csv_columns must be a non-empty string list")
+    elif columns != processed_columns:
+        errors.append("csv_columns must match processed_columns")
+    elif columns != plan_output_columns:
+        errors.append("csv_columns must match processing_plan.output.columns")
+
+    artifact = output.get("csv_artifact")
+    if not isinstance(artifact, dict):
+        return [*errors, "csv_artifact must be a JSON object"]
+    if artifact.get("encoding") != "utf-8-sig":
+        errors.append("csv_artifact.encoding must be utf-8-sig")
+
+    encoded = artifact.get("content_base64")
+    if not isinstance(encoded, str) or not encoded:
+        return [*errors, "csv_artifact.content_base64 must be a non-empty string"]
+    try:
+        content = base64.b64decode(encoded, validate=True)
+    except (binascii.Error, ValueError, TypeError):
+        return [*errors, "csv_artifact.content_base64 must be valid base64"]
+    if not content:
+        errors.append("csv_artifact content must not be empty")
+    if artifact.get("byte_size") != len(content):
+        errors.append("csv_artifact.byte_size does not match decoded content")
+    if artifact.get("sha256") != hashlib.sha256(content).hexdigest():
+        errors.append("csv_artifact.sha256 does not match decoded content")
+
+    if isinstance(columns, list) and columns:
+        try:
+            header = next(
+                csv.reader(io.StringIO(content.decode("utf-8-sig")), strict=True), []
+            )
+        except (UnicodeDecodeError, csv.Error):
+            errors.append("csv_artifact content must be valid UTF-8 CSV")
+        else:
+            if header != columns:
+                errors.append("csv_artifact header must match csv_columns")
+    return errors
 
 
 def _missing(keys: list[str], data: dict) -> list[str]:

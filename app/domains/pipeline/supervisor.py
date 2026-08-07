@@ -294,6 +294,13 @@ async def run_stage(
         )
         try:
             artifact = _write_csv_artifact(stage.pipeline_run_id, output)
+            if artifact is None:
+                raise ValueError("validated CSV artifact was not created")
+            csv_artifact = output["csv_artifact"]
+            if artifact.get("size_bytes") != csv_artifact.get("byte_size"):
+                raise ValueError("stored CSV size does not match validated artifact")
+            if artifact.get("checksum") != csv_artifact.get("sha256"):
+                raise ValueError("stored CSV checksum does not match validated artifact")
         except Exception as exc:
             await _emit_processing_step(
                 processing_step_callback,
