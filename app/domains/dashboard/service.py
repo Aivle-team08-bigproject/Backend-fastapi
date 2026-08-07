@@ -85,9 +85,9 @@ DETAIL_ROUTE_BY_STAGE_GROUP = {
     "COMPLETED": "/tasks/complete",
 }
 PRIORITY_LABEL_BY_CODE = {
-    "REQUIREMENT": "요구사항 승인·반려",
-    "SAMPLE": "샘플 데이터 승인·반려",
-    "FINAL": "최종 산출물 승인·반려",
+    "REQUIREMENT": "요구사항 검토 필요",
+    "SAMPLE": "샘플 데이터 검토 필요",
+    "FINAL": "최종 산출물 검토 필요",
 }
 WAITING_PRIORITY_BY_STATUS = {
     "WAITING_REQUIREMENT_REVIEW": "REQUIREMENT",
@@ -272,18 +272,25 @@ def _projection_query():
         (decision_status.in_(("pending", "changes_requested")), literal(True)),
         else_=literal(False),
     )
-    due_at = cast(
-        DataRequest.analysis_condition["due_at"].as_string(),
-        SqlDateTime(timezone=True),
-    )
     active_contract = (
         select(
             Contract.data_request_id.label("data_request_id"),
             Contract.start_date.label("start_date"),
             Contract.end_date.label("end_date"),
+            Contract.delivery_due_at.label("delivery_due_at"),
         )
         .where(Contract.status == "ACTIVE")
         .subquery("active_contract")
+    )
+    # 계약(Contract.delivery_due_at, 실컬럼)이 정본이다. analysis_condition의 due_at은
+    # 계약 체결 전 임시로 넣어두는 값이라 계약이 생기면 그쪽이 우선한다 — 정본이 둘로
+    # 갈리는 걸 막으려고 폴백으로만 남겨뒀다.
+    due_at = func.coalesce(
+        active_contract.c.delivery_due_at,
+        cast(
+            DataRequest.analysis_condition["due_at"].as_string(),
+            SqlDateTime(timezone=True),
+        ),
     )
 
     return (
@@ -413,7 +420,11 @@ def _legacy_task_row(task: _ProjectedTask) -> TaskRowResponse:
 
 
 def _is_completed(task: _ProjectedTask) -> bool:
-    return task.status_group_code == "completed" or task.status_code == "COMPLETED"
+    # status_code는 stage_status(현재 단계 자체의 실행 결과)까지 합쳐놓은 값이라
+    # WAITING_*_REVIEW로 멈춘 작업도 "해당 단계는 COMPLETED"라서 status_code == "COMPLETED"가
+    # 참이 된다. 전체 작업이 끝났는지는 waiting_review를 이미 우선 처리한 status_group_code로만
+    # 판단해야 한다 — 아니면 검토 대기 중인 작업이 전부 "완료"로 잘못 걸러진다.
+    return task.status_group_code == "completed"
 
 
 async def _load_projected_tasks(
