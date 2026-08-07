@@ -144,6 +144,48 @@ def test_column_design_contract_rejects_unselected_derived_source():
         _validate_contract(selection, SCHEMA_METADATA)
 
 
+def test_source_contract_rejects_privacy_unsafe_query_before_approval():
+    metadata = [
+        {
+            "dataset": "member_pseudonymized",
+            "schema": "anonymized",
+            "table": "customers",
+            "comment": "익명 고객",
+            "columns": [
+                {"name": "gender", "data_type": "character varying", "comment": "성별"},
+                {"name": "age_band", "data_type": "character varying", "comment": "연령대"},
+            ],
+        },
+        {
+            "dataset": "transaction_pseudonymized",
+            "schema": "anonymized",
+            "table": "transactions",
+            "comment": "익명 거래",
+            "columns": [
+                {"name": "merchant_id", "data_type": "character varying", "comment": "가맹점 식별자"},
+            ],
+        },
+    ]
+    source_result = {
+        "selected_tables": [
+            {"table": "member_pseudonymized", "reason": "고객 특성 분석"},
+            {"table": "transaction_pseudonymized", "reason": "거래 분석"},
+        ],
+        "source_columns": [
+            {"dataset": "member_pseudonymized", "column": "gender", "data_type": "character varying", "comment": "성별", "reason": "성별 분석"},
+            {"dataset": "member_pseudonymized", "column": "age_band", "data_type": "character varying", "comment": "연령대", "reason": "연령 분석"},
+            {"dataset": "transaction_pseudonymized", "column": "merchant_id", "data_type": "character varying", "comment": "가맹점 식별자", "reason": "가맹점 분석"},
+        ],
+        "selection_query": {"columns": ["gender", "age_band", "merchant_id"], "filters": {}},
+        "interpretations": [],
+        "catalog_issues": [],
+        "catalog_matches": [],
+    }
+
+    with pytest.raises(ValueError, match="인적 속성 여러 개와 개별 식별자"):
+        selection_agent._validate_source_contract(source_result, metadata, [])
+
+
 def test_column_design_contract_rejects_empty_derived_columns():
     selection = _selection()
     selection["derived_columns"] = []

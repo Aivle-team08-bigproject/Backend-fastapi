@@ -13,6 +13,10 @@ def test_processing_step_order_and_initial_snapshot():
         "MISSING_VALUE_PLAN",
         "DERIVED_COLUMN_ORDER",
         "FINAL_COLUMN_VALIDATION",
+        "SOURCE_DATA_RETRIEVAL",
+        "DETERMINISTIC_PROCESSING",
+        "OUTPUT_VALIDATION",
+        "RESULT_FILE_GENERATION",
     ]
     snapshot = initial_processing_steps_snapshot()
     assert list(snapshot) == [code.value for code in PROCESSING_STEP_ORDER]
@@ -27,7 +31,7 @@ def test_processing_progress_is_monotonic_inside_processing_range():
     ]
     assert values == sorted(values)
     assert values[0] == 67
-    assert values[-1] == 94
+    assert values[-1] == 100
 
 
 def test_processing_messages_are_fixed_safe_contracts():
