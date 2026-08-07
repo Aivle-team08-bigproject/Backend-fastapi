@@ -9,6 +9,8 @@ from app.common.time_utils import utcnow
 from app.domains.pipeline.model import (
     Artifact,
     Client,
+    Contract,
+    ContractStatus,
     DataRequest,
     DataRequestStatus,
     EventType,
@@ -47,6 +49,10 @@ from app.worker.tasks import process_pipeline_run
 
 def _make_request_no() -> str:
     return f"REQ-{utcnow():%Y%m%d}-{uuid4().hex[:6].upper()}"
+
+
+def _make_contract_no() -> str:
+    return f"CTR-{utcnow():%Y%m%d}-{uuid4().hex[:6].upper()}"
 
 
 HARDCODED_STAGES = (
@@ -134,11 +140,27 @@ async def create_data_request(
     db: AsyncSession, payload: CreateDataRequestRequest, owner: Employee
 ) -> CreateDataRequestResponse:
     now = utcnow()
-    client = await db.scalar(select(Client).where(Client.company_name == payload.requester_name))
+    client_payload = payload.client
+    company_name = client_payload.company_name if client_payload is not None else payload.requester_name
+    client = await db.scalar(select(Client).where(Client.company_name == company_name))
     if client is None:
-        client = Client(company_name=payload.requester_name, created_at=now, updated_at=now)
+        client = Client(
+            company_name=company_name,
+            business_registration_number=client_payload.business_registration_number if client_payload else None,
+            contact_name=client_payload.contact_name if client_payload else None,
+            contact_email=client_payload.contact_email if client_payload else None,
+            contact_phone=client_payload.contact_phone if client_payload else None,
+            created_at=now,
+            updated_at=now,
+        )
         db.add(client)
         await db.flush()
+    elif client_payload is not None:
+        client.business_registration_number = client_payload.business_registration_number
+        client.contact_name = client_payload.contact_name
+        client.contact_email = client_payload.contact_email
+        client.contact_phone = client_payload.contact_phone
+        client.updated_at = now
 
     title = payload.title or payload.raw_requirement.strip().splitlines()[0][:200]
     celery_task_id = str(uuid4())
@@ -147,25 +169,34 @@ async def create_data_request(
         client_id=client.id,
         owner_id=owner.id,
         owner_name=owner.name,
-        requester_name=payload.requester_name,
+        requester_name=company_name,
         title=title,
         raw_requirement=payload.raw_requirement.strip(),
         output_formats=["CSV", "XLSX"],
         delivery_channels=["FILE_DOWNLOAD"],
-        analysis_condition={
-            "async_pipeline": True,
-            **(
-                {"due_at": payload.contract.delivery_due_at.isoformat()}
-                if payload.contract and payload.contract.delivery_due_at
-                else {}
-            ),
-        },
+        structured_requirement=payload.structured_requirement,
+        source_data_status=payload.source_data_status,
+        data_sensitivity=payload.data_sensitivity,
+        analysis_condition={"async_pipeline": True},
         status=DataRequestStatus.QUEUED,
         created_at=now,
         updated_at=now,
     )
     db.add(data_request)
     await db.flush()
+
+    if payload.contract is not None:
+        contract = Contract(
+            data_request_id=data_request.id,
+            contract_no=payload.contract.contract_no or _make_contract_no(),
+            start_date=payload.contract.start_date,
+            end_date=payload.contract.end_date,
+            delivery_due_at=payload.contract.delivery_due_at,
+            status=ContractStatus.DRAFT.value,
+            created_at=now,
+            updated_at=now,
+        )
+        db.add(contract)
 
     run = PipelineRun(
         data_request_id=data_request.id,
@@ -232,6 +263,7 @@ async def create_data_request(
 
     return CreateDataRequestResponse(
         request_no=data_request.request_no,
+        contract_no=contract.contract_no if payload.contract is not None else None,
         run_id=run.id,
         request_status=DataRequestStatus.QUEUED,
         run_status=PipelineRunStatus.QUEUED,

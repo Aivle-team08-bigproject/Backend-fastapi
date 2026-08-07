@@ -1,6 +1,7 @@
-from datetime import datetime
+from datetime import date, datetime
+from typing import Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 from app.domains.pipeline.model import (
     DataRequestStatus,
@@ -12,27 +13,43 @@ from app.domains.pipeline.model import (
 )
 
 
-class CreateDataRequestContract(BaseModel):
-    """캘린더 마감일 큐가 읽는 값. 계약 본 레코드(Contract 테이블)와는 별개 — analysis_condition에만 적재된다.
-
-    datetime으로 받아 Pydantic이 API 경계에서 형식을 검증한다 — 원래 str이었을 때는
-    형식 검증이 전혀 없어서 깨진 값이 그대로 DB에 저장됐고, 대시보드가 그 값을
-    SQL에서 timestamptz로 CAST할 때 그제서야 500으로 터졌다(그것도 owner 필터가
-    없는 관리자 조회에서는 그 값을 만든 사람이 아닌 다른 사람의 화면이 죽었다).
-    """
-
+class ContractCreateRequest(BaseModel):
+    contract_no: str | None = Field(default=None, max_length=60)
+    start_date: date | None = None
+    end_date: date | None = None
     delivery_due_at: datetime | None = None
+
+    @model_validator(mode="after")
+    def validate_dates(self) -> "ContractCreateRequest":
+        if self.start_date and self.end_date and self.end_date < self.start_date:
+            raise ValueError("계약 종료일은 시작일보다 빠를 수 없습니다.")
+        if self.delivery_due_at and self.end_date and self.delivery_due_at.date() > self.end_date:
+            raise ValueError("최종 납기일은 계약 종료일 이후일 수 없습니다.")
+        return self
+
+
+class ClientCreateRequest(BaseModel):
+    company_name: str = Field(min_length=1, max_length=200)
+    business_registration_number: str | None = Field(default=None, max_length=30)
+    contact_name: str | None = Field(default=None, max_length=80)
+    contact_email: str | None = Field(default=None, max_length=254)
+    contact_phone: str | None = Field(default=None, max_length=40)
 
 
 class CreateDataRequestRequest(BaseModel):
     raw_requirement: str = Field(min_length=1, max_length=8000)
     title: str | None = Field(default=None, max_length=200)
     requester_name: str = Field(default="프론트엔드 데모 요청자", min_length=1, max_length=80)
-    contract: CreateDataRequestContract | None = None
+    client: ClientCreateRequest | None = None
+    contract: ContractCreateRequest | None = None
+    structured_requirement: dict = Field(default_factory=dict)
+    source_data_status: Literal["READY", "PREPARING", "UNKNOWN"] = "UNKNOWN"
+    data_sensitivity: Literal["NONE", "POSSIBLE", "UNKNOWN"] = "UNKNOWN"
 
 
 class CreateDataRequestResponse(BaseModel):
     request_no: str
+    contract_no: str | None = None
     run_id: int
     request_status: DataRequestStatus
     run_status: PipelineRunStatus
