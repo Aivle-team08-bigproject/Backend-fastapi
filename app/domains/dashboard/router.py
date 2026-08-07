@@ -1,7 +1,7 @@
 from datetime import date
 from typing import Literal
 
-from fastapi import APIRouter, Depends, Query
+from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.common.security_deps import CurrentAuth, get_current_auth, require_permission
@@ -14,7 +14,6 @@ from app.domains.dashboard.schema import (
     DeveloperDashboardResponse,
     DeveloperDashboardPeriod,
     MemberManagementResponse,
-    MyTaskStatusResponse,
     PriorityCode,
     StageGroupCode,
     StatusGroupCode,
@@ -28,7 +27,6 @@ from app.domains.dashboard.service import (
     get_admin_dashboard,
     get_developer_dashboard,
     get_member_management,
-    get_my_task_status,
     get_practitioner_dashboard,
     get_task_lookup,
     get_task_view,
@@ -71,11 +69,14 @@ async def dashboard_tasks(
     db: AsyncSession = Depends(get_db),
 ) -> DashboardTaskListResponse:
     if page_size not in (30, 50, 100):
-        from fastapi import HTTPException
-
         raise HTTPException(
             status_code=422,
             detail="page_size must be one of 30, 50, or 100",
+        )
+    if priority is not None and status is not None and status != "waiting_review":
+        raise HTTPException(
+            status_code=422,
+            detail="priority filter is only meaningful with status=waiting_review (a task has a pending priority action only while awaiting review); combining it with another status always returns zero results",
         )
     query = DashboardTaskQuery(
         scope=scope,
@@ -92,12 +93,14 @@ async def dashboard_tasks(
     return await get_dashboard_tasks(db, query, auth.employee, auth.permissions)
 
 
-@router.get("/dashboard/my-tasks", response_model=MyTaskStatusResponse)
-async def my_task_status(
-    auth: CurrentAuth = Depends(get_current_auth),
-    db: AsyncSession = Depends(get_db),
-) -> MyTaskStatusResponse:
-    return await get_my_task_status(db, auth.employee)
+# Deprecated: 내 작업 현황 화면은 개인 대시보드(`/dashboard`)로 통합되어 비활성화했다.
+# 기존 schema/service 구현은 복구 가능하도록 보존한다.
+# @router.get("/dashboard/my-tasks", response_model=MyTaskStatusResponse)
+# async def my_task_status(
+#     auth: CurrentAuth = Depends(get_current_auth),
+#     db: AsyncSession = Depends(get_db),
+# ) -> MyTaskStatusResponse:
+#     return await get_my_task_status(db, auth.employee)
 
 
 @router.get("/dashboard/task-lookup", response_model=TaskLookupResponse)

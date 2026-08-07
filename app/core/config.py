@@ -73,7 +73,7 @@ class Settings(BaseSettings):
     # 회사 직원만 가입할 수 있도록 이메일 도메인을 제한한다. 콤마로 여러 도메인을 나열할 수 있고,
     # JSON 형식이 아니므로 .env에 배열 문법 없이 바로 적으면 된다. 값을 바꾼 뒤에는 재배포(재시작)만
     # 하면 되고 코드 수정은 필요 없다.
-    allowed_email_domains: str = "company.com"
+    allowed_email_domains: str = "company.com,hanafn.com"
 
     def allowed_email_domain_list(self) -> list[str]:
         return [

@@ -1,6 +1,7 @@
-from datetime import datetime
+from datetime import date, datetime
+from typing import Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 from app.domains.pipeline.model import (
     DataRequestStatus,
@@ -12,14 +13,41 @@ from app.domains.pipeline.model import (
 )
 
 
+class ContractCreateRequest(BaseModel):
+    contract_no: str | None = Field(default=None, max_length=60)
+    start_date: date | None = None
+    end_date: date | None = None
+    delivery_due_at: datetime | None = None
+
+    @model_validator(mode="after")
+    def validate_dates(self) -> "ContractCreateRequest":
+        if self.start_date and self.end_date and self.end_date < self.start_date:
+            raise ValueError("계약 종료일은 시작일보다 빠를 수 없습니다.")
+        if self.delivery_due_at and self.end_date and self.delivery_due_at.date() > self.end_date:
+            raise ValueError("최종 납기일은 계약 종료일 이후일 수 없습니다.")
+        return self
+
+
+class ClientCreateRequest(BaseModel):
+    company_name: str = Field(min_length=1, max_length=200)
+    business_registration_number: str | None = Field(default=None, max_length=30)
+    contact_name: str | None = Field(default=None, max_length=80)
+    contact_email: str | None = Field(default=None, max_length=254)
+    contact_phone: str | None = Field(default=None, max_length=40)
+
+
 class CreateDataRequestRequest(BaseModel):
     raw_requirement: str = Field(min_length=1, max_length=8000)
     title: str | None = Field(default=None, max_length=200)
     requester_name: str = Field(default="프론트엔드 데모 요청자", min_length=1, max_length=80)
+    client: ClientCreateRequest | None = None
+    contract: ContractCreateRequest | None = None
+    data_sensitivity: Literal["NONE", "POSSIBLE", "UNKNOWN"] = "UNKNOWN"
 
 
 class CreateDataRequestResponse(BaseModel):
     request_no: str
+    contract_no: str | None = None
     run_id: int
     request_status: DataRequestStatus
     run_status: PipelineRunStatus
