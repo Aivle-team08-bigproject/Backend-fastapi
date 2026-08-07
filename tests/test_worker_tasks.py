@@ -41,3 +41,15 @@ def test_agent_log_failure_rolls_back_only_isolated_session(monkeypatch):
 
     assert log_db.rolled_back is True
     assert log_db.closed is True
+
+
+def test_persistable_stage_output_excludes_csv_base64():
+    original = {
+        "processed_columns": ["region"],
+        "csv_artifact": {"content_base64": "c2VjcmV0"},
+    }
+
+    persisted = tasks._persistable_stage_output(original)
+
+    assert "csv_artifact" not in persisted
+    assert original["csv_artifact"]["content_base64"] == "c2VjcmV0"
