@@ -272,18 +272,25 @@ def _projection_query():
         (decision_status.in_(("pending", "changes_requested")), literal(True)),
         else_=literal(False),
     )
-    due_at = cast(
-        DataRequest.analysis_condition["due_at"].as_string(),
-        SqlDateTime(timezone=True),
-    )
     active_contract = (
         select(
             Contract.data_request_id.label("data_request_id"),
             Contract.start_date.label("start_date"),
             Contract.end_date.label("end_date"),
+            Contract.delivery_due_at.label("delivery_due_at"),
         )
         .where(Contract.status == "ACTIVE")
         .subquery("active_contract")
+    )
+    # 계약(Contract.delivery_due_at, 실컬럼)이 정본이다. analysis_condition의 due_at은
+    # 계약 체결 전 임시로 넣어두는 값이라 계약이 생기면 그쪽이 우선한다 — 정본이 둘로
+    # 갈리는 걸 막으려고 폴백으로만 남겨뒀다.
+    due_at = func.coalesce(
+        active_contract.c.delivery_due_at,
+        cast(
+            DataRequest.analysis_condition["due_at"].as_string(),
+            SqlDateTime(timezone=True),
+        ),
     )
 
     return (
