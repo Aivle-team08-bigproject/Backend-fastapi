@@ -5,7 +5,8 @@ from decimal import Decimal
 from urllib.parse import quote
 from zoneinfo import ZoneInfo
 
-from sqlalchemy import case, func, literal, or_, select
+from sqlalchemy import case, cast, func, literal, or_, select
+from sqlalchemy.types import DateTime as SqlDateTime
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.common.errors import forbidden, not_found
@@ -281,14 +282,16 @@ def _projection_query():
         .where(Contract.status == "ACTIVE")
         .subquery("active_contract")
     )
-    # 마감일 정본은 contracts.delivery_due_at 하나다.
-    #
-    # 예전에는 analysis_condition->>'due_at' 을 폴백으로 두고 coalesce 했는데,
-    # 그 값을 쓰는 코드가 없어져 항상 NULL 이면서 CAST 만 남아 있었다. JSONB 는
-    # 타입을 강제하지 않으므로 누군가 다른 경로로 파싱 불가한 문자열을 넣으면
-    # 행 하나가 빠지는 게 아니라 이 쿼리 전체가 실패한다(실제로 대시보드가
-    # 통째로 500 이 난 적이 있다). 쓰기 경로가 없는 읽기는 위험만 남기므로 제거했다.
-    due_at = active_contract.c.delivery_due_at
+    # 계약(Contract.delivery_due_at, 실컬럼)이 정본이다. analysis_condition의 due_at은
+    # 계약 체결 전 임시로 넣어두는 값이라 계약이 생기면 그쪽이 우선한다 — 정본이 둘로
+    # 갈리는 걸 막으려고 폴백으로만 남겨뒀다.
+    due_at = func.coalesce(
+        active_contract.c.delivery_due_at,
+        cast(
+            DataRequest.analysis_condition["due_at"].as_string(),
+            SqlDateTime(timezone=True),
+        ),
+    )
 
     return (
         select(
@@ -505,12 +508,22 @@ def _popular_products(tasks: list[_ProjectedTask]) -> list[PopularProductRespons
     ]
 
 
+def _due_at_from_metadata(metadata: dict) -> datetime | None:
+    due_at = metadata.get("due_at")
+    if not isinstance(due_at, str):
+        return None
+    try:
+        return as_utc(datetime.fromisoformat(due_at.replace("Z", "+00:00")))
+    except ValueError:
+        return None
+
+
 def _deadline_tasks(tasks: list[_ProjectedTask]) -> list[DashboardDeadlineTaskResponse]:
     due_tasks = [
         (task, due_at)
         for task in tasks
         if not _is_completed(task)
-        if (due_at := task.due_at) is not None
+        if (due_at := _due_at_from_metadata(task.analysis_condition)) is not None
     ]
     due_tasks.sort(key=lambda item: item[1])
     return [

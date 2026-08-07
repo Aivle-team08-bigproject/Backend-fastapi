@@ -147,11 +147,7 @@ class AgentRuntimeClient(AgentClient):
         try:
             from app.db.hanacard_agent_session import AsyncSessionLocal as AgentSessionLocal
 
-            from agent_runtime.query import (
-                DatabaseQueryExecutor,
-                EmptyResultError,
-                PrivacyThresholdError,
-            )
+            from agent_runtime.query import DatabaseQueryExecutor, PrivacyThresholdError
 
             async with AgentSessionLocal() as db:
                 payload = {
@@ -162,11 +158,6 @@ class AgentRuntimeClient(AgentClient):
                         payload.get("selection") or {}
                     ),
                 }
-        except EmptyResultError as exc:
-            return {
-                "_agent_error": str(exc),
-                "_failure_code": "EMPTY_RESULT_SET",
-            }
         except PrivacyThresholdError as exc:
             return {
                 "_agent_error": str(exc),

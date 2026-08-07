@@ -314,7 +314,6 @@ def rollback_target(failure_code: str | None) -> StageName:
         FailureCode.FORMAT_INVALID: StageName.DATA_PROCESSING,
         FailureCode.PROCESSING_RULE_INVALID: StageName.DATA_PROCESSING,
         FailureCode.PRIVACY_THRESHOLD_NOT_MET: StageName.DATA_SELECTION,
-        FailureCode.EMPTY_RESULT_SET: StageName.DATA_SELECTION,
     }
     if not failure_code:
         return StageName.REQUIREMENT_ANALYSIS
