@@ -25,11 +25,6 @@ def upgrade() -> None:
     )
     op.add_column(
         "data_requests",
-        sa.Column("source_data_status", sa.String(length=20), nullable=False, server_default="UNKNOWN"),
-        schema="service",
-    )
-    op.add_column(
-        "data_requests",
         sa.Column("data_sensitivity", sa.String(length=20), nullable=False, server_default="UNKNOWN"),
         schema="service",
     )
@@ -43,5 +38,4 @@ def upgrade() -> None:
 def downgrade() -> None:
     op.drop_column("contracts", "delivery_due_at", schema="service")
     op.drop_column("data_requests", "data_sensitivity", schema="service")
-    op.drop_column("data_requests", "source_data_status", schema="service")
     op.drop_column("data_requests", "structured_requirement", schema="service")

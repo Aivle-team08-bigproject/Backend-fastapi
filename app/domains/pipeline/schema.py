@@ -43,7 +43,6 @@ class CreateDataRequestRequest(BaseModel):
     client: ClientCreateRequest | None = None
     contract: ContractCreateRequest | None = None
     structured_requirement: dict = Field(default_factory=dict)
-    source_data_status: Literal["READY", "PREPARING", "UNKNOWN"] = "UNKNOWN"
     data_sensitivity: Literal["NONE", "POSSIBLE", "UNKNOWN"] = "UNKNOWN"
 
 
