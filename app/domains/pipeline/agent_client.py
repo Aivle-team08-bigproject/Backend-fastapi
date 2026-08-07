@@ -241,7 +241,18 @@ class AgentRuntimeClient(AgentClient):
 
         await self._processing_step("DETERMINISTIC_PROCESSING", "RUNNING")
         await self._log("INFO", "가공 계획을 실제 데이터에 적용합니다.", {"phase": "execute"})
-        result = await asyncio.to_thread(run_data_processing, payload)
+        try:
+            result = await asyncio.to_thread(run_data_processing, payload)
+        except Exception as exc:  # noqa: BLE001 - 실행기 예외도 checklist에 실패로 남긴다
+            error_message = f"data processing executor failed: {exc}"
+            await self._log("ERROR", f"가공 실행 실패: {error_message}", {"phase": "execute"})
+            await self._processing_step(
+                "DETERMINISTIC_PROCESSING", "FAILED", {"validation_errors": [error_message]}
+            )
+            return {
+                "_agent_error": error_message,
+                "_failure_code": "PROCESSING_RULE_INVALID",
+            }
         if not result["ok"]:
             error_message = result["error_message"] or "data processing agent failed"
             await self._log("ERROR", f"가공 실행 실패: {error_message}", {"phase": "execute"})

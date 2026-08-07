@@ -128,6 +128,13 @@ async def _record_agent_log_isolated(**kwargs):
             raise
 
 
+def _persistable_stage_output(output: dict | None) -> dict:
+    """파일 저장소가 정본인 CSV 본문은 StageRun JSONB에 중복 보관하지 않는다."""
+    result = dict(output or {})
+    result.pop("csv_artifact", None)
+    return result
+
+
 async def _run_stage(stage_id: int, celery_task_id: str) -> dict:
     async with AsyncSessionLocal() as db:
         stage = await db.get(StageRun, stage_id)
@@ -274,14 +281,14 @@ async def _run_stage(stage_id: int, celery_task_id: str) -> dict:
                 stage_status=StageRunStatus.FAILED,
                 progress_percent=0,
                 message=f"{stage_name.value} 산출물 검증에 실패했습니다.",
-                result=outcome["output"],
+                result=_persistable_stage_output(outcome["output"]),
                 error_message=outcome["error_message"],
                 validation_result=outcome["validation"],
                 rollback_to_stage=rollback_target(failure_code).value,
             )
             return {"run_id": run_id, "stage_id": stage_id, "passed": False}
 
-        result = dict(outcome["output"] or {})
+        result = _persistable_stage_output(outcome["output"])
         if outcome["artifact"]:
             result["artifact"] = outcome["artifact"]
 
