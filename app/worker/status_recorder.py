@@ -13,6 +13,7 @@ import logging
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm.attributes import flag_modified
 
 from app.common.time_utils import utcnow
 from app.domains.pipeline.model import (
@@ -120,6 +121,7 @@ async def persist_status_event(db: AsyncSession, event: PipelineStatusEvent) -> 
                     steps[event.analysis_step.value] = step_payload
                 stage_payload["analysis_steps"] = steps
                 stage.output_payload = stage_payload
+                flag_modified(stage, "output_payload")
             if event.current_stage == "DATA_SELECTION":
                 stage_payload = dict(stage.output_payload or {})
                 steps = stage_payload.get("selection_steps")
@@ -150,6 +152,7 @@ async def persist_status_event(db: AsyncSession, event: PipelineStatusEvent) -> 
                     steps[event.selection_step.value] = step_payload
                 stage_payload["selection_steps"] = steps
                 stage.output_payload = stage_payload
+                flag_modified(stage, "output_payload")
             if event.current_stage == "DATA_PROCESSING":
                 stage_payload = dict(stage.output_payload or {})
                 steps = stage_payload.get("processing_steps")
@@ -180,6 +183,7 @@ async def persist_status_event(db: AsyncSession, event: PipelineStatusEvent) -> 
                     steps[event.processing_step.value] = step_payload
                 stage_payload["processing_steps"] = steps
                 stage.output_payload = stage_payload
+                flag_modified(stage, "output_payload")
             if event.validation_result is not None:
                 stage.validation_result = event.validation_result
             if event.stage_status == StageRunStatus.RUNNING:
@@ -199,6 +203,7 @@ async def persist_status_event(db: AsyncSession, event: PipelineStatusEvent) -> 
                         "processing_steps", initial_processing_steps_snapshot()
                     )
                 stage.output_payload = result
+                flag_modified(stage, "output_payload")
                 stage.completed_at = now
             elif event.stage_status == StageRunStatus.FAILED:
                 result = dict(event.result or {})
@@ -215,6 +220,7 @@ async def persist_status_event(db: AsyncSession, event: PipelineStatusEvent) -> 
                         "processing_steps", initial_processing_steps_snapshot()
                     )
                 stage.output_payload = result
+                flag_modified(stage, "output_payload")
                 stage.error_message = event.error_message
                 stage.completed_at = now
 
