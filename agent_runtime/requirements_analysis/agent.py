@@ -28,6 +28,7 @@ metadata)` 콜백 하나로 진행 상태를 알리고, 실제 DB 기록·Redis 
 
 import json
 import re
+import time
 
 from strands import Agent, tool
 from strands.models.openai import OpenAIModel
@@ -198,19 +199,49 @@ def _run_prompt_step(
     step_label: str,
     step_code: str,
     on_step=None,
+    on_log=None,
 ) -> dict:
     if on_step is not None:
         on_step(step_code, "RUNNING", None)
     last_error: str | None = None
     message = user_message
     for attempt in range(1, MAX_ATTEMPTS + 1):
+        started = time.monotonic()
         try:
             agent = _build_agent(system_prompt)
             raw = agent(message)
-            parsed = _extract_json(str(raw))
+            raw_text = str(raw)
+            elapsed_ms = int((time.monotonic() - started) * 1000)
+            if on_log is not None:
+                on_log(
+                    "INFO",
+                    f"{step_label} LLM 응답 수신 ({attempt}/{MAX_ATTEMPTS}회차, "
+                    f"{elapsed_ms}ms, {len(raw_text)}자)",
+                    {
+                        "step": step_code,
+                        "attempt": attempt,
+                        "elapsed_ms": elapsed_ms,
+                        "response_length": len(raw_text),
+                    },
+                )
+            parsed = _extract_json(raw_text)
             validate(parsed)
         except Exception as exc:  # noqa: BLE001 - 검증 실패를 다음 시도의 피드백으로 흡수
             last_error = str(exc)
+            # 재시도는 실패가 아니지만 왜 다시 도는지는 화면에 보여야 한다 — 안 그러면
+            # 실무자 눈에는 몇 분간 아무 일도 안 일어나는 것처럼 보인다.
+            if on_log is not None:
+                remaining = MAX_ATTEMPTS - attempt
+                on_log(
+                    "WARN" if remaining > 0 else "ERROR",
+                    f"{step_label} 검증 실패 ({attempt}/{MAX_ATTEMPTS}회차): {last_error}"
+                    + (" — 재시도합니다." if remaining > 0 else ""),
+                    {
+                        "step": step_code,
+                        "attempt": attempt,
+                        "validation_error": last_error,
+                    },
+                )
             message = (
                 f"{user_message}\n\n"
                 f"[재시도 안내] 직전 {attempt}회차 {step_label} 결과가 다음 이유로 검증에 실패했습니다: "
@@ -227,7 +258,7 @@ def _run_prompt_step(
     raise ValueError(error_message)
 
 
-def run_steps(raw_request: str, on_step=None) -> dict:
+def run_steps(raw_request: str, on_step=None, on_log=None) -> dict:
     """요청 분석 -> 요청 구조화 -> 데이터 범주화를 독립 프롬프트로 순차 실행한다.
 
     `on_step(step_code, status, metadata)`가 주어지면 각 단계의 시작("RUNNING")·완료
@@ -242,6 +273,7 @@ def run_steps(raw_request: str, on_step=None) -> dict:
         step_label="요청 분석",
         step_code=STEP_REQUEST_ANALYSIS,
         on_step=on_step,
+        on_log=on_log,
     )
 
     structuring_input = (
@@ -257,6 +289,7 @@ def run_steps(raw_request: str, on_step=None) -> dict:
         step_label="요청 구조화",
         step_code=STEP_REQUEST_STRUCTURING,
         on_step=on_step,
+        on_log=on_log,
     )
 
     step3 = _run_prompt_step(
@@ -266,6 +299,7 @@ def run_steps(raw_request: str, on_step=None) -> dict:
         step_label="데이터 범주화",
         step_code=STEP_DATA_CATEGORIZATION,
         on_step=on_step,
+        on_log=on_log,
     )
 
     return {

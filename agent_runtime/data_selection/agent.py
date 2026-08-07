@@ -3,6 +3,7 @@
 from copy import deepcopy
 import json
 import re
+import time
 
 from strands import Agent, tool
 from strands.models.openai import OpenAIModel
@@ -1060,6 +1061,7 @@ def _run_prompt_step(
     step_label: str,
     step_code: str,
     on_step=None,
+    on_log=None,
 ) -> dict:
     if on_step is not None:
         on_step(step_code, "RUNNING", None)
@@ -1071,6 +1073,7 @@ def _run_prompt_step(
     retry_payload = {**request_payload, "retry_feedback": None}
     for attempt in range(1, MAX_ATTEMPTS + 1):
         attempts_used = attempt
+        started = time.monotonic()
         try:
             raw = build_agent(system_prompt)(
                 json.dumps(retry_payload, ensure_ascii=False)
@@ -1080,11 +1083,40 @@ def _run_prompt_step(
             last_response_excerpt = raw_text[:2000] if raw_text else None
             finish_reason = getattr(raw, "stop_reason", None)
             last_finish_reason = str(finish_reason) if finish_reason else None
+            elapsed_ms = int((time.monotonic() - started) * 1000)
+            if on_log is not None:
+                on_log(
+                    "INFO",
+                    f"{step_label} LLM 응답 수신 ({attempt}/{MAX_ATTEMPTS}회차, "
+                    f"{elapsed_ms}ms, {last_response_length}자)",
+                    {
+                        "step": step_code,
+                        "attempt": attempt,
+                        "elapsed_ms": elapsed_ms,
+                        "response_length": last_response_length,
+                        "finish_reason": last_finish_reason,
+                    },
+                )
             parsed = _extract_json(raw_text)
             _normalize_dataset_names(parsed)
             validate(parsed)
         except Exception as exc:  # noqa: BLE001 - 모델 계약 실패를 단계 안에서 재시도
             last_error = str(exc)
+            # 재시도는 실패가 아니지만 왜 다시 도는지는 화면에 보여야 한다 — 안 그러면
+            # 실무자 눈에는 몇 분간 아무 일도 안 일어나는 것처럼 보인다.
+            if on_log is not None:
+                remaining = MAX_ATTEMPTS - attempt
+                on_log(
+                    "WARN" if remaining > 0 else "ERROR",
+                    f"{step_label} 검증 실패 ({attempt}/{MAX_ATTEMPTS}회차): {last_error}"
+                    + (f" — 재시도합니다." if remaining > 0 else ""),
+                    {
+                        "step": step_code,
+                        "attempt": attempt,
+                        "validation_error": last_error,
+                        "retry_hint": _selection_retry_hint(last_error),
+                    },
+                )
             retry_payload["retry_feedback"] = (
                 f"직전 {attempt}회차 {step_label} 결과 검증 실패: {last_error}. "
                 f"{_selection_retry_hint(last_error)}"
@@ -1193,6 +1225,7 @@ def run_steps(
     hitl_feedback: str | None = None,
     reference_catalogs: list[dict] | None = None,
     on_step=None,
+    on_log=None,
 ) -> dict:
     """세 프롬프트를 실행하며 선택적으로 단계 상태 콜백을 호출한다."""
     schema_metadata = deepcopy(schema_metadata or [])
@@ -1202,6 +1235,25 @@ def run_steps(
     available_data = list(
         dict.fromkeys(canonical_dataset(name) for name in available_data)
     )
+    if on_log is not None:
+        column_count = sum(
+            len(dataset.get("columns") or [])
+            for dataset in schema_metadata
+            if isinstance(dataset, dict)
+        )
+        on_log(
+            "INFO",
+            f"DB 메타데이터 확보: 테이블 {len(schema_metadata)}개 / 컬럼 {column_count}개, "
+            f"참조 카탈로그 {len(reference_catalogs or [])}건",
+            {
+                "datasets": [
+                    dataset.get("dataset")
+                    for dataset in schema_metadata
+                    if isinstance(dataset, dict)
+                ],
+                "column_count": column_count,
+            },
+        )
     reference_catalogs = deepcopy(reference_catalogs or [])
     for catalog in reference_catalogs:
         for target in catalog.get("target_columns") or []:
@@ -1224,6 +1276,7 @@ def run_steps(
         step_label="원본 컬럼 선별",
         step_code="SOURCE_COLUMN_SELECTION",
         on_step=on_step,
+        on_log=on_log,
     )
     derived_result = _run_prompt_step(
         system_prompt=DERIVED_COLUMN_DESIGN_PROMPT,
@@ -1234,6 +1287,7 @@ def run_steps(
         step_label="파생 컬럼 정의",
         step_code="DERIVED_COLUMN_DESIGN",
         on_step=on_step,
+        on_log=on_log,
     )
     sample_result = _run_prompt_step(
         system_prompt=SYNTHETIC_SAMPLE_GENERATION_PROMPT,
@@ -1248,6 +1302,7 @@ def run_steps(
         step_label="합성 샘플 생성",
         step_code="SYNTHETIC_SAMPLE_GENERATION",
         on_step=on_step,
+        on_log=on_log,
     )
     final_result = {**source_result, **derived_result, **sample_result}
     _validate_contract(final_result, schema_metadata, reference_catalogs)

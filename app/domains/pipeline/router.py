@@ -11,7 +11,7 @@ from app.common.errors import not_found
 from app.common.security_deps import CurrentAuth, get_current_auth
 from app.core.config import settings
 from app.db.session import AsyncSessionLocal, get_db
-from app.domains.pipeline.model import PipelineEvent, PipelineRun, StageRun
+from app.domains.pipeline.model import EventType, PipelineEvent, PipelineRun, StageRun
 from app.domains.pipeline.failure import public_failure
 from app.domains.pipeline.analysis_steps import (
     ANALYSIS_STEP_ORDER,
@@ -46,6 +46,10 @@ from app.worker.file_storage import resolve_storage_key
 from app.worker.status_event import PipelineStatusEvent
 
 router = APIRouter(prefix="/api/v1", tags=["pipeline"])
+
+# 최초 SSE 접속 시 되살려 보낼 기술 로그 개수. 프론트 로그 패널이 보관하는 줄 수와 같은
+# 수준으로 맞춰 두어 화면을 넘치게 하지 않는다.
+AGENT_LOG_REPLAY_LIMIT = 200
 
 
 @router.post(
@@ -126,10 +130,13 @@ def _sse_message(event: str, data: str, event_id: int | None = None) -> str:
 def _stored_event_payload(event: PipelineEvent) -> str:
     """DB 이력 행을 Redis 실시간 이벤트와 같은 공개 형태로 직렬화한다."""
     payload = event.payload or {}
+    is_agent_log = event.event_type == EventType.AGENT_LOG.value
     return json.dumps(
         {
             "event_id": event.id,
             "run_id": event.pipeline_run_id,
+            "event_kind": "agent_log" if is_agent_log else "status",
+            "log_level": payload.get("log_level") if is_agent_log else None,
             "run_status": payload.get("status"),
             "current_stage": payload.get("stage"),
             "stage_run_id": event.stage_run_id,
@@ -142,7 +149,8 @@ def _stored_event_payload(event: PipelineEvent) -> str:
             "attempt_no": payload.get("attempt_no"),
             "progress_percent": payload.get("progress_percent"),
             "message": event.message,
-            "step_metadata": payload.get("step_metadata"),
+            # agent_log는 step_metadata 대신 detail에 기술 정보를 담는다.
+            "step_metadata": payload.get("detail") if is_agent_log else payload.get("step_metadata"),
             "failure": payload.get("failure"),
             "rollback_to_stage": payload.get("rollback_to_stage"),
             "occurred_at": event.occurred_at.isoformat(),
@@ -206,6 +214,33 @@ async def stream_run_events(
                                 "status",
                                 _stored_event_payload(stored_event),
                                 stored_event.id,
+                            )
+                        )
+                elif last_event_id is None:
+                    # 최초 접속(새로고침·뒤늦은 진입)에는 snapshot이 현재 단계 상태만 담고
+                    # 지나간 로그는 담지 못한다. 실패 원인을 되짚으려면 그 로그가 필요하므로
+                    # 최근 기술 로그를 시간순으로 먼저 흘려보내 화면을 복원한다.
+                    recent_logs = list(
+                        (
+                            await stream_db.scalars(
+                                select(PipelineEvent)
+                                .where(
+                                    PipelineEvent.pipeline_run_id == run_id,
+                                    PipelineEvent.event_type == EventType.AGENT_LOG.value,
+                                )
+                                .order_by(PipelineEvent.id.desc())
+                                .limit(AGENT_LOG_REPLAY_LIMIT)
+                            )
+                        ).all()
+                    )
+                    for stored_event in reversed(recent_logs):
+                        missed_frames.append(
+                            _sse_message(
+                                "status",
+                                _stored_event_payload(stored_event),
+                                # snapshot이 뒤이어 boundary_id로 커서를 잡으므로 여기서는
+                                # Last-Event-ID를 앞당기지 않는다.
+                                None,
                             )
                         )
 
