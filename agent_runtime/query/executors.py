@@ -268,6 +268,15 @@ def _minimum_distinct_customers() -> int:
 
 
 def _enforce_minimum_group_size(actual: int, required: int) -> None:
+    # 0명과 "K명 미만"은 원인이 완전히 다르다. 하나로 묶으면 조건에 맞는 데이터가
+    # 아예 없는 경우까지 "개인정보 보호 기준 미달"로 보고돼서, 실제로 재식별 가드
+    # 탓으로 오진한 적이 두 번 있었다(요청 기간이 적재 범위 밖이거나, 지역×업종
+    # 조합에 가맹점이 0개인 경우). 메시지와 실패 코드를 나눠야 원인이 바로 보인다.
+    if actual == 0:
+        raise EmptyResultError(
+            "no rows match the requested filters; check the period, region, "
+            "and category conditions against the available data"
+        )
     if actual < required:
         raise PrivacyThresholdError(
             f"privacy threshold not met: {actual} distinct customers; "
@@ -277,3 +286,8 @@ def _enforce_minimum_group_size(actual: int, required: int) -> None:
 
 class PrivacyThresholdError(QueryPolicyError):
     """Raised before row retrieval when fewer than K distinct customers match."""
+
+
+class EmptyResultError(QueryPolicyError):
+    """Raised when the filters match no rows at all — a data availability problem,
+    not a privacy one."""
