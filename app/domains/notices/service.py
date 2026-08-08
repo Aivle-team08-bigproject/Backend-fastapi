@@ -55,6 +55,39 @@ async def get_published(db: AsyncSession, notice_id: int) -> tuple[Notice, Emplo
     return row
 
 
+async def list_admin(
+    db: AsyncSession, page: int, page_size: int, status: NoticeStatus | None = None
+) -> tuple[list[tuple[Notice, Employee]], int]:
+    filters = [True]
+    if status is not None:
+        filters.append(Notice.status == status)
+    total = int((await db.scalar(select(func.count(Notice.id)).where(*filters))) or 0)
+    rows = (
+        await db.execute(
+            select(Notice, Employee)
+            .join(Employee, Employee.id == Notice.created_by_employee_id)
+            .where(*filters)
+            .order_by(Notice.updated_at.desc(), Notice.id.desc())
+            .offset((page - 1) * page_size)
+            .limit(page_size)
+        )
+    ).all()
+    return list(rows), total
+
+
+async def get_admin(db: AsyncSession, notice_id: int) -> tuple[Notice, Employee]:
+    row = (
+        await db.execute(
+            select(Notice, Employee)
+            .join(Employee, Employee.id == Notice.created_by_employee_id)
+            .where(Notice.id == notice_id)
+        )
+    ).first()
+    if row is None:
+        raise not_found("NOTICE_NOT_FOUND", "공지사항을 찾을 수 없습니다.")
+    return row
+
+
 def _validate_status_transition(current: NoticeStatus, next_status: NoticeStatus) -> None:
     if current == next_status:
         return

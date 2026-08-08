@@ -23,8 +23,26 @@ class NoticeDetail(NoticeListItem):
     content: str
 
 
+class NoticeAdminItem(BaseModel):
+    id: int
+    title: str
+    content: str
+    status: NoticeStatus
+    author_name: str
+    published_at: datetime | None
+    created_at: datetime
+    updated_at: datetime
+
+
 class NoticeListResponse(BaseModel):
     items: list[NoticeListItem]
+    total_count: int = Field(ge=0)
+    page: int = Field(ge=1)
+    page_size: int = Field(ge=1, le=100)
+
+
+class NoticeAdminListResponse(BaseModel):
+    items: list[NoticeAdminItem]
     total_count: int = Field(ge=0)
     page: int = Field(ge=1)
     page_size: int = Field(ge=1, le=100)
