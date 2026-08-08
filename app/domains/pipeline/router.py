@@ -11,7 +11,7 @@ from app.common.errors import not_found
 from app.common.security_deps import CurrentAuth, get_current_auth
 from app.core.config import settings
 from app.db.session import AsyncSessionLocal, get_db
-from app.domains.pipeline.model import EventType, PipelineEvent, PipelineRun, StageRun
+from app.domains.pipeline.model import DataRequest, EventType, PipelineEvent, PipelineRun, StageRun
 from app.domains.pipeline.failure import public_failure
 from app.domains.pipeline.analysis_steps import (
     ANALYSIS_STEP_ORDER,
@@ -40,6 +40,7 @@ from app.domains.pipeline.service import (
     get_processing_result,
     get_result_artifact,
     get_sample_preview,
+    result_download_filename,
     submit_stage_review,
 )
 from app.worker.file_storage import resolve_storage_key
@@ -109,6 +110,13 @@ async def review_run_stage(
 @router.get("/runs/{run_id}/result.csv")
 async def download_run_result(run_id: int, db: AsyncSession = Depends(get_db)):
     artifact = await get_result_artifact(db, run_id)
+    request_no = await db.scalar(
+        select(DataRequest.request_no)
+        .join(PipelineRun, PipelineRun.data_request_id == DataRequest.id)
+        .where(PipelineRun.id == run_id)
+    )
+    if request_no is None:
+        raise not_found("PIPELINE_RUN_NOT_FOUND", "파이프라인 실행을 찾을 수 없습니다.")
     try:
         path = resolve_storage_key(artifact.storage_key)
     except ValueError as exc:
@@ -118,7 +126,7 @@ async def download_run_result(run_id: int, db: AsyncSession = Depends(get_db)):
     return FileResponse(
         path,
         media_type=artifact.mime_type or "text/csv",
-        filename=f"pipeline-run-{run_id}-result.csv",
+        filename=result_download_filename(request_no, run_id),
     )
 
 
