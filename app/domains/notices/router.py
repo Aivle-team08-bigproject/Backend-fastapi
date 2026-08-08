@@ -5,8 +5,10 @@ from app.common.security_deps import CurrentAuth, get_current_auth, require_role
 from app.db.session import get_db
 from app.domains.employees.model import Employee, EmployeeRole
 from app.domains.notices import service
-from app.domains.notices.model import Notice
+from app.domains.notices.model import Notice, NoticeStatus
 from app.domains.notices.schema import (
+    NoticeAdminItem,
+    NoticeAdminListResponse,
     NoticeDetail,
     NoticeLatestResponse,
     NoticeListItem,
@@ -28,6 +30,20 @@ def _item(row: tuple[Notice, Employee]) -> NoticeListItem:
     )
 
 
+def _admin_item(row: tuple[Notice, Employee]) -> NoticeAdminItem:
+    notice, author = row
+    return NoticeAdminItem(
+        id=notice.id,
+        title=notice.title,
+        content=notice.content,
+        status=notice.status,
+        author_name=author.name,
+        published_at=notice.published_at,
+        created_at=notice.created_at,
+        updated_at=notice.updated_at,
+    )
+
+
 @router.get("/notices", response_model=NoticeListResponse)
 async def list_notices(
     page: int = Query(default=1, ge=1),
@@ -45,6 +61,29 @@ async def latest_notice(
 ) -> NoticeLatestResponse:
     row = await service.get_latest(db)
     return NoticeLatestResponse(item=_item(row) if row else None)
+
+
+@router.get("/admin/notices", response_model=NoticeAdminListResponse)
+async def admin_notice_list(
+    page: int = Query(default=1, ge=1),
+    page_size: int = Query(default=20, ge=1, le=100),
+    notice_status: NoticeStatus | None = Query(default=None, alias="status"),
+    auth: CurrentAuth = Depends(require_role(EmployeeRole.ADMIN)),
+    db: AsyncSession = Depends(get_db),
+) -> NoticeAdminListResponse:
+    rows, total = await service.list_admin(db, page, page_size, notice_status)
+    return NoticeAdminListResponse(
+        items=[_admin_item(row) for row in rows], total_count=total, page=page, page_size=page_size
+    )
+
+
+@router.get("/admin/notices/{notice_id}", response_model=NoticeAdminItem)
+async def admin_notice_detail(
+    notice_id: int,
+    auth: CurrentAuth = Depends(require_role(EmployeeRole.ADMIN)),
+    db: AsyncSession = Depends(get_db),
+) -> NoticeAdminItem:
+    return _admin_item(await service.get_admin(db, notice_id))
 
 
 @router.get("/notices/{notice_id}", response_model=NoticeDetail)
