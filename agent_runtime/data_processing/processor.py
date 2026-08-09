@@ -112,7 +112,8 @@ def process_payload(payload: dict[str, Any]) -> dict[str, Any]:
 
     output_formats = set(plan.output.formats) if plan else _output_formats(payload.get("analysis", {}))
     delivery_channel = str(payload.get("analysis", {}).get("delivery_channel", "api")).lower()
-    csv_artifact = _build_csv(normalized, columns) if "csv" in output_formats else None
+    # 최종 전달 형식과 별개로 감사·재처리를 위한 정본 CSV는 항상 저장한다.
+    csv_artifact = _build_csv(normalized, columns)
     api_result = {
         "items": normalized if delivery_channel == "api" else [],
         "meta": {"row_count": len(normalized)},
@@ -139,7 +140,7 @@ def process_payload(payload: dict[str, Any]) -> dict[str, Any]:
         },
         "processed_columns": columns,
         "api_result": api_result,
-        "csv_columns": columns if csv_artifact else [],
+        "csv_columns": columns,
         "csv_artifact": csv_artifact,
         "visualization": visualization,
         "report": report,

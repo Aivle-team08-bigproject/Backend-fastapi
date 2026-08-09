@@ -11,6 +11,7 @@ process_pipeline_run은 run_id를 받아 다음 실행 단계를 발행한다.
 """
 
 import asyncio
+import logging
 from concurrent.futures import ThreadPoolExecutor
 
 from app.db.session import AsyncSessionLocal
@@ -47,7 +48,10 @@ from app.domains.pipeline.supervisor import (
     run_stage,
 )
 from app.worker.celery_app import celery_app
-from app.worker.status_recorder import record_status
+from app.worker.status_recorder import record_agent_log, record_status
+
+
+logger = logging.getLogger(__name__)
 
 
 def _run_async(coro):
@@ -111,6 +115,24 @@ async def _dispatch(run_id: int) -> dict:
             "stage_code": stage_code,
             "celery_task_id": celery_task_id,
         }
+
+
+async def _record_agent_log_isolated(**kwargs):
+    """관찰 로그를 메인 파이프라인 트랜잭션과 분리해 저장한다."""
+    async with AsyncSessionLocal() as log_db:
+        try:
+            return await record_agent_log(log_db, **kwargs)
+        except Exception:
+            # flush/commit 실패로 세션이 invalid 상태여도 이 로그 전용 세션만 복구한다.
+            await log_db.rollback()
+            raise
+
+
+def _persistable_stage_output(output: dict | None) -> dict:
+    """파일 저장소가 정본인 CSV 본문은 StageRun JSONB에 중복 보관하지 않는다."""
+    result = dict(output or {})
+    result.pop("csv_artifact", None)
+    return result
 
 
 async def _run_stage(stage_id: int, celery_task_id: str) -> dict:
@@ -214,12 +236,38 @@ async def _run_stage(stage_id: int, celery_task_id: str) -> dict:
                 )
                 future.result()
 
+        agent_log_loop = asyncio.get_running_loop()
+
+        def agent_log_callback(level: str, message: str, detail: dict | None) -> None:
+            """에이전트 기술 로그를 화면으로 흘려보낸다.
+
+            상태 저장 경로와 달리 여기서 실패해도 단계 실행은 계속돼야 한다 — 관찰용
+            로그 때문에 실제 작업이 죽으면 안 된다.
+            """
+            try:
+                future = asyncio.run_coroutine_threadsafe(
+                    _record_agent_log_isolated(
+                        run_id=stage.pipeline_run_id,
+                        celery_task_id=celery_task_id,
+                        message=message,
+                        level=level,
+                        current_stage=stage.stage_code,
+                        stage_run_id=stage.id,
+                        detail=detail,
+                    ),
+                    agent_log_loop,
+                )
+                future.result()
+            except Exception:  # noqa: BLE001 - 로깅 실패가 파이프라인을 멈추면 안 된다
+                logger.exception("Failed to record agent log for run_id=%s", stage.pipeline_run_id)
+
         outcome = await run_stage(
             db,
             stage,
             requirement_analysis_step_callback=requirement_analysis_step_callback,
             selection_step_callback=selection_step_callback,
             processing_step_callback=processing_step_callback,
+            agent_log_callback=agent_log_callback,
         )
 
         if not outcome["passed"]:
@@ -233,14 +281,14 @@ async def _run_stage(stage_id: int, celery_task_id: str) -> dict:
                 stage_status=StageRunStatus.FAILED,
                 progress_percent=0,
                 message=f"{stage_name.value} 산출물 검증에 실패했습니다.",
-                result=outcome["output"],
+                result=_persistable_stage_output(outcome["output"]),
                 error_message=outcome["error_message"],
                 validation_result=outcome["validation"],
                 rollback_to_stage=rollback_target(failure_code).value,
             )
             return {"run_id": run_id, "stage_id": stage_id, "passed": False}
 
-        result = dict(outcome["output"] or {})
+        result = _persistable_stage_output(outcome["output"])
         if outcome["artifact"]:
             result["artifact"] = outcome["artifact"]
 

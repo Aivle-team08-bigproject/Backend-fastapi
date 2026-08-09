@@ -9,6 +9,8 @@ Celery는 eager 모드로 돌려서 브로커 없이 인라인 실행한다. 외
 그대로 통과한다 — 상태 정본은 DB라는 설계가 실제로 성립하는지도 같이 확인된다.
 """
 
+import base64
+import hashlib
 import uuid
 
 import pytest
@@ -136,6 +138,7 @@ class StubAgents:
                 "quality_checks": [],
                 "explanation": "테스트 계획",
             }
+            csv_content = "지역,결제건수\n서울,5\n".encode("utf-8-sig")
             return {
                 "processing_plan": processing_plan,
                 "processing_plan_sha256": processing_plan_sha256(processing_plan),
@@ -146,6 +149,12 @@ class StubAgents:
                 "processed_columns": ["지역", "결제건수"],
                 "api_result": {"items": [], "meta": {}},
                 "csv_columns": ["지역", "결제건수"],
+                "csv_artifact": {
+                    "encoding": "utf-8-sig",
+                    "content_base64": base64.b64encode(csv_content).decode("ascii"),
+                    "sha256": hashlib.sha256(csv_content).hexdigest(),
+                    "byte_size": len(csv_content),
+                },
                 "visualization": {"chart_type": "bar", "x": "지역", "y": "결제건수"},
                 "report": {"title": "결과", "summary": "완료"},
                 "processing_explanation": {"summary": "stub"},

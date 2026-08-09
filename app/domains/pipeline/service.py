@@ -51,6 +51,11 @@ def _make_request_no() -> str:
     return f"REQ-{utcnow():%Y%m%d}-{uuid4().hex[:6].upper()}"
 
 
+def result_download_filename(request_no: str, run_id: int) -> str:
+    """사용자가 작업과 재가공 실행을 함께 식별할 수 있는 결과 파일명."""
+    return f"{request_no}-run-{run_id}-result.csv"
+
+
 def _make_contract_no() -> str:
     return f"CTR-{utcnow():%Y%m%d}-{uuid4().hex[:6].upper()}"
 

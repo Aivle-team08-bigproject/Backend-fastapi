@@ -53,6 +53,19 @@ def test_direct_identifier_requires_key(monkeypatch):
     assert result["failure_code"] == "PROCESSING_RULE_INVALID"
 
 
+def test_api_only_delivery_still_creates_storage_csv():
+    result = _invoke(
+        {
+            "analysis": {"delivery_channel": "api", "output_formats": ["api"]},
+            "selected_rows": [{"region": "서울", "amount": 1000}],
+        }
+    )
+
+    assert result["ok"] is True
+    assert result["data"]["csv_columns"] == ["region", "amount"]
+    assert result["data"]["csv_artifact"]["content_base64"]
+
+
 def test_empty_selected_rows_fails():
     result = _invoke({"selection": {"selected_tables": [{"table": "transaction_pseudonymized"}]}})
     assert result["ok"] is False
