@@ -68,14 +68,29 @@ def test_notice_public_contract_and_admin_only_writes(client):
         json={"title": "권한 없음", "content": "차단되어야 함", "status": "PUBLISHED"},
     )
     assert blocked.status_code == 403
+    blocked_delete = client.delete(f"/api/v1/admin/notices/{notice_id}", headers=employee_headers)
+    assert blocked_delete.status_code == 403
 
-    archived = client.patch(
-        f"/api/v1/admin/notices/{notice_id}",
-        headers=admin_headers,
-        json={"status": "ARCHIVED"},
-    )
-    assert archived.status_code == 200
+    deleted = client.delete(f"/api/v1/admin/notices/{notice_id}", headers=admin_headers)
+    assert deleted.status_code == 204
     assert client.get(f"/api/v1/notices/{notice_id}", headers=admin_headers).status_code == 404
+
+
+def test_notice_status_transition_rejects_published_to_draft(client):
+    admin_headers = _login_as_admin(client)
+    created = client.post(
+        "/api/v1/admin/notices",
+        headers=admin_headers,
+        json={"title": "게시 공지", "content": "본문", "status": "PUBLISHED"},
+    )
+    assert created.status_code == 201, created.text
+
+    updated = client.patch(
+        f"/api/v1/admin/notices/{created.json()['id']}",
+        headers=admin_headers,
+        json={"status": "DRAFT"},
+    )
+    assert updated.status_code == 400
 
 
 def test_notice_requires_authentication(client):
