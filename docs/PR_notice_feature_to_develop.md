@@ -2,15 +2,15 @@
 
 ## 목적
 
-관리자 전용 공지사항 CRUD와 실무자용 공지 조회 기능을 추가합니다. Neon 분리 브랜치에서 검증한 `service.notices` 스키마와 Alembic migration을 기준으로 합니다.
+관리자 전용 공지사항 CRUD와 실무자용 공지 조회 기능을 추가합니다. Neon 분리 브랜치에서 검증한 `service.notices` 스키마를 기준으로 합니다.
 
 ## 변경 범위
 
 - Backend: `feature/notices-backend`
   - 공개 공지 목록/상세/최신 공지 API
-- 관리자 공지 목록/상세/작성/수정 및 논리 삭제 API
+  - 관리자 공지 목록/상세/작성/수정 및 논리 삭제 API
   - 관리자 권한 검사
-  - `e4a1b2c3d4e5_add_notices.py` migration
+  - DB 관리자용 적용 SQL 및 전달 문서
 - Frontend: `feature/notices-frontend`
   - Dashboard 최신 공지 한 줄 배너
   - 공지사항 목록/상세 페이지
@@ -30,7 +30,7 @@
 1. 관리자 권한 검사가 모든 `/api/v1/admin/notices*` 엔드포인트에 적용되었는지
 2. 공개 조회에서 `PUBLISHED` 공지만 반환되는지
 3. `published_at` 정렬 및 Dashboard 최신 공지 표시가 일관적인지
-4. migration의 FK, 상태 체크 제약조건, 인덱스가 운영 DB 기준에 맞는지
+4. DB 관리자용 SQL의 FK, 상태 체크 제약조건, 인덱스, `app_svc` 권한이 운영 DB 기준에 맞는지
 
 ## PR 생성 안내
 

@@ -4,8 +4,8 @@
 
 - PostgreSQL/Neon 스키마: `service`
 - 신규 테이블: `service.notices`
-- Alembic migration: `alembic/versions/e4a1b2c3d4e5_add_notices.py`
-- 적용 순서: `3f8e1c2a7b90` → `e4a1b2c3d4e5`
+- 적용 SQL: `docs/db-admin/20260809_create_service_notices.sql`
+- 적용 주체: Production DB 관리자 (`portfolio_admin`)
 
 ## 변경 내용
 
@@ -23,14 +23,15 @@
 
 상태 컬럼에는 `ck_notices_status` 체크 제약조건이 적용됩니다. 다음 인덱스를 추가합니다: `ix_notices_created_by_employee_id`, `ix_notices_updated_by_employee_id`, `ix_notices_status_published_at_id(status, published_at, id)`.
 
-## 적용 및 롤백
+테이블과 시퀀스 소유자는 `portfolio_admin`으로 설정한다. Backend 실행 계정 `app_svc`에는 테이블 `SELECT`, `INSERT`, `UPDATE`, `DELETE`와 시퀀스 `USAGE`, `SELECT` 권한을 부여한다.
 
-```bash
-alembic upgrade e4a1b2c3d4e5
-alembic downgrade 3f8e1c2a7b90
-```
+## 적용 절차
 
-운영 적용 전 Neon 대상 브랜치에서 migration을 실행하고 아래 검증 쿼리로 테이블·제약조건·인덱스를 확인합니다.
+1. Production DB에 `portfolio_admin`으로 접속한다.
+2. `docs/db-admin/20260809_create_service_notices.sql`을 트랜잭션 단위로 실행한다.
+3. 아래 검증 쿼리로 테이블·제약조건·인덱스·권한을 확인한다.
+
+SQL은 `service.notices`가 이미 있으면 실패하도록 작성되어 있다. 실패 시 기존 테이블을 삭제하지 말고 현재 스키마와 SQL을 비교한다.
 
 ```sql
 SELECT column_name, data_type, is_nullable
@@ -41,6 +42,12 @@ ORDER BY ordinal_position;
 SELECT indexname
 FROM pg_indexes
 WHERE schemaname = 'service' AND tablename = 'notices';
+
+SELECT grantee, privilege_type
+FROM information_schema.role_table_grants
+WHERE table_schema = 'service' AND table_name = 'notices'
+  AND grantee = 'app_svc'
+ORDER BY privilege_type;
 ```
 
-실제 DDL 변경은 수동 SQL이 아니라 저장소의 Alembic migration을 기준으로 적용합니다.
+Rollback은 공지 데이터가 없고 운영 중단 승인이 있을 때만 DB 관리자가 `DROP TABLE service.notices;`로 수행한다.
