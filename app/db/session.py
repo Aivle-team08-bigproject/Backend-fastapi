@@ -8,7 +8,6 @@ from app.domains.employees import model as employee_model  # noqa: F401
 from app.domains.auth.model import session_model  # noqa: F401
 from app.domains.pipeline import model as pipeline_model  # noqa: F401
 from app.domains.dashboard import model as dashboard_model  # noqa: F401
-from app.domains.notices import model as notice_model  # noqa: F401
 
 engine = create_async_engine(
     settings.hanacard_app_database_url,

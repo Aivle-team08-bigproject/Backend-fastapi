@@ -16,7 +16,6 @@ from app.domains.auth.model.session_model import LoginSession
 from app.domains.auth.service import auth_service
 from app.domains.employees.model import (
     Employee,
-    EmployeeRole,
     EmployeeStatus,
     PermissionCode,
 )
@@ -216,20 +215,6 @@ def require_any_permission(*codes: PermissionCode):
                 "해당 기능을 실행할 권한이 없습니다.",
             )
 
-        return auth
-
-    return _dependency
-
-
-def require_role(role: EmployeeRole):
-    async def _dependency(
-        auth: CurrentAuth = Depends(get_current_auth),
-    ) -> CurrentAuth:
-        if auth.employee.role_code != role.value:
-            raise forbidden(
-                "FORBIDDEN",
-                "관리자만 공지사항을 관리할 수 있습니다.",
-            )
         return auth
 
     return _dependency
