@@ -125,3 +125,12 @@ async def update_notice(
         author_name=auth.employee.name,
         published_at=notice.published_at or notice.created_at,
     )
+
+
+@router.delete("/admin/notices/{notice_id}", status_code=status.HTTP_204_NO_CONTENT)
+async def delete_notice(
+    notice_id: int,
+    auth: CurrentAuth = Depends(require_role(EmployeeRole.ADMIN)),
+    db: AsyncSession = Depends(get_db),
+) -> None:
+    await service.delete_notice(db, notice_id, auth.employee)

@@ -153,3 +153,23 @@ async def update_notice(
     await db.commit()
     await db.refresh(notice)
     return notice
+
+
+async def delete_notice(db: AsyncSession, notice_id: int, actor: Employee) -> None:
+    notice = await db.get(Notice, notice_id)
+    if notice is None:
+        raise not_found("NOTICE_NOT_FOUND", "공지사항을 찾을 수 없습니다.")
+
+    now = utcnow()
+    if notice.status != NoticeStatus.ARCHIVED:
+        notice.status = NoticeStatus.ARCHIVED
+        notice.updated_by_employee_id = actor.id
+        notice.updated_at = now
+
+    db.add(AdminAuditLog(
+        actor_employee_code=actor.employee_code,
+        action="NOTICE_DELETED",
+        detail=f"notice_id={notice.id};status={notice.status.value}",
+        created_at=now,
+    ))
+    await db.commit()

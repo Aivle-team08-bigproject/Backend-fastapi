@@ -8,7 +8,7 @@
 
 - Backend: `feature/notices-backend`
   - 공개 공지 목록/상세/최신 공지 API
-  - 관리자 공지 목록/상세/작성/수정/삭제 API
+- 관리자 공지 목록/상세/작성/수정 및 논리 삭제 API
   - 관리자 권한 검사
   - `e4a1b2c3d4e5_add_notices.py` migration
 - Frontend: `feature/notices-frontend`
@@ -34,4 +34,4 @@
 
 ## PR 생성 안내
 
-이 문서는 검토용이며 PR은 자동 생성하지 않습니다. 각 저장소의 대상 브랜치를 `develop`으로 설정해 별도 PR을 생성합니다.
+이 문서는 검토용이며 PR은 자동 생성하지 않습니다. 두 공지사항 브랜치는 `feature/pipeline-sse-progress`에서 분기되었으므로, 각 저장소의 대상 브랜치를 `feature/pipeline-sse-progress`로 설정해 별도 PR을 생성합니다.
