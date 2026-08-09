@@ -13,6 +13,7 @@ import logging
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm.attributes import flag_modified
 
 from app.common.time_utils import utcnow
 from app.domains.pipeline.model import (
@@ -120,6 +121,7 @@ async def persist_status_event(db: AsyncSession, event: PipelineStatusEvent) -> 
                     steps[event.analysis_step.value] = step_payload
                 stage_payload["analysis_steps"] = steps
                 stage.output_payload = stage_payload
+                flag_modified(stage, "output_payload")
             if event.current_stage == "DATA_SELECTION":
                 stage_payload = dict(stage.output_payload or {})
                 steps = stage_payload.get("selection_steps")
@@ -150,11 +152,21 @@ async def persist_status_event(db: AsyncSession, event: PipelineStatusEvent) -> 
                     steps[event.selection_step.value] = step_payload
                 stage_payload["selection_steps"] = steps
                 stage.output_payload = stage_payload
+                flag_modified(stage, "output_payload")
             if event.current_stage == "DATA_PROCESSING":
                 stage_payload = dict(stage.output_payload or {})
-                steps = stage_payload.get("processing_steps")
-                if not isinstance(steps, dict):
-                    steps = initial_processing_steps_snapshot()
+                stored_steps = stage_payload.get("processing_steps")
+                if not isinstance(stored_steps, dict):
+                    stored_steps = {}
+                # 구버전 실행에는 계획 4단계만 저장돼 있을 수 있다. 현행 기본값을 먼저
+                # 채우고 기존 상태를 덮어써서 신규 실행 단계 이벤트도 안전하게 기록한다.
+                steps = dict(stored_steps)
+                for code, default_step in initial_processing_steps_snapshot().items():
+                    stored_step = stored_steps.get(code)
+                    steps[code] = {
+                        **default_step,
+                        **(stored_step if isinstance(stored_step, dict) else {}),
+                    }
                 if event.processing_step is not None:
                     step_payload = dict(steps[event.processing_step.value])
                     step_payload["status"] = event.processing_step_status.value
@@ -180,6 +192,7 @@ async def persist_status_event(db: AsyncSession, event: PipelineStatusEvent) -> 
                     steps[event.processing_step.value] = step_payload
                 stage_payload["processing_steps"] = steps
                 stage.output_payload = stage_payload
+                flag_modified(stage, "output_payload")
             if event.validation_result is not None:
                 stage.validation_result = event.validation_result
             if event.stage_status == StageRunStatus.RUNNING:
@@ -199,6 +212,7 @@ async def persist_status_event(db: AsyncSession, event: PipelineStatusEvent) -> 
                         "processing_steps", initial_processing_steps_snapshot()
                     )
                 stage.output_payload = result
+                flag_modified(stage, "output_payload")
                 stage.completed_at = now
             elif event.stage_status == StageRunStatus.FAILED:
                 result = dict(event.result or {})
@@ -215,6 +229,7 @@ async def persist_status_event(db: AsyncSession, event: PipelineStatusEvent) -> 
                         "processing_steps", initial_processing_steps_snapshot()
                     )
                 stage.output_payload = result
+                flag_modified(stage, "output_payload")
                 stage.error_message = event.error_message
                 stage.completed_at = now
 
@@ -290,6 +305,65 @@ async def persist_status_event(db: AsyncSession, event: PipelineStatusEvent) -> 
             )
     await db.commit()
     return True
+
+
+async def record_agent_log(
+    db: AsyncSession,
+    *,
+    run_id: int,
+    celery_task_id: str,
+    message: str,
+    level: str = "INFO",
+    current_stage: str | None = None,
+    stage_run_id: int | None = None,
+    detail: dict | None = None,
+) -> PipelineStatusEvent | None:
+    """에이전트 내부 기술 로그를 남긴다 — 상태 전이가 아니라 관찰 기록이다.
+
+    record_status와 달리 PipelineRun/StageRun을 일절 건드리지 않는다. 진행률이나 단계
+    상태는 그대로 두고 pipeline_events에 한 줄 남긴 뒤 화면 로그 패널로 발행만 한다.
+    재시도 사유처럼 "실패는 아니지만 실무자가 알아야 하는 일"이 이 경로로 나간다.
+    """
+    run = await db.get(PipelineRun, run_id)
+    if run is None or run.celery_task_id != celery_task_id:
+        logger.warning("Ignoring agent log for unknown or mismatched run_id=%s", run_id)
+        return None
+
+    now = utcnow()
+    pipeline_event = PipelineEvent(
+        pipeline_run_id=run.id,
+        stage_run_id=stage_run_id,
+        event_type=EventType.AGENT_LOG.value,
+        severity=level,
+        message=message,
+        payload={
+            "stage": current_stage,
+            "log_level": level,
+            "detail": detail,
+        },
+        occurred_at=now,
+    )
+    db.add(pipeline_event)
+    await db.flush()
+
+    event = PipelineStatusEvent(
+        event_id=pipeline_event.id,
+        run_id=run.id,
+        celery_task_id=celery_task_id,
+        event_kind="agent_log",
+        log_level=level,
+        # 로그는 상태를 바꾸지 않으므로 현재 값을 그대로 실어 보낸다.
+        run_status=PipelineRunStatus(run.status),
+        current_stage=current_stage or run.current_stage,
+        stage_run_id=stage_run_id,
+        step_metadata=detail,
+        progress_percent=run.progress_percent,
+        message=message,
+        occurred_at=now,
+    )
+    await db.commit()
+    publish_to_screen(event)
+    return event
 
 
 async def record_status(

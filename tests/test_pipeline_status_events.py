@@ -175,6 +175,82 @@ def test_persist_analysis_step_event_merges_into_output_payload():
     assert steps["DATA_CATEGORIZATION"]["status"] == "PENDING"
 
 
+def test_persist_processing_step_event_upgrades_legacy_four_step_snapshot():
+    now = datetime.now(timezone.utc)
+    run = PipelineRun(
+        id=7,
+        data_request_id=3,
+        attempt_no=1,
+        status="RUNNING",
+        current_stage="DATA_PROCESSING",
+        progress_percent=86,
+        celery_task_id="task-7",
+        created_at=now,
+        updated_at=now,
+    )
+    data_request = DataRequest(
+        id=3,
+        client_id=1,
+        request_no="REQ-TEST",
+        title="test",
+        raw_requirement="test",
+        output_formats=[],
+        delivery_channels=[],
+        analysis_condition={},
+        status="RUNNING",
+        created_at=now,
+        updated_at=now,
+    )
+    legacy_steps = {
+        code: {
+            "status": "COMPLETED",
+            "started_at": now.isoformat(),
+            "completed_at": now.isoformat(),
+            "metadata": None,
+            "error_message": None,
+        }
+        for code in (
+            "DEDUPLICATION_PLAN",
+            "MISSING_VALUE_PLAN",
+            "DERIVED_COLUMN_ORDER",
+            "FINAL_COLUMN_VALIDATION",
+        )
+    }
+    stage = StageRun(
+        id=11,
+        pipeline_run_id=7,
+        stage_code="DATA_PROCESSING",
+        attempt_no=1,
+        status="RUNNING",
+        executor="CELERY",
+        input_payload={},
+        output_payload={"processing_steps": legacy_steps},
+        validation_result={},
+        created_at=now,
+    )
+    db = FakeAsyncSession(run, data_request, stage)
+    event = PipelineStatusEvent(
+        run_id=7,
+        celery_task_id="task-7",
+        run_status=PipelineRunStatus.RUNNING,
+        current_stage="DATA_PROCESSING",
+        stage_status=StageRunStatus.RUNNING,
+        processing_step=ProcessingStepCode.SOURCE_DATA_RETRIEVAL,
+        processing_step_status=ProcessingStepStatus.RUNNING,
+        attempt_no=1,
+        progress_percent=87,
+        message="원천 데이터를 조회하고 있습니다.",
+        occurred_at=now,
+    )
+
+    assert asyncio.run(persist_status_event(db, event)) is True
+    steps = stage.output_payload["processing_steps"]
+    assert len(steps) == 8
+    assert steps["FINAL_COLUMN_VALIDATION"]["status"] == "COMPLETED"
+    assert steps["SOURCE_DATA_RETRIEVAL"]["status"] == "RUNNING"
+    assert steps["RESULT_FILE_GENERATION"]["status"] == "PENDING"
+
+
 def test_sse_message_format():
     assert _sse_message("status", '{"run_status":"RUNNING"}') == (
         'event: status\ndata: {"run_status":"RUNNING"}\n\n'
