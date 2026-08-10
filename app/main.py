@@ -1,4 +1,5 @@
 from contextlib import asynccontextmanager
+import asyncio
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
@@ -6,11 +7,19 @@ from fastapi.middleware.cors import CORSMiddleware
 from app.common.session_activity_middleware import SessionActivityMiddleware
 from app.api.router import api_router
 from app.core.config import settings
+from app.domains.pipeline.email_result_worker import consume_email_result_queue
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    yield
+    stop_event = asyncio.Event()
+    result_task = asyncio.create_task(consume_email_result_queue(stop_event))
+    try:
+        yield
+    finally:
+        stop_event.set()
+        result_task.cancel()
+        await asyncio.gather(result_task, return_exceptions=True)
 
 
 app = FastAPI(title="portfolio-data-market agent-service", lifespan=lifespan)

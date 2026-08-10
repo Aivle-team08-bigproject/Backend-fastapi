@@ -1,4 +1,6 @@
 from uuid import uuid4
+import hashlib
+import json
 
 from fastapi import status
 from sqlalchemy import select
@@ -23,12 +25,16 @@ from app.domains.pipeline.model import (
     StageName,
     StageRun,
     StageRunStatus,
+    EmailDelivery,
+    EmailDeliveryStatus,
 )
 from app.domains.dashboard.model import TaskViewSnapshot
-from app.domains.employees.model import Employee
+from app.domains.employees.model import Employee, PermissionCode
 from app.domains.pipeline.schema import (
     CreateDataRequestRequest,
     CreateDataRequestResponse,
+    CreateEmailDeliveryRequest,
+    EmailDeliveryResponse,
     PipelineRunResponse,
     ProcessingResultResponse,
     RequirementAnalysisResponse,
@@ -379,16 +385,28 @@ async def get_pipeline_run(db: AsyncSession, run_id: int) -> PipelineRunResponse
     )
 
 
-async def get_sample_preview(db: AsyncSession, run_id: int) -> SamplePreviewResponse:
-    """가장 최근에 완료된 데이터 선별 단계의 합성 샘플을 반환한다."""
+async def _get_accessible_run(
+    db: AsyncSession,
+    run_id: int,
+    employee: Employee,
+    permissions: set[PermissionCode],
+) -> tuple[PipelineRun, DataRequest]:
+    """존재 여부를 노출하지 않으면서 실행 소유권을 검증한다."""
     run = await db.get(PipelineRun, run_id)
     if run is None:
         raise not_found("PIPELINE_RUN_NOT_FOUND", "파이프라인 실행을 찾을 수 없습니다.")
+    data_request = await db.get(DataRequest, run.data_request_id)
+    is_admin = PermissionCode.CONTRACT_MANAGE in permissions
+    if data_request is None or (not is_admin and data_request.owner_id != employee.id):
+        raise not_found("PIPELINE_RUN_NOT_FOUND", "파이프라인 실행을 찾을 수 없습니다.")
+    return run, data_request
 
+
+async def _get_completed_selection_stage(db: AsyncSession, run_id: int) -> StageRun:
     stage = await db.scalar(
         select(StageRun)
         .where(
-            StageRun.pipeline_run_id == run.id,
+            StageRun.pipeline_run_id == run_id,
             StageRun.stage_code == StageName.DATA_SELECTION.value,
             StageRun.status == StageRunStatus.COMPLETED.value,
         )
@@ -400,7 +418,10 @@ async def get_sample_preview(db: AsyncSession, run_id: int) -> SamplePreviewResp
             "PIPELINE_SAMPLE_NOT_READY",
             "데이터 선별 샘플이 아직 준비되지 않았습니다.",
         )
+    return stage
 
+
+def _validated_sample_output(stage: StageRun) -> dict:
     output = stage.output_payload or {}
     columns = output.get("sample_columns")
     rows = output.get("sample_rows")
@@ -409,13 +430,31 @@ async def get_sample_preview(db: AsyncSession, run_id: int) -> SamplePreviewResp
         not isinstance(columns, list)
         or not columns
         or not isinstance(rows, list)
+        or len(rows) != 5
         or not isinstance(metadata, dict)
+        or metadata.get("is_synthetic") is not True
     ):
         raise DomainException(
             status.HTTP_409_CONFLICT,
             "PIPELINE_SAMPLE_INVALID",
-            "저장된 데이터 선별 결과에 유효한 샘플이 없습니다.",
+            "저장된 데이터 선별 결과에 유효한 합성 샘플 5건이 없습니다.",
         )
+    return output
+
+
+async def get_sample_preview(
+    db: AsyncSession,
+    run_id: int,
+    employee: Employee,
+    permissions: set[PermissionCode],
+) -> SamplePreviewResponse:
+    """가장 최근에 완료된 데이터 선별 단계의 합성 샘플을 반환한다."""
+    run, _ = await _get_accessible_run(db, run_id, employee, permissions)
+    stage = await _get_completed_selection_stage(db, run.id)
+    output = _validated_sample_output(stage)
+    columns = output.get("sample_columns")
+    rows = output.get("sample_rows")
+    metadata = output.get("sample_metadata")
 
     interpretations = output.get("interpretations") or []
     catalog_issues = output.get("catalog_issues") or []
@@ -450,6 +489,88 @@ async def get_sample_preview(db: AsyncSession, run_id: int) -> SamplePreviewResp
             "catalog_issue_count": len(catalog_issues),
         },
     )
+
+
+def _normalize_recipient(value: str) -> str:
+    local, separator, domain = value.strip().rpartition("@")
+    return f"{local}@{domain.lower()}" if separator else value.strip().lower()
+
+
+async def create_email_delivery(
+    db: AsyncSession,
+    run_id: int,
+    payload: CreateEmailDeliveryRequest,
+    idempotency_key: str,
+    employee: Employee,
+    permissions: set[PermissionCode],
+) -> EmailDeliveryResponse:
+    """발송 요청을 FastAPI DB에 QUEUED로 기록한다.
+
+    큐 발행은 라우터의 adapter가 담당하므로, 이 함수는 DB 상태와 멱등성
+    계약만 책임진다.
+    """
+    key = idempotency_key.strip()
+    if not key or len(key) > 255:
+        raise DomainException(status.HTTP_400_BAD_REQUEST, "INVALID_IDEMPOTENCY_KEY", "Idempotency-Key가 필요합니다.")
+
+    run, _ = await _get_accessible_run(db, run_id, employee, permissions)
+    preview = await get_sample_preview(db, run.id, employee, permissions)
+    if payload.delivery_type == "SELECTION_SAMPLE" and len(preview.rows) != 5:
+        raise DomainException(status.HTTP_409_CONFLICT, "PIPELINE_SAMPLE_INVALID", "샘플 데이터는 정확히 5건이어야 합니다.")
+
+    recipient = _normalize_recipient(payload.recipient)
+    sample_document = {"columns": [column.model_dump() for column in preview.columns], "rows": preview.rows}
+    sample_sha256 = hashlib.sha256(
+        json.dumps(sample_document, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode()
+    ).hexdigest()
+    fingerprint = hashlib.sha256(
+        json.dumps(
+            {"run_id": run.id, "type": payload.delivery_type, "recipient": recipient, "sample_sha256": sample_sha256, "template": payload.template_version},
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode()
+    ).hexdigest()
+
+    existing = await db.scalar(select(EmailDelivery).where(EmailDelivery.idempotency_key == key))
+    if existing is not None:
+        if existing.request_fingerprint != fingerprint:
+            raise DomainException(status.HTTP_409_CONFLICT, "IDEMPOTENCY_KEY_REUSED", "Idempotency-Key가 다른 요청에 사용되었습니다.")
+        return EmailDeliveryResponse.model_validate(existing, from_attributes=True)
+
+    active = await db.scalar(
+        select(EmailDelivery).where(
+            EmailDelivery.run_id == run.id,
+            EmailDelivery.stage_attempt_no == preview.attempt_no,
+            EmailDelivery.recipient_normalized == recipient,
+            EmailDelivery.delivery_type == payload.delivery_type,
+            EmailDelivery.status.in_([EmailDeliveryStatus.QUEUED.value, EmailDeliveryStatus.SENDING.value]),
+        )
+    )
+    if active is not None:
+        return EmailDeliveryResponse.model_validate(active, from_attributes=True)
+
+    now = utcnow()
+    delivery = EmailDelivery(
+        run_id=run.id,
+        stage_attempt_no=preview.attempt_no,
+        requested_by=employee.id,
+        delivery_type=payload.delivery_type,
+        recipient=payload.recipient.strip(),
+        recipient_normalized=recipient,
+        status=EmailDeliveryStatus.QUEUED.value,
+        idempotency_key=key,
+        request_fingerprint=fingerprint,
+        sample_sha256=sample_sha256,
+        template_version=payload.template_version,
+        created_at=now,
+        updated_at=now,
+    )
+    db.add(delivery)
+    await db.flush()
+    # 큐 발행 전에 요청 레코드를 내구화한다. 발행 시 응답이 유실되어도
+    # 재시작 복구 잡이 QUEUED 행을 다시 찾을 수 있다.
+    await db.commit()
+    return EmailDeliveryResponse.model_validate(delivery, from_attributes=True)
 
 
 async def get_processing_result(db: AsyncSession, run_id: int) -> ProcessingResultResponse:
