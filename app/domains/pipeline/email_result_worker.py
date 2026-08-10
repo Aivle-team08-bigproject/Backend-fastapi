@@ -19,6 +19,10 @@ async def consume_email_result_queue(stop_event: asyncio.Event) -> None:
     """결과 큐를 소비한다. 큐가 비활성화된 환경에서는 실행하지 않는다."""
     if not settings.email_queue_enabled:
         return
+    if settings.email_queue_backend.lower() == "sqs":
+        await _consume_sqs_results(stop_event)
+        return
+
     redis = Redis.from_url(settings.worker_status_redis_url, decode_responses=True)
     try:
         while not stop_event.is_set():
@@ -31,6 +35,31 @@ async def consume_email_result_queue(stop_event: asyncio.Event) -> None:
         raise
     finally:
         await redis.aclose()
+
+
+async def _consume_sqs_results(stop_event: asyncio.Event) -> None:
+    """SQS 결과를 반영하고 DB 커밋 후에만 메시지를 삭제한다."""
+    if not settings.email_result_queue_url:
+        raise RuntimeError("EMAIL_RESULT_QUEUE_URL is required for SQS backend")
+
+    import boto3
+
+    client = boto3.client("sqs", region_name=settings.aws_region)
+    while not stop_event.is_set():
+        response = await asyncio.to_thread(
+            client.receive_message,
+            QueueUrl=settings.email_result_queue_url,
+            MaxNumberOfMessages=1,
+            WaitTimeSeconds=settings.email_sqs_wait_seconds,
+            VisibilityTimeout=settings.email_sqs_visibility_timeout_seconds,
+        )
+        for message in response.get("Messages", []):
+            await _apply_result(message["Body"])
+            await asyncio.to_thread(
+                client.delete_message,
+                QueueUrl=settings.email_result_queue_url,
+                ReceiptHandle=message["ReceiptHandle"],
+            )
 
 
 async def _apply_result(payload: str) -> None:

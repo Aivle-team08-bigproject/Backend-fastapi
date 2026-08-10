@@ -8,18 +8,21 @@ from app.common.session_activity_middleware import SessionActivityMiddleware
 from app.api.router import api_router
 from app.core.config import settings
 from app.domains.pipeline.email_result_worker import consume_email_result_queue
+from app.domains.pipeline.email_retry_worker import monitor_stale_email_deliveries
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     stop_event = asyncio.Event()
     result_task = asyncio.create_task(consume_email_result_queue(stop_event))
+    retry_task = asyncio.create_task(monitor_stale_email_deliveries(stop_event))
     try:
         yield
     finally:
         stop_event.set()
         result_task.cancel()
-        await asyncio.gather(result_task, return_exceptions=True)
+        retry_task.cancel()
+        await asyncio.gather(result_task, retry_task, return_exceptions=True)
 
 
 app = FastAPI(title="portfolio-data-market agent-service", lifespan=lifespan)
