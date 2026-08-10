@@ -4,14 +4,13 @@
 
 - 피드백 원문: `NOTICES_DB_회신.md` (DB 담당, 2026-08-09)
 - 대상 브랜치: `feature/notices-backend-reapply`
-- 기준 Alembic head: `3f8e1c2a7b90`
-- 현재 브랜치 상태: 공지사항 API·모델은 존재하지만 Alembic revision은 제거된 상태
+- 현재 브랜치 상태: 공지사항 API·모델은 존재하며, DB 변경 적용은 DB 담당이 관리한다.
 
 ## 결정
 
-DB 담당 피드백을 수용한다. `service.notices`는 수동 SQL이 아니라 Alembic revision으로 관리하며, 수동 적용 SQL은 PR에서 제거한다. 새 revision은 DB 담당이 지정한 `e2a91d4f6c38_add_service_notices.py`로 만들고 `down_revision = "3f8e1c2a7b90"`을 사용한다.
+DB 담당 피드백을 수용한다. `service.notices`의 DDL·권한·트리거 적용은 DB 담당이 관리한다. Backend PR에서는 수동 적용 SQL 파일을 제거하고, 아래 DB 계약에 맞춰 모델·API·서비스 로직만 수정한다.
 
-`content` 최대 길이는 현재 API·Frontend가 사용 중인 **20,000자**로 확정한다. DB migration에는 `CHECK (char_length(content) <= 20000)`을 추가하고 앱의 Pydantic 검증도 동일하게 유지한다.
+`content` 최대 길이는 현재 API·Frontend가 사용 중인 **20,000자**로 확정한다. DB 담당에게 `CHECK (char_length(content) <= 20000)` 적용을 요청하고 앱의 Pydantic 검증도 동일하게 유지한다.
 
 ## DB 변경 설계
 
@@ -28,7 +27,7 @@ DB 담당 피드백을 수용한다. `service.notices`는 수동 SQL이 아니�
 | 갱신 시각 | `BEFORE UPDATE`에서 `service.trigger_set_updated_at()` 호출 |
 | 권한 | DB 관례의 `ALTER DEFAULT PRIVILEGES`를 사용하고, `app_svc`에는 `SELECT`, `INSERT`, `UPDATE`만 유지 |
 
-Alembic `upgrade()`에는 테이블·제약조건·인덱스·`set_updated_at_notices` 트리거를 만들고, `downgrade()`에는 역순으로 트리거·인덱스·테이블을 제거한다. 소유자·시퀀스 권한을 개별 SQL로 설정하지 않는다.
+DB 담당은 테이블·제약조건·인덱스·`set_updated_at_notices` 트리거 및 권한을 적용한다. Backend는 소유자·시퀀스 권한을 개별 SQL로 설정하지 않는다.
 
 ## Backend 변경 설계
 
@@ -36,7 +35,7 @@ Alembic `upgrade()`에는 테이블·제약조건·인덱스·`set_updated_at_no
 
 - `Notice.id`는 `Identity(always=False)`로 선언한다.
 - `status`, `created_at`, `updated_at`은 ORM `default`가 아닌 DB `server_default`로 선언한다.
-- 인덱스 이름을 DB 관례로 바꾸고 내림차순 목록 인덱스를 모델·migration에 맞춘다.
+- 인덱스 이름을 DB 관례로 바꾸고 내림차순 목록 인덱스를 DB 설계와 맞춘다.
 - `created_at`, `updated_at`은 앱이 직접 넣지 않는다. `flush()` 후 `refresh()`로 DB가 채운 값을 읽는다.
 
 ### 상태 전이
@@ -72,16 +71,15 @@ Alembic `upgrade()`에는 테이블·제약조건·인덱스·`set_updated_at_no
 ## 구현 순서
 
 1. 수동 SQL 파일과 수동 DDL 중심 문서를 제거·정정한다.
-2. `e2a91d4f6c38_add_service_notices.py` Alembic revision을 추가한다.
+2. DB 담당에게 최종 DDL 요구사항과 `content` 20,000자 제한을 전달한다.
 3. SQLAlchemy 모델을 IDENTITY·서버 기본값·인덱스·FK 선언에 맞춘다.
 4. 서비스의 생성·수정·논리 삭제 상태 전이와 응답 모델을 수정한다.
 5. 관리자 초안·재게시 흐름에 맞게 Frontend API 타입과 이동 경로를 수정한다.
-6. migration upgrade/downgrade, DB 기본값·트리거, 모든 상태 전이, 권한 거부(DELETE)를 테스트한다.
-7. Neon 분리 브랜치에서 migration과 CRUD를 검증한 뒤 PR을 갱신한다.
+6. DB 담당 적용 후 DB 기본값·트리거, 모든 상태 전이, 권한 거부(DELETE)를 통합 테스트한다.
+7. Neon 분리 브랜치에서 CRUD를 검증한 뒤 PR을 갱신한다.
 
 ## 완료 기준
 
-- `alembic heads`가 `e2a91d4f6c38` 하나를 가리킨다.
 - 빈 값으로 생성해도 DB가 `id`, `DRAFT`, `created_at`, `updated_at`을 채운다.
 - `DRAFT → PUBLISHED → ARCHIVED → PUBLISHED`가 성공하고 게시 시각은 유지된다.
 - 공개 API는 `PUBLISHED`만, 관리자 API는 모든 상태를 정확한 nullable `published_at`과 함께 반환한다.
