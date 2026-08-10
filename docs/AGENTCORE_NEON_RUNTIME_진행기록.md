@@ -65,3 +65,28 @@ NeonDB 메타데이터에 접근했음을 의미하며, 이후 `DATA_PROCESSING`
 - local Backend와 Runtime 간 IAM InvokeAgentRuntime 호출 성공
 - Backend 테스트 30개 통과
 - `terraform validate` 통과
+
+## ECR 삭제 후 Runtime 이미지 복구
+
+ECR repository가 삭제된 경우 Infra 브랜치에서 Terraform apply로 repository를 먼저
+재생성한 뒤, 이 브랜치에서 새 이미지를 build·push한다. 삭제 전 tag를 재사용하지 않고
+새 immutable tag를 사용한다.
+
+```bash
+cd /Users/joupark/bigproject2/Backend-fastapi
+
+ECR_REPO="$(cd ../bigproject-infra/envs/agentcore-local-dev && terraform output -raw ecr_repository_url)"
+IMAGE_TAG="agentcore-restore-$(date +%Y%m%d%H%M%S)"
+
+docker build -f Dockerfile.agentcore -t bigproject-agentcore:local .
+aws ecr get-login-password --region ap-northeast-2 \
+  | docker login --username AWS --password-stdin "$ECR_REPO"
+docker tag bigproject-agentcore:local "$ECR_REPO:$IMAGE_TAG"
+docker push "$ECR_REPO:$IMAGE_TAG"
+
+printf 'runtime_image_uri = "%s:%s"\n' "$ECR_REPO" "$IMAGE_TAG"
+```
+
+마지막 출력값으로 Infra의 `terraform.tfvars`에 있는 `runtime_image_uri`를 바꾼 뒤 두 번째
+Terraform apply를 실행한다. 적용 후에는 local invoker role의 MFA credentials로 Backend를
+재빌드·재시작하고 새 데이터 요청의 데이터 선별·데이터 처리 성공을 확인한다.
