@@ -140,7 +140,8 @@ class SamplePreviewResponse(BaseModel):
 
 class CreateEmailDeliveryRequest(BaseModel):
     recipient: str = Field(min_length=3, max_length=254)
-    delivery_type: str = Field(default="SELECTION_SAMPLE", max_length=40)
+    # DB 담당자가 CHECK를 생성할 때까지 코드 계약도 현재 확정된 값만 허용한다.
+    delivery_type: Literal["SELECTION_SAMPLE"] = "SELECTION_SAMPLE"
     template_version: str = Field(default="v1", min_length=1, max_length=50)
 
 

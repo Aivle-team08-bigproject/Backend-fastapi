@@ -2,6 +2,7 @@
 
 import json
 import logging
+import asyncio
 from dataclasses import asdict, dataclass
 
 from redis.asyncio import Redis
@@ -27,13 +28,32 @@ class EmailDeliveryQueueMessage:
 
 
 async def publish_email_delivery(message: EmailDeliveryQueueMessage) -> bool:
-    """로컬 Redis 큐 발행 adapter. 운영 SQS adapter가 같은 계약을 구현한다."""
+    """이메일 요청 큐에 발행한다.
+
+    로컬은 Redis 리스트를 사용하고, 운영에서는 SQS를 선택한다.
+    """
     if not settings.email_queue_enabled:
         logger.info("Email queue disabled; delivery remains QUEUED: %s", message.delivery_id)
         return False
+    payload = json.dumps(asdict(message), ensure_ascii=False)
+    if settings.email_queue_backend.lower() == "sqs":
+        if not settings.email_request_queue_url:
+            raise RuntimeError("EMAIL_REQUEST_QUEUE_URL is required for SQS backend")
+
+        def _send() -> None:
+            import boto3
+
+            boto3.client("sqs", region_name=settings.aws_region).send_message(
+                QueueUrl=settings.email_request_queue_url,
+                MessageBody=payload,
+            )
+
+        await asyncio.to_thread(_send)
+        return True
+
     redis = Redis.from_url(settings.worker_status_redis_url, decode_responses=True)
     try:
-        await redis.rpush(settings.email_request_queue_key, json.dumps(asdict(message), ensure_ascii=False))
+        await redis.rpush(settings.email_request_queue_key, payload)
         return True
     finally:
         await redis.aclose()
