@@ -31,9 +31,8 @@ import re
 import time
 
 from strands import Agent, tool
-from strands.models.openai import OpenAIModel
-
 from agent_runtime.requirements_analysis.config import settings
+from agent_runtime.model_factory import build_model
 
 # 오케스트레이션이 산출물을 검증할 때 그대로 재사용할 수 있도록 공개해둔 허용값 —
 # 이 프롬프트가 모델에게 지시하는 값과 검증 기준이 어긋나지 않으려면 이 상수를 참조해야 한다.
@@ -153,19 +152,18 @@ _JSON_BLOCK_RE = re.compile(r"\{.*\}", re.DOTALL)
 MAX_ATTEMPTS = 3
 
 
-def _build_model() -> OpenAIModel:
-    """현재는 DeepSeek(OpenAI SDK 호환 API)를 사용한다.
-
-    나중에 다른 API로 교체할 때는 이 함수와
-    agent_runtime/requirements_analysis/config.py만 건드리면 된다.
-    """
-    return OpenAIModel(
-        client_args={
-            "api_key": settings.deepseek_api_key,
-            "base_url": settings.deepseek_base_url,
-        },
-        model_id=settings.requirements_analysis_model_id,
-        params={"temperature": 0},
+def _build_model():
+    return build_model(
+        provider=settings.agent_runtime_model_provider,
+        model_id=(
+            settings.agent_runtime_model_id
+            if settings.agent_runtime_model_provider.lower() == "bedrock"
+            else settings.requirements_analysis_model_id
+        ),
+        deepseek_api_key=settings.deepseek_api_key,
+        deepseek_base_url=settings.deepseek_base_url,
+        region_name=settings.agent_runtime_region,
+        temperature=0,
     )
 
 

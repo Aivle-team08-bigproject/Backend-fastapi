@@ -6,9 +6,8 @@ import re
 import time
 
 from strands import Agent, tool
-from strands.models.openai import OpenAIModel
-
 from agent_runtime.data_selection.config import settings
+from agent_runtime.model_factory import build_model
 from agent_runtime.query import SelectionPlan
 from agent_runtime.query.registry import canonical_dataset
 
@@ -429,14 +428,19 @@ class SelectionPlanningError(ValueError):
         self.failure_snapshot = failure_snapshot
 
 
-def _build_model() -> OpenAIModel:
-    return OpenAIModel(
-        client_args={
-            "api_key": settings.deepseek_api_key,
-            "base_url": settings.deepseek_base_url,
-        },
-        model_id=settings.data_selection_model_id,
-        params={"temperature": 0, "response_format": {"type": "json_object"}},
+def _build_model():
+    return build_model(
+        provider=settings.agent_runtime_model_provider,
+        model_id=(
+            settings.agent_runtime_model_id
+            if settings.agent_runtime_model_provider.lower() == "bedrock"
+            else settings.data_selection_model_id
+        ),
+        deepseek_api_key=settings.deepseek_api_key,
+        deepseek_base_url=settings.deepseek_base_url,
+        region_name=settings.agent_runtime_region,
+        temperature=0,
+        json_mode=True,
     )
 
 

@@ -1,4 +1,5 @@
 from decimal import Decimal
+from typing import Literal
 
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
@@ -29,6 +30,18 @@ class Settings(BaseSettings):
     worker_status_ttl_seconds: int = 86400
     upload_root: str = "/app/uploads"
     database_host_override: str | None = None
+
+    # --- 파이프라인 에이전트 실행 위치 ---
+    # 기본값은 기존 로컬 개발 흐름이다. AGENTCORE로 바꾸면 Celery worker가
+    # 단계 payload를 AWS Bedrock AgentCore Runtime으로 전달한다.
+    pipeline_execution_backend: Literal["CELERY", "AGENTCORE"] = "CELERY"
+    agentcore_region: str = "ap-northeast-2"
+    agentcore_runtime_arn: str | None = None
+    agentcore_runtime_qualifier: str | None = None
+    agentcore_session_prefix: str = "bigproject"
+    agentcore_endpoint_url: str | None = None
+    agentcore_connect_timeout_seconds: int = 10
+    agentcore_read_timeout_seconds: int = 900
 
     # --- 문서 텍스트 추출 (documents 도메인) ---
     # 원본 파일은 디스크에 저장하지 않고 메모리에서 바로 파싱 후 폐기한다(A안).

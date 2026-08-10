@@ -1,0 +1,23 @@
+FROM python:3.12-slim
+
+WORKDIR /app
+
+COPY requirements.txt .
+RUN pip install --no-cache-dir -r requirements.txt
+
+# Runtime에는 소스만 넣는다. 로컬 dotenv/팀 환경 파일이 이미지 레이어에
+# 포함되면 Neon 자격 증명이 ECR에 남을 수 있으므로 전체 작업 디렉터리를 복사하지 않는다.
+COPY app ./app
+COPY agent_runtime ./agent_runtime
+
+RUN groupadd --system appuser \
+    && useradd --system --gid appuser --create-home appuser \
+    && chown -R appuser:appuser /app
+
+USER appuser
+
+# AgentCore Runtime이 /ping과 /invocations를 호출한다.
+CMD ["gunicorn", "app.agentcore_runtime:runtime_app", \
+"--workers", "1", \
+"--worker-class", "uvicorn.workers.UvicornWorker", \
+"--bind", "0.0.0.0:8080"]

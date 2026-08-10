@@ -18,6 +18,9 @@ class AgentSettings(BaseSettings):
 
     data_processing_model_provider: str = "deepseek"
     data_processing_model_id: str = "deepseek-v4-flash"
+    agent_runtime_model_provider: str = "deepseek"
+    agent_runtime_model_id: str = "global.anthropic.claude-haiku-4-5-20251001-v1:0"
+    agent_runtime_region: str = "ap-northeast-2"
     data_processing_model_timeout_seconds: float = 60.0
     deepseek_api_key: str = ""
     deepseek_base_url: str = "https://api.deepseek.com"
