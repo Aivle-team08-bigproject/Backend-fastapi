@@ -31,6 +31,7 @@ from app.domains.pipeline.analysis_steps import (
     analysis_step_message,
     analysis_step_progress,
 )
+from app.domains.pipeline.agent_client import AgentCoreRuntimeClient, AgentRuntimeClient
 from app.domains.pipeline.selection_steps import (
     selection_step_message,
     selection_step_progress,
@@ -49,6 +50,7 @@ from app.domains.pipeline.supervisor import (
 )
 from app.worker.celery_app import celery_app
 from app.worker.status_recorder import record_agent_log, record_status
+from app.core.config import settings
 
 
 logger = logging.getLogger(__name__)
@@ -261,9 +263,27 @@ async def _run_stage(stage_id: int, celery_task_id: str) -> dict:
             except Exception:  # noqa: BLE001 - 로깅 실패가 파이프라인을 멈추면 안 된다
                 logger.exception("Failed to record agent log for run_id=%s", stage.pipeline_run_id)
 
+        client = (
+            AgentCoreRuntimeClient(
+                execution_id=celery_task_id,
+                requirement_analysis_step_callback=requirement_analysis_step_callback,
+                selection_step_callback=selection_step_callback,
+                processing_step_callback=processing_step_callback,
+                agent_log_callback=agent_log_callback,
+            )
+            if settings.pipeline_execution_backend == "AGENTCORE"
+            else AgentRuntimeClient(
+                requirement_analysis_step_callback=requirement_analysis_step_callback,
+                selection_step_callback=selection_step_callback,
+                processing_step_callback=processing_step_callback,
+                agent_log_callback=agent_log_callback,
+            )
+        )
+
         outcome = await run_stage(
             db,
             stage,
+            agent_client=client,
             requirement_analysis_step_callback=requirement_analysis_step_callback,
             selection_step_callback=selection_step_callback,
             processing_step_callback=processing_step_callback,

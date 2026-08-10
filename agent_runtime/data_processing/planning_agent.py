@@ -8,9 +8,8 @@ import time
 from copy import deepcopy
 
 from strands import Agent
-from strands.models.openai import OpenAIModel
-
 from agent_runtime.data_processing.config import settings
+from agent_runtime.model_factory import build_model
 from agent_runtime.data_processing.plan import (
     ProcessingOperation,
     ProcessingPlan,
@@ -216,16 +215,20 @@ class ProcessingPlanningError(ValueError):
         self.failure_snapshot = failure_snapshot
 
 
-def _build_model() -> OpenAIModel:
-    return OpenAIModel(
-        client_args={
-            "api_key": settings.deepseek_api_key,
-            "base_url": settings.deepseek_base_url,
-            "timeout": settings.data_processing_model_timeout_seconds,
-            "max_retries": 0,
-        },
-        model_id=settings.data_processing_model_id,
-        params={"temperature": 0, "response_format": {"type": "json_object"}},
+def _build_model():
+    return build_model(
+        provider=settings.agent_runtime_model_provider,
+        model_id=(
+            settings.agent_runtime_model_id
+            if settings.agent_runtime_model_provider.lower() == "bedrock"
+            else settings.data_processing_model_id
+        ),
+        deepseek_api_key=settings.deepseek_api_key,
+        deepseek_base_url=settings.deepseek_base_url,
+        region_name=settings.agent_runtime_region,
+        temperature=0,
+        json_mode=True,
+        timeout=settings.data_processing_model_timeout_seconds,
     )
 
 

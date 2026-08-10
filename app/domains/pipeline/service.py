@@ -6,6 +6,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.common.errors import DomainException, not_found
 from app.common.time_utils import utcnow
+from app.core.config import settings
 from app.domains.pipeline.model import (
     Artifact,
     Client,
@@ -220,7 +221,7 @@ async def create_data_request(
             stage_code=stage_code,
             attempt_no=1,
             status=StageRunStatus.PENDING,
-            executor="CELERY",
+            executor=settings.pipeline_execution_backend,
             input_payload={"request_no": data_request.request_no},
             output_payload={},
             created_at=now,
