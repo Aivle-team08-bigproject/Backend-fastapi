@@ -92,9 +92,9 @@ def _validate_status_transition(current: NoticeStatus, next_status: NoticeStatus
     if current == next_status:
         return
     allowed = {
-        NoticeStatus.DRAFT: {NoticeStatus.PUBLISHED, NoticeStatus.ARCHIVED},
+        NoticeStatus.DRAFT: {NoticeStatus.PUBLISHED},
         NoticeStatus.PUBLISHED: {NoticeStatus.ARCHIVED},
-        NoticeStatus.ARCHIVED: set(),
+        NoticeStatus.ARCHIVED: {NoticeStatus.PUBLISHED},
     }
     if next_status not in allowed[current]:
         raise bad_request("NOTICE_STATUS_INVALID", "허용되지 않는 공지사항 상태 변경입니다.")
@@ -102,23 +102,22 @@ def _validate_status_transition(current: NoticeStatus, next_status: NoticeStatus
 
 async def create_notice(db: AsyncSession, payload: NoticeWriteRequest, actor: Employee) -> Notice:
     now = utcnow()
-    published_at = now if payload.status == NoticeStatus.PUBLISHED else None
-    notice = Notice(
+    notice_data = dict(
         title=payload.title,
         content=payload.content,
-        status=payload.status,
         created_by_employee_id=actor.id,
         updated_by_employee_id=actor.id,
-        published_at=published_at,
-        created_at=now,
-        updated_at=now,
     )
+    if payload.status == NoticeStatus.PUBLISHED:
+        notice_data.update(status=NoticeStatus.PUBLISHED, published_at=now)
+
+    notice = Notice(**notice_data)
     db.add(notice)
     await db.flush()
     db.add(AdminAuditLog(
         actor_employee_code=actor.employee_code,
         action="NOTICE_CREATED",
-        detail=f"notice_id={notice.id};status={notice.status.value}",
+        detail=f"notice_id={notice.id};status={payload.status.value}",
         created_at=now,
     ))
     await db.commit()
@@ -140,15 +139,15 @@ async def update_notice(
         notice.content = payload.content
     if notice.status != next_status:
         notice.status = next_status
-        if next_status == NoticeStatus.PUBLISHED and notice.published_at is None:
+        if notice.status == NoticeStatus.PUBLISHED and notice.published_at is None:
             notice.published_at = utcnow()
     notice.updated_by_employee_id = actor.id
-    notice.updated_at = utcnow()
+    audit_time = utcnow()
     db.add(AdminAuditLog(
         actor_employee_code=actor.employee_code,
         action="NOTICE_UPDATED",
         detail=f"notice_id={notice.id};status={notice.status.value}",
-        created_at=notice.updated_at,
+        created_at=audit_time,
     ))
     await db.commit()
     await db.refresh(notice)
@@ -160,16 +159,16 @@ async def delete_notice(db: AsyncSession, notice_id: int, actor: Employee) -> No
     if notice is None:
         raise not_found("NOTICE_NOT_FOUND", "공지사항을 찾을 수 없습니다.")
 
-    now = utcnow()
     if notice.status != NoticeStatus.ARCHIVED:
+        _validate_status_transition(notice.status, NoticeStatus.ARCHIVED)
         notice.status = NoticeStatus.ARCHIVED
         notice.updated_by_employee_id = actor.id
-        notice.updated_at = now
 
+    audit_time = utcnow()
     db.add(AdminAuditLog(
         actor_employee_code=actor.employee_code,
         action="NOTICE_DELETED",
         detail=f"notice_id={notice.id};status={notice.status.value}",
-        created_at=now,
+        created_at=audit_time,
     ))
     await db.commit()

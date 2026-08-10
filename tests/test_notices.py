@@ -1,5 +1,10 @@
 from uuid import uuid4
 
+import pytest
+
+from app.common.errors import DomainException
+from app.domains.notices.model import NoticeStatus
+from app.domains.notices.service import _validate_status_transition
 from tests.conftest import department_id
 from tests.test_auth_flow import _login_as_admin, unique_employee_code
 
@@ -91,6 +96,63 @@ def test_notice_status_transition_rejects_published_to_draft(client):
         json={"status": "DRAFT"},
     )
     assert updated.status_code == 400
+
+
+def test_notice_status_transition_rules():
+    _validate_status_transition(NoticeStatus.DRAFT, NoticeStatus.PUBLISHED)
+    _validate_status_transition(NoticeStatus.PUBLISHED, NoticeStatus.ARCHIVED)
+    _validate_status_transition(NoticeStatus.ARCHIVED, NoticeStatus.PUBLISHED)
+
+    for current, next_status in (
+        (NoticeStatus.DRAFT, NoticeStatus.ARCHIVED),
+        (NoticeStatus.PUBLISHED, NoticeStatus.DRAFT),
+        (NoticeStatus.ARCHIVED, NoticeStatus.DRAFT),
+    ):
+        with pytest.raises(DomainException) as exc_info:
+            _validate_status_transition(current, next_status)
+        assert exc_info.value.status_code == 400
+        assert exc_info.value.code == "NOTICE_STATUS_INVALID"
+
+
+def test_notice_draft_and_republish_state_transitions(client):
+    admin_headers = _login_as_admin(client)
+    draft = client.post(
+        "/api/v1/admin/notices",
+        headers=admin_headers,
+        json={"title": "초안 공지", "content": "본문"},
+    )
+    assert draft.status_code == 201, draft.text
+    assert draft.json()["status"] == "DRAFT"
+    assert draft.json()["published_at"] is None
+
+    draft_id = draft.json()["id"]
+    assert client.get(f"/api/v1/notices/{draft_id}", headers=admin_headers).status_code == 404
+    assert client.delete(f"/api/v1/admin/notices/{draft_id}", headers=admin_headers).status_code == 400
+
+    published = client.patch(
+        f"/api/v1/admin/notices/{draft_id}",
+        headers=admin_headers,
+        json={"status": "PUBLISHED"},
+    )
+    assert published.status_code == 200, published.text
+    published_at = published.json()["published_at"]
+    assert published.json()["status"] == "PUBLISHED"
+    assert published_at is not None
+
+    archived = client.delete(f"/api/v1/admin/notices/{draft_id}", headers=admin_headers)
+    assert archived.status_code == 204
+    archived_detail = client.get(f"/api/v1/admin/notices/{draft_id}", headers=admin_headers)
+    assert archived_detail.json()["status"] == "ARCHIVED"
+    assert archived_detail.json()["published_at"] == published_at
+
+    republished = client.patch(
+        f"/api/v1/admin/notices/{draft_id}",
+        headers=admin_headers,
+        json={"status": "PUBLISHED"},
+    )
+    assert republished.status_code == 200, republished.text
+    assert republished.json()["status"] == "PUBLISHED"
+    assert republished.json()["published_at"] == published_at
 
 
 def test_notice_requires_authentication(client):

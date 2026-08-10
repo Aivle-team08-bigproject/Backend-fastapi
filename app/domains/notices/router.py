@@ -94,37 +94,34 @@ async def notice_detail(
     return NoticeDetail(**_item((notice, author)).model_dump(), content=notice.content)
 
 
-@router.post("/admin/notices", response_model=NoticeDetail, status_code=status.HTTP_201_CREATED)
+@router.post("/admin/notices", response_model=NoticeAdminItem, status_code=status.HTTP_201_CREATED)
 async def create_notice(
     payload: NoticeWriteRequest,
     auth: CurrentAuth = Depends(require_role(EmployeeRole.ADMIN)),
     db: AsyncSession = Depends(get_db),
-) -> NoticeDetail:
+) -> NoticeAdminItem:
     notice = await service.create_notice(db, payload, auth.employee)
-    return NoticeDetail(
+    return NoticeAdminItem(
         id=notice.id,
         title=notice.title,
         content=notice.content,
+        status=notice.status,
         author_name=auth.employee.name,
-        published_at=notice.published_at or notice.created_at,
+        published_at=notice.published_at,
+        created_at=notice.created_at,
+        updated_at=notice.updated_at,
     )
 
 
-@router.patch("/admin/notices/{notice_id}", response_model=NoticeDetail)
+@router.patch("/admin/notices/{notice_id}", response_model=NoticeAdminItem)
 async def update_notice(
     notice_id: int,
     payload: NoticeUpdateRequest,
     auth: CurrentAuth = Depends(require_role(EmployeeRole.ADMIN)),
     db: AsyncSession = Depends(get_db),
-) -> NoticeDetail:
-    notice = await service.update_notice(db, notice_id, payload, auth.employee)
-    return NoticeDetail(
-        id=notice.id,
-        title=notice.title,
-        content=notice.content,
-        author_name=auth.employee.name,
-        published_at=notice.published_at or notice.created_at,
-    )
+) -> NoticeAdminItem:
+    await service.update_notice(db, notice_id, payload, auth.employee)
+    return _admin_item(await service.get_admin(db, notice_id))
 
 
 @router.delete("/admin/notices/{notice_id}", status_code=status.HTTP_204_NO_CONTENT)

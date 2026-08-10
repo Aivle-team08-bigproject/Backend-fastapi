@@ -10,7 +10,7 @@
   - 공개 공지 목록/상세/최신 공지 API
   - 관리자 공지 목록/상세/작성/수정 및 논리 삭제 API
   - 관리자 권한 검사
-  - DB 관리자용 적용 SQL 및 전달 문서
+  - DB 담당 스키마 계약에 맞춘 모델·상태 전이·응답 계약
 - Frontend: `feature/notices-frontend`
   - Dashboard 최신 공지 한 줄 배너
   - 공지사항 목록/상세 페이지
@@ -20,7 +20,7 @@
 ## 검증
 
 - Docker Compose로 Backend/Frontend/Redis 기동 확인
-- Neon 분리 브랜치에 migration 적용 및 더미 공지 조회 확인
+- DB 담당의 Neon 분리 브랜치 적용 후 더미 공지 조회 확인
 - 관리자 로그인 후 작성·수정·삭제 흐름 확인
 - 비관리자 공지 조회 및 관리자 화면 접근 차단 확인
 - 화면 캡처: `/Users/joupark/bigproject2/docs/NOTICE_FEATURE_SCREENSHOTS.md`
@@ -30,7 +30,7 @@
 1. 관리자 권한 검사가 모든 `/api/v1/admin/notices*` 엔드포인트에 적용되었는지
 2. 공개 조회에서 `PUBLISHED` 공지만 반환되는지
 3. `published_at` 정렬 및 Dashboard 최신 공지 표시가 일관적인지
-4. DB 관리자용 SQL의 FK, 상태 체크 제약조건, 인덱스, `app_svc` 권한이 운영 DB 기준에 맞는지
+4. DB 담당 스키마의 FK, 상태 체크 제약조건, 인덱스, `app_svc` 권한과 Backend 모델 계약이 일치하는지
 
 ## PR 생성 안내
 
