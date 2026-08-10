@@ -27,6 +27,11 @@ class Settings(BaseSettings):
     worker_status_sse_channel: str = "pipeline:run-status:persisted"
     worker_status_key_prefix: str = "pipeline:run-status:latest"
     worker_status_ttl_seconds: int = 86400
+    # 이메일 요청 큐. 로컬은 Redis adapter, 운영은 SQS adapter로 교체한다.
+    email_queue_enabled: bool = False
+    email_request_queue_key: str = "email:delivery:requests"
+    email_result_queue_key: str = "email:delivery:results"
+    email_result_poll_interval_seconds: float = 1.0
     upload_root: str = "/app/uploads"
     database_host_override: str | None = None
 
