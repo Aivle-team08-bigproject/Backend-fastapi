@@ -245,13 +245,18 @@ def _projection_query():
         (latest_review.c.review_type.in_(RECOGNIZED_REVIEW_TYPES), review_priority),
         else_=literal(None),
     )
+    is_waiting_review = latest_run.c.run_status.in_(tuple(WAITING_PRIORITY_BY_STATUS)) & priority.is_not(None)
+    # latest_review는 요청 전체 기준 최신 리뷰 1건이라 review_type을 안 가린다.
+    # 이전 단계(REQUIREMENT)가 APPROVED로 끝난 뒤 다음 단계(SAMPLE)가 검토 대기로
+    # 들어오면, review_type이 안 맞는 그 과거 리뷰를 "승인됨"으로 오인해 대기 중인
+    # 작업이 액션 아이템에서 누락된다. waiting_priority와 review_type이 일치할 때만
+    # 그 리뷰의 decision을 신뢰한다.
+    review_matches_current_stage = latest_review.c.review_type == waiting_priority
     decision_status = case(
+        (is_waiting_review & ~review_matches_current_stage, literal("pending")),
         (latest_review.c.review_decision == "APPROVED", literal("approved")),
         (latest_review.c.review_decision == "CHANGES_REQUESTED", literal("changes_requested")),
-        (
-            latest_run.c.run_status.in_(tuple(WAITING_PRIORITY_BY_STATUS)) & priority.is_not(None),
-            literal("pending"),
-        ),
+        (is_waiting_review, literal("pending")),
         else_=literal("not_required"),
     )
     status_code = func.coalesce(
