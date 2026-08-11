@@ -1,7 +1,7 @@
 from datetime import date, datetime
 from typing import Literal
 
-from pydantic import BaseModel, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from app.domains.pipeline.model import (
     DataRequestStatus,
@@ -138,6 +138,59 @@ class SamplePreviewResponse(BaseModel):
     review_summary: SamplePreviewReviewSummary
 
 
+class CreateEmailDeliveryRequest(BaseModel):
+    recipient: str = Field(min_length=3, max_length=254)
+    delivery_type: Literal["SELECTION_SAMPLE", "FINAL_ARTIFACT"] = "SELECTION_SAMPLE"
+    template_version: str = Field(default="v1", min_length=1, max_length=50)
+    # API 키는 발급 응답에서만 평문으로 노출되므로, 사용자가 같은 화면에서
+    # 메일을 보낼 때만 요청 본문에 실어 Spring까지 전달한다. DB에는 저장하지 않는다.
+    api_endpoint_url: str | None = Field(default=None, max_length=2048)
+    api_key: str | None = Field(default=None, min_length=8, max_length=255)
+
+    @model_validator(mode="after")
+    def validate_api_credentials(self) -> "CreateEmailDeliveryRequest":
+        if bool(self.api_endpoint_url) != bool(self.api_key):
+            raise ValueError("api_endpoint_url과 api_key는 함께 입력해야 합니다.")
+        if self.delivery_type == "FINAL_ARTIFACT" and not self.api_endpoint_url:
+            raise ValueError("최종 산출물 메일에는 API URL과 API Key가 필요합니다.")
+        if self.delivery_type != "FINAL_ARTIFACT" and (self.api_endpoint_url or self.api_key):
+            raise ValueError("API 인증정보는 최종 산출물 메일에서만 사용할 수 있습니다.")
+        return self
+
+
+class EmailDeliveryResponse(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    delivery_id: str
+    run_id: int
+    stage_attempt_no: int
+    delivery_type: str
+    recipient: str
+    status: str
+    idempotency_key: str
+    sample_sha256: str
+    template_version: str
+    provider_message_id: str | None = None
+    failure_code: str | None = None
+    created_at: datetime
+    updated_at: datetime
+
+
+class CustomerApiKeyResponse(BaseModel):
+    endpoint_url: str
+    api_key: str
+    key_last4: str
+    contract_no: str
+
+
+class InternalDeliveryLookupResponse(BaseModel):
+    """Spring(고객 API)이 이 정보로 직접 S3 presign한다. FastAPI는 S3를 안 건드린다."""
+
+    storage_key: str
+    mime_type: str
+    artifact_filename: str
+
+
 class ProcessingResultResponse(BaseModel):
     run_id: int
     stage: str
@@ -161,6 +214,11 @@ class StageReviewRequest(BaseModel):
     # 선택값이 있으면 실패 정책표로 롤백 단계를 정한다. 없으면 현재 HITL 게이트 기준으로
     # 요구사항→요구사항 분석, 샘플→선별, 최종 산출물→가공 단계부터 다시 실행한다.
     failure_code: FailureCode | None = None
+    # 요구사항 분석 단계 승인 시에만 사용. AI가 판단한 전달 설정을 실무자가 덮어쓴다.
+    delivery_channel: Literal["email", "api"] | None = None
+    output_formats: list[Literal["csv", "visualization", "report"]] | None = Field(
+        default=None, min_length=1
+    )
 
 
 class StageReviewResponse(BaseModel):
