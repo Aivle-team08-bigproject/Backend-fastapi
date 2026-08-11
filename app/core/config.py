@@ -38,6 +38,10 @@ class Settings(BaseSettings):
     email_sqs_visibility_timeout_seconds: int = 60
     email_stale_after_seconds: int = 900
     email_retry_poll_interval_seconds: int = 60
+    # 발송 완료/실패 후 수신자 주소를 보관하는 기간. 만료 후 주소는
+    # [REDACTED]로 치환해 발송 이력만 남긴다.
+    email_recipient_retention_days: int = 30
+    email_pii_purge_interval_seconds: int = 3600
     email_request_queue_key: str = "email:delivery:requests"
     email_result_queue_key: str = "email:delivery:results"
     email_result_poll_interval_seconds: float = 1.0

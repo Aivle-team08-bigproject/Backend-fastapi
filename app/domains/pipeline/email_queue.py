@@ -37,6 +37,9 @@ class EmailDeliveryQueueMessage:
     artifact_storage_key: str
     artifact_filename: str
     artifact_mime_type: str
+    # API 키는 DB에 저장하지 않고, 발급 직후 사용자가 요청한 메일에만 포함한다.
+    api_endpoint_url: str
+    api_key: str
 
 
 async def publish_email_delivery(message: EmailDeliveryQueueMessage) -> bool:

@@ -165,6 +165,8 @@ async def request_email_delivery(
             artifact_storage_key=artifact_storage_key,
             artifact_filename=artifact_filename,
             artifact_mime_type=artifact_mime_type,
+            api_endpoint_url=payload.api_endpoint_url or "",
+            api_key=payload.api_key or "",
         )
     )
     return delivery
