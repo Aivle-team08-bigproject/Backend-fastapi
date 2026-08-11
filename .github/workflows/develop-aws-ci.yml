@@ -54,6 +54,8 @@ jobs:
           path: ~/.cache/pip
           key: ${{ runner.os }}-pip-${{ hashFiles('requirements.txt') }}
       - run: pip install -r requirements.txt
+      - name: Create application schemas
+        run: python -c "import psycopg; conn=psycopg.connect('postgresql://app:app@localhost:5432/app_test'); conn.execute('CREATE SCHEMA IF NOT EXISTS service'); conn.commit(); conn.close()"
       - run: alembic upgrade head
       - run: pytest -q
 
