@@ -50,6 +50,7 @@ from app.domains.pipeline.service import (
     customer_result_filename,
     get_email_delivery,
     get_email_delivery_context,
+    get_accessible_run,
     get_pipeline_run,
     get_processing_result,
     get_result_artifact,
@@ -276,7 +277,12 @@ async def review_run_stage(
 
 
 @router.get("/runs/{run_id}/result.csv")
-async def download_run_result(run_id: int, db: AsyncSession = Depends(get_db)):
+async def download_run_result(
+    run_id: int,
+    auth: CurrentAuth = Depends(get_current_auth),
+    db: AsyncSession = Depends(get_db),
+):
+    await get_accessible_run(db, run_id, auth.employee, auth.permissions)
     artifact = await get_result_artifact(db, run_id)
     request_no = await db.scalar(
         select(DataRequest.request_no)

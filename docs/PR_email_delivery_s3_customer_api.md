@@ -17,6 +17,9 @@
 - SQS 결과 반영 후 Redis SSE 상태 발행
 - S3 artifact 저장 모드와 다운로드 URL 연동
 - 고객 API Key 발급 및 내부 산출물 조회 API 유지
+- 운영 환경 내부 서비스 키 미설정 시 fail-fast 및 내부 API 검증 강화
+- 결과 CSV 다운로드에 직원 JWT와 run 소유권 검증 추가
+- 메일에 포함할 API Key의 계약·run·endpoint 재검증
 - DLQ 수동 종결 내부 API 추가
 - 종료된 이메일 발송 이력의 수신자 개인정보 파기 루프 추가
 

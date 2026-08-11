@@ -8,7 +8,7 @@ from fastapi import status
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.common.errors import DomainException, forbidden, not_found, unauthorized
+from app.common.errors import DomainException, conflict, forbidden, not_found, unauthorized
 from app.common.time_utils import utcnow
 from app.core.config import settings
 from app.domains.pipeline.model import (
@@ -430,6 +430,16 @@ async def _get_accessible_run(
     return run, data_request
 
 
+async def get_accessible_run(
+    db: AsyncSession,
+    run_id: int,
+    employee: Employee,
+    permissions: set[PermissionCode],
+) -> tuple[PipelineRun, DataRequest]:
+    """직원 인증과 run 소유권 검증을 외부 라우터에서도 재사용한다."""
+    return await _get_accessible_run(db, run_id, employee, permissions)
+
+
 async def _get_completed_selection_stage(db: AsyncSession, run_id: int) -> StageRun:
     stage = await db.scalar(
         select(StageRun)
@@ -524,6 +534,34 @@ def _normalize_recipient(value: str) -> str:
     return f"{local}@{domain.lower()}" if separator else value.strip().lower()
 
 
+async def validate_customer_api_credentials(
+    db: AsyncSession,
+    run: PipelineRun,
+    endpoint_url: str,
+    raw_key: str,
+) -> None:
+    """메일에 실을 API 인증정보가 같은 run의 활성 계약 키인지 확인한다."""
+    key_hash = hashlib.sha256(raw_key.encode()).hexdigest()
+    row = await db.execute(
+        select(ContractApiKey, Contract)
+        .join(Contract, Contract.id == ContractApiKey.contract_id)
+        .where(ContractApiKey.key_hash == key_hash)
+    )
+    api_key, contract = row.one_or_none() or (None, None)
+    now = utcnow()
+    if api_key is None or contract is None:
+        raise conflict("INVALID_EMAIL_API_CREDENTIALS", "메일에 사용할 API 인증정보가 유효하지 않습니다.")
+    if api_key.status != ApiKeyStatus.ACTIVE.value or (
+        api_key.expires_at is not None and api_key.expires_at < now
+    ):
+        raise conflict("INVALID_EMAIL_API_CREDENTIALS", "메일에 사용할 API Key가 만료되었거나 폐기되었습니다.")
+    if contract.data_request_id != run.data_request_id:
+        raise conflict("INVALID_EMAIL_API_CREDENTIALS", "API Key가 현재 산출물의 계약에 속하지 않습니다.")
+    expected_url = f"{settings.customer_api_base_url}/api/external/v1/deliveries/{contract.contract_no}"
+    if endpoint_url != expected_url:
+        raise conflict("INVALID_EMAIL_API_CREDENTIALS", "API URL이 현재 산출물의 계약 URL과 일치하지 않습니다.")
+
+
 async def create_email_delivery(
     db: AsyncSession,
     run_id: int,
@@ -544,6 +582,7 @@ async def create_email_delivery(
     run, _ = await _get_accessible_run(db, run_id, employee, permissions)
 
     if payload.delivery_type == "FINAL_ARTIFACT":
+        await validate_customer_api_credentials(db, run, payload.api_endpoint_url or "", payload.api_key or "")
         if settings.artifact_storage_backend != "s3":
             # Spring이 storage_key로 S3 presigned URL을 만든다. 로컬 백엔드로 저장된
             # 산출물은 S3에 없으므로 여기서 막지 않으면 링크가 항상 NoSuchKey로 깨진다.

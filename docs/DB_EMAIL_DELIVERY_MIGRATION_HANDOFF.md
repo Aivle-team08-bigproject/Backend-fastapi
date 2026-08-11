@@ -73,7 +73,7 @@ ON service.email_deliveries (run_id, status);
 
 - `recipient`와 `recipient_normalized`는 개인정보이므로 보존기간과 파기 주체를
   DB 운영 정책에 반영해야 합니다. 현재 애플리케이션은 종료된 발송 건의 주소를
-  기본 30일 뒤 `[REDACTED]`로 치환합니다.
+  기본 30일 뒤 `[REDACTED:{delivery_id}]` 형식의 PII-free 표식으로 치환합니다.
 - request SQS 메시지에도 `recipient`가 포함되므로 queue message retention은
   1일로 설정하는 방향입니다.
 - SQS DLQ에 들어간 발송 건은 자동 재발송하지 않습니다. 운영자가 확인한 뒤
