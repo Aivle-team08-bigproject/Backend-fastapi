@@ -53,13 +53,13 @@ def test_runtime_database_reads_rds_postgres_json(monkeypatch):
     monkeypatch.setattr("agent_runtime.runtime_database.async_sessionmaker", lambda *args, **kwargs: object())
 
     asyncio.run(RuntimeDatabase().initialize())
-    assert captured["url"] == "postgresql+psycopg://app_svc:p%40ss@db.rds.amazonaws.com:5432/hanacard?sslmode=require"
+    assert captured["url"] == "postgresql+asyncpg://app_svc:p%40ss@db.rds.amazonaws.com:5432/hanacard?sslmode=require"
 
 
 def test_runtime_database_reads_single_key_connection_string_json(monkeypatch):
     fake_client = FakeSecretsManager()
     fake_client.get_secret_value = lambda **kwargs: {
-        "SecretString": '{"bigproject/local-dev/agentcore/neon-database-url":"postgresql+psycopg://agent_svc:password@example.neon.tech/hanacard?sslmode=require"}'
+        "SecretString": '{"bigproject/local-dev/agentcore/neon-database-url":"postgresql://agent_svc:password@example.neon.tech/hanacard?sslmode=require"}'
     }
     captured = {}
     monkeypatch.setenv("AGENT_DATABASE_SECRET_ARN", "arn:test:neon")
@@ -68,7 +68,7 @@ def test_runtime_database_reads_single_key_connection_string_json(monkeypatch):
     monkeypatch.setattr("agent_runtime.runtime_database.async_sessionmaker", lambda *args, **kwargs: object())
 
     asyncio.run(RuntimeDatabase().initialize())
-    assert captured["url"].startswith("postgresql+psycopg://agent_svc:password@example.neon.tech/")
+    assert captured["url"].startswith("postgresql+asyncpg://agent_svc:password@example.neon.tech/")
 
 
 def test_runtime_database_requires_secret_arn(monkeypatch):
