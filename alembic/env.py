@@ -1,6 +1,6 @@
 from logging.config import fileConfig
 
-from sqlalchemy import engine_from_config
+from sqlalchemy import engine_from_config, text
 from sqlalchemy import pool
 
 from alembic import context
@@ -83,6 +83,10 @@ def run_migrations_online() -> None:
     )
 
     with connectable.connect() as connection:
+        # Fresh RDS/test databases may not have the application schema yet.
+        # Alembic stores its version table in this schema as well.
+        connection.execute(text("CREATE SCHEMA IF NOT EXISTS service"))
+        connection.commit()
         context.configure(
             connection=connection, target_metadata=target_metadata, version_table_schema="service",
         )
