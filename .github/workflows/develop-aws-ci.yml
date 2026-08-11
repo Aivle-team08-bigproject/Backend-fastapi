@@ -110,6 +110,22 @@ jobs:
           test -n "$AGENTCORE_REPOSITORY" || { echo 'Missing variable: ECR_AGENTCORE_REPOSITORY'; exit 1; }
           case "$API_REPOSITORY" in */*) ;; *) echo 'ECR_API_REPOSITORY must be a full ECR URI'; exit 1 ;; esac
           case "$AGENTCORE_REPOSITORY" in */*) ;; *) echo 'ECR_AGENTCORE_REPOSITORY must be a full ECR URI'; exit 1 ;; esac
+      - name: Inspect GitHub OIDC claims
+        run: |
+          python - <<'PY'
+          import base64, json, os, urllib.parse, urllib.request
+          url = os.environ["ACTIONS_ID_TOKEN_REQUEST_URL"]
+          url += "&audience=" + urllib.parse.quote("sts.amazonaws.com")
+          request = urllib.request.Request(
+              url,
+              headers={"Authorization": f"bearer {os.environ['ACTIONS_ID_TOKEN_REQUEST_TOKEN']}"},
+          )
+          token = json.load(urllib.request.urlopen(request))["value"]
+          payload = token.split(".")[1]
+          payload += "=" * (-len(payload) % 4)
+          claims = json.loads(base64.urlsafe_b64decode(payload))
+          print(json.dumps({key: claims.get(key) for key in ("iss", "aud", "sub", "ref", "repository", "event_name")}, indent=2))
+          PY
       - uses: aws-actions/configure-aws-credentials@v4
         with:
           aws-region: ${{ vars.AWS_REGION || 'ap-northeast-2' }}
