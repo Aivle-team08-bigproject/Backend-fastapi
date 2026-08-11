@@ -19,6 +19,16 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_asyn
 class RuntimeDatabase:
     """Secret ARN 하나로 초기화되는 작은 PostgreSQL 커넥션 풀."""
 
+    @staticmethod
+    def _normalize_database_url(value: str) -> str:
+        """Use the asyncpg dialect bundled in the AgentCore image."""
+        value = value.strip()
+        if value.startswith("postgresql://"):
+            return "postgresql+asyncpg://" + value.removeprefix("postgresql://")
+        if value.startswith("postgres://"):
+            return "postgresql+asyncpg://" + value.removeprefix("postgres://")
+        return value
+
     def __init__(self) -> None:
         self._engine = None
         self._session_factory: async_sessionmaker[AsyncSession] | None = None
@@ -47,14 +57,14 @@ class RuntimeDatabase:
                 raise RuntimeError("database secret JSON must be an object")
             connection_string = parsed.get("connection_string") or parsed.get("url")
             if isinstance(connection_string, str) and connection_string.strip():
-                return connection_string.strip()
+                return self._normalize_database_url(connection_string)
             # Some existing Secrets Manager entries use the secret name as the
             # JSON key and store the connection string as its only value.
             # Accept that shape while keeping structured RDS/Aurora JSON below.
             if len(parsed) == 1:
                 only_value = next(iter(parsed.values()))
                 if isinstance(only_value, str) and only_value.strip():
-                    return only_value.strip()
+                    return self._normalize_database_url(only_value)
             required = {"host", "username", "password"}
             if not required.issubset(parsed):
                 raise RuntimeError("database secret JSON requires host, username, and password")
@@ -66,7 +76,7 @@ class RuntimeDatabase:
             password = quote(str(parsed["password"]), safe="")
             port = parsed.get("port", 5432)
             query = "?sslmode=require" if parsed.get("sslmode", True) else ""
-            return f"postgresql+psycopg://{username}:{password}@{host}:{port}/{quote(database, safe='')}{query}"
+            return f"postgresql+asyncpg://{username}:{password}@{host}:{port}/{quote(database, safe='')}{query}"
 
         database_url = await asyncio.to_thread(read_secret)
         self._engine = create_async_engine(
