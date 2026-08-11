@@ -58,8 +58,8 @@ class Settings(BaseSettings):
     database_host_override: str | None = None
     # 최종 산출물 저장소. "local"이 기본값이라 S3 미설정 환경은 그대로 동작한다.
     # bigproject-infra/envs/dev가 만든 버킷을 쓰려면 s3로 바꾸고 bucket을 채운다.
-    # 목표 아키텍처(AgentCore -> S3 direct write)가 아직 없어서 지금은 이 Celery
-    # worker가 그 역할을 임시로 대신한다.
+    # AgentCore 실행에서는 Runtime execution role이 S3에 직접 저장한다. 로컬/Celery
+    # 실행은 이 설정을 따라 worker가 저장해 동일한 artifact 계약을 유지한다.
     artifact_storage_backend: Literal["local", "s3"] = "local"
     s3_artifacts_bucket: str = ""
     s3_artifacts_presign_expires_seconds: int = 300

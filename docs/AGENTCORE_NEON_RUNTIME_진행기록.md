@@ -18,6 +18,7 @@ Local Backend / Celery Worker
        -> Secrets Manager에서 Neon URL 조회
        -> NeonDB anonymized schema 조회
        -> Bedrock Claude Haiku 4.5 호출
+       -> 검증된 최종 CSV를 S3에 직접 저장
 ```
 
 Local Backend는 요청 orchestration, 상태 저장, SSE 발행만 담당한다. Runtime은 요구사항
@@ -34,11 +35,16 @@ Local Backend는 요청 orchestration, 상태 저장, SSE 발행만 담당한다
 - LLM이 생성한 임의 SQL은 실행하지 않으며, 처리 결과에 원천 행을 포함하지 않는다.
 - `Dockerfile.agentcore`는 `app/`, `agent_runtime/`만 복사한다. dotenv 및 `env_team`은
   이미지와 Docker build context에서 제외한다.
+- Runtime execution role은 `envs/dev`의 artifact write policy만 받아 S3/KMS write를
+  수행하며, access key는 이미지·환경변수에 넣지 않는다.
+- Runtime은 유효성 검증을 통과한 CSV만 저장하고 base64 본문을 호출 응답에서 제거한다.
+  FastAPI는 S3 객체를 재작성하지 않고 `storage_key`를 Artifact·Spring 전달 경계에 기록한다.
 
 ## 주요 파일
 
-- `app/agentcore_runtime.py`: AgentCore HTTP Runtime 진입점 및 DB lifecycle
+- `app/agentcore_runtime.py`: AgentCore HTTP Runtime 진입점, DB lifecycle, S3 direct-write
 - `agent_runtime/runtime_database.py`: Secrets Manager 기반 Neon async session factory
+- `agent_runtime/runtime_artifact_storage.py`: Runtime execution role 기반 S3 CSV 저장
 - `app/domains/pipeline/agent_client.py`: 로컬/Runtime 공용 DB session factory와
   AgentCore invoke adapter
 - `Dockerfile.agentcore`: AgentCore 전용 최소 이미지
@@ -47,17 +53,19 @@ Local Backend는 요청 orchestration, 상태 저장, SSE 발행만 담당한다
 
 1. `docker build -f Dockerfile.agentcore -t bigproject-agentcore:local .`
 2. ECR에 새 tag를 push한다.
-3. Infra의 `runtime_image_uri`, `neon_database_secret_arn`을 적용한다.
-4. local invoker role MFA credentials를 획득한다.
-5. 프로젝트 루트에서 Backend 컨테이너를 재생성한다.
+3. Infra `envs/dev`를 먼저 적용하고 `artifacts_bucket_name`, `artifact_write_policy_arn`을
+   `envs/agentcore-local-dev`의 `artifact_s3_bucket_name`, `artifact_write_policy_arn`에 넣는다.
+4. Infra의 `runtime_image_uri`, `neon_database_secret_arn`을 적용한다.
+5. local invoker role MFA credentials를 획득한다.
+6. 프로젝트 루트에서 Backend 컨테이너를 재생성한다.
 
 ```bash
 docker compose up -d --build --force-recreate backend-api backend-worker
 ```
 
-6. UI에서 새 데이터 요청을 생성한다. `DATA_SELECTION` 성공은 Runtime이 Secret을 읽고
+7. UI에서 새 데이터 요청을 생성한다. `DATA_SELECTION` 성공은 Runtime이 Secret을 읽고
 NeonDB 메타데이터에 접근했음을 의미하며, 이후 `DATA_PROCESSING` 성공으로 승인된 데이터
-조회와 결정론적 가공까지 확인한다.
+조회·결정론적 가공·S3 직접 저장까지 확인한다.
 
 ## 검증 결과
 

@@ -12,6 +12,11 @@ agent 실행은 `InvokeAgentRuntime`으로 위임한다. `DATA_SELECTION`의 스
 실행한다. 따라서 Runtime 컨테이너에는 `Dockerfile.agentcore`를 사용하고, `/ping`과
 `/invocations`를 제공해야 한다.
 
+`DATA_PROCESSING`이 유효한 CSV를 만들면 Runtime이 `S3_ARTIFACTS_BUCKET`의
+`results/<pipeline_run_id>/`에 직접 저장하고 base64 본문 대신 `storage_key`·SHA-256·크기를
+반환한다. Celery는 그 메타데이터만 Artifact DB 행과 Spring 이메일 전달 메시지에 기록하며,
+로컬 `CELERY` backend에서는 기존 worker 저장 경로를 유지한다.
+
 Runtime은 `NEON_DATABASE_SECRET_ARN`으로 지정된 Secrets Manager 값만 읽는다. 연결 문자열은
 Terraform 변수·AgentCore 환경변수·이미지에 직접 저장하지 않으며, Runtime execution role에는
 해당 Secret의 `secretsmanager:GetSecretValue`만 허용한다. 실제 조회는 여전히

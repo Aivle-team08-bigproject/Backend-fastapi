@@ -155,6 +155,9 @@ async def build_stage_payload(db: AsyncSession, stage: StageRun) -> dict:
             "raw_requirement": raw_requirement,
             "analysis": analysis,
             "selection": selection,
+            # AgentCore Runtime만 이 값을 사용해 최종 산출물의 S3 key를 run 단위로 만든다.
+            # LLM 계획/쿼리 입력에는 영향을 주지 않는 실행 메타데이터다.
+            "artifact_context": {"pipeline_run_id": stage.pipeline_run_id},
             "approval_audit": {
                 "stage_run_id": approval.get("stage_run_id"),
                 "sha256": expected_sha256,
@@ -293,7 +296,9 @@ async def run_stage(
             ProcessingStepStatus.RUNNING,
         )
         try:
-            artifact = _write_csv_artifact(stage.pipeline_run_id, output)
+            artifact = _runtime_stored_csv_artifact(output) or _write_csv_artifact(
+                stage.pipeline_run_id, output
+            )
             if artifact is None:
                 raise ValueError("validated CSV artifact was not created")
             csv_artifact = output["csv_artifact"]
@@ -348,6 +353,23 @@ def _write_csv_artifact(run_id: int, output: dict) -> dict | None:
         run_id,
         base64.b64decode(csv_artifact["content_base64"], validate=True),
     )
+
+
+def _runtime_stored_csv_artifact(output: dict) -> dict | None:
+    """AgentCore가 직접 S3에 저장해 반환한 검증 가능한 메타데이터만 수용한다."""
+    csv_artifact = (output or {}).get("csv_artifact")
+    if not isinstance(csv_artifact, dict) or csv_artifact.get("storage_backend") != "s3":
+        return None
+    required = ("storage_key", "byte_size", "sha256", "mime_type", "filename")
+    if any(not csv_artifact.get(field) for field in required):
+        return None
+    return {
+        "storage_key": csv_artifact["storage_key"],
+        "size_bytes": csv_artifact["byte_size"],
+        "checksum": csv_artifact["sha256"],
+        "mime_type": csv_artifact["mime_type"],
+        "filename": csv_artifact["filename"],
+    }
 
 
 async def _emit_processing_step(callback, step, status, metadata: dict | None = None) -> None:
