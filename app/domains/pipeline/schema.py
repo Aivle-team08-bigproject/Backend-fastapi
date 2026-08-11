@@ -140,9 +140,22 @@ class SamplePreviewResponse(BaseModel):
 
 class CreateEmailDeliveryRequest(BaseModel):
     recipient: str = Field(min_length=3, max_length=254)
-    # DB 담당자가 CHECK를 생성할 때까지 코드 계약도 현재 확정된 값만 허용한다.
     delivery_type: Literal["SELECTION_SAMPLE", "FINAL_ARTIFACT"] = "SELECTION_SAMPLE"
     template_version: str = Field(default="v1", min_length=1, max_length=50)
+    # API 키는 발급 응답에서만 평문으로 노출되므로, 사용자가 같은 화면에서
+    # 메일을 보낼 때만 요청 본문에 실어 Spring까지 전달한다. DB에는 저장하지 않는다.
+    api_endpoint_url: str | None = Field(default=None, max_length=2048)
+    api_key: str | None = Field(default=None, min_length=8, max_length=255)
+
+    @model_validator(mode="after")
+    def validate_api_credentials(self) -> "CreateEmailDeliveryRequest":
+        if bool(self.api_endpoint_url) != bool(self.api_key):
+            raise ValueError("api_endpoint_url과 api_key는 함께 입력해야 합니다.")
+        if self.delivery_type == "FINAL_ARTIFACT" and not self.api_endpoint_url:
+            raise ValueError("최종 산출물 메일에는 API URL과 API Key가 필요합니다.")
+        if self.delivery_type != "FINAL_ARTIFACT" and (self.api_endpoint_url or self.api_key):
+            raise ValueError("API 인증정보는 최종 산출물 메일에서만 사용할 수 있습니다.")
+        return self
 
 
 class EmailDeliveryResponse(BaseModel):

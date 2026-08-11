@@ -5,6 +5,7 @@ from app.common.errors import bad_request
 from app.db.session import get_db
 from app.domains.internal.security import verify_internal_service_key
 from app.domains.pipeline.schema import InternalDeliveryLookupResponse
+from app.domains.pipeline.email_retry_worker import close_dlq_delivery
 from app.domains.pipeline.service import lookup_customer_delivery
 
 router = APIRouter(
@@ -33,3 +34,17 @@ async def get_delivery_artifact(
         raise bad_request("MISSING_API_KEY", "X-API-Key 헤더가 필요합니다.")
     result = await lookup_customer_delivery(db, contract_no, x_api_key)
     return InternalDeliveryLookupResponse(**result)
+
+
+@router.post("/deliveries/{delivery_id}/dlq-close")
+async def close_delivery_from_dlq(
+    delivery_id: str,
+    db: AsyncSession = Depends(get_db),
+) -> dict[str, str]:
+    """운영자가 DLQ 확인 후 내부 인증으로 발송 건을 최종 실패 처리한다."""
+    delivery = await close_dlq_delivery(db, delivery_id)
+    return {
+        "delivery_id": delivery.delivery_id,
+        "status": delivery.status,
+        "failure_code": delivery.failure_code or "DLQ_MANUAL_CLOSE",
+    }

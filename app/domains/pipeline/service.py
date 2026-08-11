@@ -569,7 +569,15 @@ async def create_email_delivery(
     recipient = _normalize_recipient(payload.recipient)
     fingerprint = hashlib.sha256(
         json.dumps(
-            {"run_id": run.id, "type": payload.delivery_type, "recipient": recipient, "content_sha256": content_sha256, "template": payload.template_version},
+            {
+                "run_id": run.id,
+                "type": payload.delivery_type,
+                "recipient": recipient,
+                "content_sha256": content_sha256,
+                "template": payload.template_version,
+                "api_endpoint_url": payload.api_endpoint_url or "",
+                "api_key": payload.api_key or "",
+            },
             sort_keys=True,
             separators=(",", ":"),
         ).encode()
