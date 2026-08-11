@@ -255,6 +255,18 @@ def _validate_csv_artifact(output: dict) -> list[str]:
         errors.append("csv_artifact.encoding must be utf-8-sig")
 
     encoded = artifact.get("content_base64")
+    # AgentCore Runtime은 이 검증을 마친 뒤 S3에 직접 저장하고 base64 본문을 제거한다.
+    # Supervisor는 내려온 key/무결성 메타데이터만 DB와 Spring 전달 경계에 기록한다.
+    if artifact.get("storage_backend") == "s3" and encoded is None:
+        required = ("storage_key", "mime_type", "filename", "sha256", "byte_size")
+        missing = [field for field in required if not artifact.get(field)]
+        if missing:
+            return [*errors, f"runtime S3 csv_artifact missing fields: {', '.join(missing)}"]
+        if not isinstance(artifact.get("byte_size"), int) or artifact["byte_size"] <= 0:
+            errors.append("runtime S3 csv_artifact.byte_size must be a positive integer")
+        if not isinstance(artifact.get("sha256"), str) or len(artifact["sha256"]) != 64:
+            errors.append("runtime S3 csv_artifact.sha256 must be a SHA-256 hex string")
+        return errors
     if not isinstance(encoded, str) or not encoded:
         return [*errors, "csv_artifact.content_base64 must be a non-empty string"]
     try:

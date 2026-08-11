@@ -320,6 +320,7 @@ def test_data_processing_uses_only_hash_verified_approved_selection():
     assert payload["selection"] == approved_plan
     assert payload["selection"] != stages[1].output_payload
     assert payload["approval_audit"]["sha256"] == selection_plan_sha256(approved_plan)
+    assert payload["artifact_context"] == {"pipeline_run_id": processing.pipeline_run_id}
 
 
 def test_data_processing_retry_carries_final_hitl_feedback_and_approved_selection():
@@ -502,6 +503,22 @@ def test_processing_validation_rejects_tampered_csv_artifact():
 
     assert validation["passed"] is False
     assert "csv_artifact.sha256 does not match decoded content" in validation["errors"]
+
+
+def test_processing_validation_accepts_agentcore_s3_artifact_reference():
+    output = _valid_processing_output()
+    artifact = output["csv_artifact"]
+    output["csv_artifact"] = {
+        "encoding": artifact["encoding"],
+        "sha256": artifact["sha256"],
+        "byte_size": artifact["byte_size"],
+        "storage_backend": "s3",
+        "storage_key": "results/7/result-agentcore.csv",
+        "mime_type": "text/csv; charset=utf-8",
+        "filename": "pipeline-run-7-result.csv",
+    }
+
+    assert validate_stage_output(StageName.DATA_PROCESSING, output)["passed"] is True
 
 
 class ApprovingAgentClient:

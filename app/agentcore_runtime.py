@@ -11,7 +11,10 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI, HTTPException, Request
 
 from app.domains.pipeline.agent_client import AgentRuntimeClient
+from app.domains.pipeline.model import StageName
+from app.domains.pipeline.validation import validate_stage_output
 from agent_runtime.runtime_database import RuntimeDatabase
+from agent_runtime.runtime_artifact_storage import store_final_csv_artifact
 
 # Gunicorn owns the process logging configuration in AgentCore Runtime. Using
 # its error logger guarantees exception tracebacks reach container stderr and
@@ -55,6 +58,16 @@ async def invoke(request: Request) -> dict:
     try:
         client = AgentRuntimeClient(agent_session_factory=runtime_database.session_factory)
         output = await client.run(agent_name, model_name, payload)
+        if agent_name == "data-processing-agent":
+            # 유효하지 않은 산출물은 S3에 남기지 않는다. 유효한 CSV만 Runtime execution
+            # role로 저장한 뒤, base64 대신 storage_key 메타데이터를 호출자에게 돌려준다.
+            validation = validate_stage_output(StageName.DATA_PROCESSING, output)
+            if validation["passed"]:
+                context = payload.get("artifact_context")
+                run_id = context.get("pipeline_run_id") if isinstance(context, dict) else None
+                if not isinstance(run_id, int) or run_id <= 0:
+                    raise ValueError("artifact_context.pipeline_run_id is required")
+                output = await store_final_csv_artifact(output, run_id)
     except Exception as exc:  # noqa: BLE001 - Runtime caller receives a controlled 500
         logger.exception(
             "Agent execution failed: agent_name=%s execution_id=%s",
