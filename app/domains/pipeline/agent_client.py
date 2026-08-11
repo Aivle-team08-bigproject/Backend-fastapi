@@ -17,6 +17,11 @@ from contextlib import asynccontextmanager
 from typing import Protocol
 from uuid import uuid4
 
+from app.domains.pipeline.agentcore_contract import (
+    AgentCoreInvocationRequest,
+    AgentCoreInvocationResponse,
+)
+
 AnalysisStepCallback = Callable[[str, str, dict | None], None]
 SelectionStepCallback = Callable[[str, str, dict | None], None]
 ProcessingStepCallback = Callable[[str, str, dict | None], None]
@@ -391,12 +396,12 @@ class AgentCoreRuntimeClient(AgentClient):
             await asyncio.to_thread(self.agent_log_callback, level, message, detail)
 
     async def _invoke_remote(self, agent_name: str, model_name: str, payload: dict) -> dict:
-        request = {
-            "agent_name": agent_name,
-            "model_name": model_name,
-            "execution_id": self.execution_id,
-            "payload": payload,
-        }
+        request = AgentCoreInvocationRequest(
+            agent_name=agent_name,
+            model_name=model_name,
+            execution_id=self.execution_id,
+            payload=payload,
+        )
         await self._log(
             "INFO",
             "AgentCore Runtime 호출을 시작했습니다.",
@@ -405,7 +410,7 @@ class AgentCoreRuntimeClient(AgentClient):
         kwargs = {
             "agentRuntimeArn": self.settings.agentcore_runtime_arn,
             "runtimeSessionId": self.runtime_session_id,
-            "payload": json.dumps(request, ensure_ascii=False).encode("utf-8"),
+            "payload": request.model_dump_json().encode("utf-8"),
         }
         if self.settings.agentcore_runtime_qualifier:
             kwargs["qualifier"] = self.settings.agentcore_runtime_qualifier
@@ -445,28 +450,22 @@ class AgentCoreRuntimeClient(AgentClient):
                 data = line[6:]
                 if data == "[DONE]":
                     continue
-                final_output = AgentCoreRuntimeClient._extract_output(json.loads(data))
+                final_output = json.loads(data)
             if final_output is None:
                 raise AgentCoreInvocationError("AgentCore SSE response has no final output")
-            return final_output
+            try:
+                return AgentCoreInvocationResponse.model_validate(final_output).output
+            except ValueError as exc:
+                raise AgentCoreInvocationError("AgentCore SSE response contract is invalid") from exc
 
         if content_type == "application/json":
             chunks = []
             for chunk in body or []:
                 chunks.append(chunk.decode("utf-8") if isinstance(chunk, bytes) else chunk)
             try:
-                return AgentCoreRuntimeClient._extract_output(json.loads("".join(chunks)))
-            except (TypeError, json.JSONDecodeError) as exc:
+                value = json.loads("".join(chunks))
+                return AgentCoreInvocationResponse.model_validate(value).output
+            except (TypeError, json.JSONDecodeError, ValueError) as exc:
                 raise AgentCoreInvocationError("AgentCore JSON response is invalid") from exc
 
         raise AgentCoreInvocationError(f"unsupported AgentCore content type: {content_type}")
-
-    @staticmethod
-    def _extract_output(value) -> dict:
-        if isinstance(value, dict) and isinstance(value.get("output"), dict):
-            return value["output"]
-        if isinstance(value, dict) and isinstance(value.get("result"), dict):
-            return value["result"]
-        if isinstance(value, dict):
-            return value
-        raise AgentCoreInvocationError("AgentCore response output must be an object")

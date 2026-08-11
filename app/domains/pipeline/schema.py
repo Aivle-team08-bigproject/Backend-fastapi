@@ -52,7 +52,7 @@ class CreateDataRequestResponse(BaseModel):
     request_status: DataRequestStatus
     run_status: PipelineRunStatus
     current_stage: str
-    celery_task_id: str
+    execution_id: str
     created_at: datetime
 
 
@@ -90,7 +90,7 @@ class PipelineRunResponse(BaseModel):
     run_status: PipelineRunStatus
     current_stage: str | None
     progress_percent: int
-    celery_task_id: str | None
+    execution_id: str | None
     created_at: datetime
     updated_at: datetime
     error_message: str | None = None
@@ -98,6 +98,7 @@ class PipelineRunResponse(BaseModel):
     stages: list[RunStageResponse]
     events: list[RunEventResponse]
     requirement_analysis: RequirementAnalysisResponse | None = None
+
 
 
 class SamplePreviewColumn(BaseModel):
@@ -229,4 +230,4 @@ class StageReviewResponse(BaseModel):
     # 승인 후 이어서 진행할 단계. 최종 승인이면 None.
     next_stage: str | None
     rollback_to_stage: str | None
-    celery_task_id: str | None
+    execution_id: str | None

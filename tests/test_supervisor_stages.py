@@ -43,7 +43,7 @@ def _run(**overrides) -> PipelineRun:
         status=PipelineRunStatus.QUEUED.value,
         current_stage=StageName.REQUIREMENT_ANALYSIS.value,
         progress_percent=0,
-        celery_task_id="task-7",
+        execution_id="task-7",
         rollback_to_stage=None,
         created_at=NOW,
         updated_at=NOW,

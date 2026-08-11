@@ -45,7 +45,7 @@ logger = logging.getLogger(__name__)
 
 async def persist_status_event(db: AsyncSession, event: PipelineStatusEvent) -> bool:
     run = await db.get(PipelineRun, event.run_id)
-    if run is None or run.celery_task_id != event.celery_task_id:
+    if run is None or run.execution_id != event.execution_id:
         logger.warning("Ignoring unknown or mismatched pipeline event for run_id=%s", event.run_id)
         return False
 
@@ -90,7 +90,7 @@ async def persist_status_event(db: AsyncSession, event: PipelineStatusEvent) -> 
         if stage is not None:
             event.stage_run_id = stage.id
             stage.status = event.stage_status.value
-            stage.executor_reference = event.celery_task_id
+            stage.executor_reference = event.execution_id
             if event.current_stage == "REQUIREMENT_ANALYSIS":
                 stage_payload = dict(stage.output_payload or {})
                 steps = stage_payload.get("analysis_steps")
@@ -311,7 +311,7 @@ async def record_agent_log(
     db: AsyncSession,
     *,
     run_id: int,
-    celery_task_id: str,
+    execution_id: str,
     message: str,
     level: str = "INFO",
     current_stage: str | None = None,
@@ -325,7 +325,7 @@ async def record_agent_log(
     재시도 사유처럼 "실패는 아니지만 실무자가 알아야 하는 일"이 이 경로로 나간다.
     """
     run = await db.get(PipelineRun, run_id)
-    if run is None or run.celery_task_id != celery_task_id:
+    if run is None or run.execution_id != execution_id:
         logger.warning("Ignoring agent log for unknown or mismatched run_id=%s", run_id)
         return None
 
@@ -349,7 +349,7 @@ async def record_agent_log(
     event = PipelineStatusEvent(
         event_id=pipeline_event.id,
         run_id=run.id,
-        celery_task_id=celery_task_id,
+        execution_id=execution_id,
         event_kind="agent_log",
         log_level=level,
         # 로그는 상태를 바꾸지 않으므로 현재 값을 그대로 실어 보낸다.
@@ -370,7 +370,7 @@ async def record_status(
     db: AsyncSession,
     *,
     run_id: int,
-    celery_task_id: str,
+    execution_id: str,
     run_status: PipelineRunStatus,
     progress_percent: int,
     message: str,
@@ -391,7 +391,7 @@ async def record_status(
 ) -> PipelineStatusEvent | None:
     """상태를 DB에 쓰고, 성공하면 화면 갱신용으로 발행한다.
 
-    run을 못 찾거나 celery_task_id가 안 맞으면 아무것도 발행하지 않고 None을 돌려준다.
+    run을 못 찾거나 execution_id가 안 맞으면 아무것도 발행하지 않고 None을 돌려준다.
     """
     failure = public_failure(
         stage=current_stage,
@@ -402,7 +402,7 @@ async def record_status(
     )
     event = PipelineStatusEvent(
         run_id=run_id,
-        celery_task_id=celery_task_id,
+        execution_id=execution_id,
         run_status=run_status,
         current_stage=current_stage,
         stage_status=stage_status,

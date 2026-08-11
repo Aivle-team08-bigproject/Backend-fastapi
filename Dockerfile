@@ -9,10 +9,12 @@ COPY . .
 
 RUN groupadd --system appuser \
     && useradd --system --gid appuser --create-home appuser \
-    && mkdir -p /app/uploads/original /app/uploads/results \
     && chown -R appuser:appuser /app
 
 USER appuser
+
+HEALTHCHECK --interval=30s --timeout=5s --start-period=20s --retries=3 \
+    CMD python -c "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health/live', timeout=3)"
 
 # gunicorn이 uvicorn worker를 실행하는 구조
 # FastAPI 앱 객체는 app/main.py 의 `app` → 모듈 경로는 app.main:app

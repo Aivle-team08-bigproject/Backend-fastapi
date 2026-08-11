@@ -1,4 +1,4 @@
-"""Neon DB COMMENT 기반 컬럼 설계 에이전트."""
+"""RDS/Aurora PostgreSQL COMMENT 기반 컬럼 설계 에이전트."""
 
 from copy import deepcopy
 import json

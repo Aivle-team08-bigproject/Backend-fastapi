@@ -34,7 +34,7 @@ def test_agent_log_failure_rolls_back_only_isolated_session(monkeypatch):
         asyncio.run(
             tasks._record_agent_log_isolated(
                 run_id=7,
-                celery_task_id="task-7",
+                execution_id="task-7",
                 message="test log",
             )
         )

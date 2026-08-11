@@ -17,7 +17,7 @@ agent 실행은 `InvokeAgentRuntime`으로 위임한다. `DATA_SELECTION`의 스
 반환한다. Celery는 그 메타데이터만 Artifact DB 행과 Spring 이메일 전달 메시지에 기록하며,
 로컬 `CELERY` backend에서는 기존 worker 저장 경로를 유지한다.
 
-Runtime은 `NEON_DATABASE_SECRET_ARN`으로 지정된 Secrets Manager 값만 읽는다. 연결 문자열은
+Runtime은 `AGENT_DATABASE_SECRET_ARN`으로 지정된 Secrets Manager 값만 읽는다. 연결 문자열은
 Terraform 변수·AgentCore 환경변수·이미지에 직접 저장하지 않으며, Runtime execution role에는
 해당 Secret의 `secretsmanager:GetSecretValue`만 허용한다. 실제 조회는 여전히
 `DatabaseQueryExecutor`의 등록된 데이터셋·컬럼·필터 allowlist를 거치므로 LLM 생성 SQL을 직접

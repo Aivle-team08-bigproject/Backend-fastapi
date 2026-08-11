@@ -2,7 +2,7 @@ FROM python:3.12-slim
 
 WORKDIR /app
 
-COPY requirements.txt .
+COPY agent_runtime/requirements.txt ./requirements.txt
 RUN pip install --no-cache-dir -r requirements.txt
 
 # Runtime에는 소스만 넣는다. 로컬 dotenv/팀 환경 파일이 이미지 레이어에
@@ -15,6 +15,11 @@ RUN groupadd --system appuser \
     && chown -R appuser:appuser /app
 
 USER appuser
+
+EXPOSE 8080
+
+HEALTHCHECK --interval=30s --timeout=5s --start-period=20s --retries=3 \
+    CMD python -c "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8080/ping', timeout=3)"
 
 # AgentCore Runtime이 /ping과 /invocations를 호출한다.
 CMD ["gunicorn", "app.agentcore_runtime:runtime_app", \

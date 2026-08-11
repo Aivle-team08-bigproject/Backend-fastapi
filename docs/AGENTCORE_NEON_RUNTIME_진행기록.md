@@ -1,12 +1,12 @@
-# AgentCore Runtime + NeonDB 연동 진행 기록
+# AgentCore Runtime + RDS/Aurora PostgreSQL 연동 진행 기록
 
 ## 목적
 
 기존 로컬 Celery Worker가 수행하던 에이전트 실행을 AWS Bedrock AgentCore Runtime으로
-위임하면서, Runtime이 NeonDB의 익명화 데이터에 안전하게 접근하도록 변경했다.
+위임하면서, Runtime이 RDS/Aurora PostgreSQL의 익명화 데이터에 안전하게 접근하도록 변경했다.
 
 핵심 변경은 데이터베이스 종류가 아니라 에이전트 실행 위치를 Celery에서
-AgentCore+Bedrock으로 이전한 것이다. NeonDB는 현재 검증용 데이터 소스이며, 이후 AWS
+AgentCore+Bedrock으로 이전한 것이다. RDS/Aurora PostgreSQL는 현재 검증용 데이터 소스이며, 이후 AWS
 내부 RDS/Aurora로 전환해도 Secret 참조와 승인된 query 실행 경계는 그대로 유지한다.
 
 ## 실행 경계
@@ -15,8 +15,8 @@ AgentCore+Bedrock으로 이전한 것이다. NeonDB는 현재 검증용 데이�
 Local Backend / Celery Worker
   -> IAM InvokeAgentRuntime
   -> AgentCore Runtime
-       -> Secrets Manager에서 Neon URL 조회
-       -> NeonDB anonymized schema 조회
+       -> Secrets Manager에서 RDS/Aurora PostgreSQL URL 조회
+       -> RDS/Aurora PostgreSQL anonymized schema 조회
        -> Bedrock Claude Haiku 4.5 호출
        -> 검증된 최종 CSV를 S3에 직접 저장
 ```
@@ -27,8 +27,8 @@ Local Backend는 요청 orchestration, 상태 저장, SSE 발행만 담당한다
 
 ## 보안 구현
 
-- `NEON_DATABASE_SECRET_ARN`만 Runtime 환경 변수로 주입한다.
-- Neon connection string 원문은 Secrets Manager에서 Runtime 시작 시 읽는다.
+- `AGENT_DATABASE_SECRET_ARN`만 Runtime 환경 변수로 주입한다.
+- RDS/Aurora PostgreSQL connection string 원문은 Secrets Manager에서 Runtime 시작 시 읽는다.
 - Runtime은 `app.core.config.Settings`와 JWT 설정에 의존하지 않는다.
 - DB 세션은 `pool_size=1`, `max_overflow=1`의 작은 pool로 제한한다.
 - `DatabaseQueryExecutor`가 등록된 데이터셋·컬럼·필터만 SQLAlchemy statement로 생성한다.
@@ -43,7 +43,7 @@ Local Backend는 요청 orchestration, 상태 저장, SSE 발행만 담당한다
 ## 주요 파일
 
 - `app/agentcore_runtime.py`: AgentCore HTTP Runtime 진입점, DB lifecycle, S3 direct-write
-- `agent_runtime/runtime_database.py`: Secrets Manager 기반 Neon async session factory
+- `agent_runtime/runtime_database.py`: Secrets Manager 기반 RDS/Aurora PostgreSQL async session factory
 - `agent_runtime/runtime_artifact_storage.py`: Runtime execution role 기반 S3 CSV 저장
 - `app/domains/pipeline/agent_client.py`: 로컬/Runtime 공용 DB session factory와
   AgentCore invoke adapter
@@ -64,12 +64,12 @@ docker compose up -d --build --force-recreate backend-api backend-worker
 ```
 
 7. UI에서 새 데이터 요청을 생성한다. `DATA_SELECTION` 성공은 Runtime이 Secret을 읽고
-NeonDB 메타데이터에 접근했음을 의미하며, 이후 `DATA_PROCESSING` 성공으로 승인된 데이터
+RDS/Aurora PostgreSQL 메타데이터에 접근했음을 의미하며, 이후 `DATA_PROCESSING` 성공으로 승인된 데이터
 조회·결정론적 가공·S3 직접 저장까지 확인한다.
 
 ## 검증 결과
 
-- AgentCore Runtime v7에서 NeonDB 접근 성공
+- AgentCore Runtime v7에서 RDS/Aurora PostgreSQL 접근 성공
 - local Backend와 Runtime 간 IAM InvokeAgentRuntime 호출 성공
 - Backend 테스트 30개 통과
 - `terraform validate` 통과

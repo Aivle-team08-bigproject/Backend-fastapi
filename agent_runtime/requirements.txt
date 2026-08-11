@@ -1,6 +1,12 @@
-# agent_runtime/은 FastAPI 앱과 별개로(나중엔 AgentCore/Lambda 컨테이너로) 배포될 독립 모듈이라
-# 자체 의존성 목록을 따로 둔다. 지금은 같은 프로세스에서 함께 실행되므로 루트 requirements.txt에도
-# 동일하게 포함되어 있다.
+# AgentCore 이미지는 API 이미지와 별도로 배포되므로 이 파일이 이미지의 유일한
+# 런타임 의존성 목록이다. 테스트/문서 추출/메일 큐 등 API 전용 패키지는 포함하지 않는다.
+fastapi==0.116.1
+uvicorn[standard]==0.35.0
+gunicorn==23.0.0
 strands-agents[openai]==1.48.0
+pydantic==2.11.7
 pydantic-settings==2.5.2
 sqlalchemy[asyncio]==2.0.41
+asyncpg==0.31.0
+greenlet==3.5.4
+boto3==1.43.61

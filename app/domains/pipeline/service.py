@@ -1,3 +1,4 @@
+import asyncio
 from uuid import uuid4
 import hashlib
 import json
@@ -57,7 +58,13 @@ from app.domains.pipeline.plan_integrity import (
     snapshot_selection_plan,
 )
 from app.domains.pipeline.supervisor import HITL_GATE, STAGE_ORDER, rollback_target
-from app.worker.tasks import process_pipeline_run
+
+
+def _schedule_pipeline_execution(run_id: int, execution_id: str) -> None:
+    """Schedule direct AgentCore execution after the DB transaction commits."""
+    from app.domains.pipeline.executor import run_pipeline_stage_direct
+
+    asyncio.create_task(run_pipeline_stage_direct(run_id))
 
 
 def _make_request_no() -> str:
@@ -202,7 +209,7 @@ async def create_data_request(
         client.updated_at = now
 
     title = payload.title or payload.raw_requirement.strip().splitlines()[0][:200]
-    celery_task_id = str(uuid4())
+    execution_id = str(uuid4())
     data_request = DataRequest(
         request_no=_make_request_no(),
         client_id=client.id,
@@ -241,7 +248,7 @@ async def create_data_request(
         status=PipelineRunStatus.QUEUED,
         current_stage=HARDCODED_STAGES[0],
         progress_percent=0,
-        celery_task_id=celery_task_id,
+        execution_id=execution_id,
         created_at=now,
         updated_at=now,
     )
@@ -274,7 +281,7 @@ async def create_data_request(
     await db.commit()
 
     try:
-        process_pipeline_run.apply_async(args=[run.id], task_id=celery_task_id)
+        _schedule_pipeline_execution(run.id, execution_id)
     except Exception as exc:
         data_request.status = DataRequestStatus.FAILED.value
         run.status = PipelineRunStatus.FAILED.value
@@ -305,7 +312,7 @@ async def create_data_request(
         request_status=DataRequestStatus.QUEUED,
         run_status=PipelineRunStatus.QUEUED,
         current_stage=run.current_stage or HARDCODED_STAGES[0],
-        celery_task_id=celery_task_id,
+        execution_id=execution_id,
         created_at=run.created_at,
     )
 
@@ -377,7 +384,7 @@ async def get_pipeline_run(db: AsyncSession, run_id: int) -> PipelineRunResponse
         run_status=run.status,
         current_stage=run.current_stage,
         progress_percent=run.progress_percent,
-        celery_task_id=run.celery_task_id,
+        execution_id=run.execution_id,
         created_at=run.created_at,
         updated_at=run.updated_at,
         error_message=run.error_message,
@@ -842,7 +849,7 @@ async def submit_stage_review(
         run.error_message = None
         run.completed_at = None
         run.updated_at = now
-        celery_task_id = await _redispatch(db, run, now)
+        execution_id = await _redispatch(db, run, now)
         return StageReviewResponse(
             run_id=run.id,
             reviewed_stage=reviewed_stage.value,
@@ -850,7 +857,7 @@ async def submit_stage_review(
             run_status=PipelineRunStatus.QUEUED,
             next_stage=target.value,
             rollback_to_stage=target.value,
-            celery_task_id=celery_task_id,
+            execution_id=execution_id,
         )
 
     if not payload.approved:
@@ -876,7 +883,7 @@ async def submit_stage_review(
         run.error_message = payload.feedback or "검토자가 산출물을 반려했습니다."
         run.completed_at = None
         run.updated_at = now
-        celery_task_id = await _redispatch(db, run, now)
+        execution_id = await _redispatch(db, run, now)
         return StageReviewResponse(
             run_id=run.id,
             reviewed_stage=reviewed_stage.value,
@@ -884,7 +891,7 @@ async def submit_stage_review(
             run_status=PipelineRunStatus.QUEUED,
             next_stage=target.value,
             rollback_to_stage=target.value,
-            celery_task_id=celery_task_id,
+            execution_id=execution_id,
         )
 
     if reviewed_stage == StageName.REQUIREMENT_ANALYSIS and (
@@ -937,7 +944,7 @@ async def submit_stage_review(
             run_status=PipelineRunStatus.COMPLETED,
             next_stage=None,
             rollback_to_stage=None,
-            celery_task_id=run.celery_task_id,
+            execution_id=run.execution_id,
         )
 
     next_stage = STAGE_ORDER[STAGE_ORDER.index(reviewed_stage) + 1]
@@ -981,7 +988,7 @@ async def submit_stage_review(
     run.rollback_to_stage = None
     run.error_message = None
     run.updated_at = now
-    celery_task_id = await _redispatch(db, run, now)
+    execution_id = await _redispatch(db, run, now)
     return StageReviewResponse(
         run_id=run.id,
         reviewed_stage=reviewed_stage.value,
@@ -989,7 +996,7 @@ async def submit_stage_review(
         run_status=PipelineRunStatus.QUEUED,
         next_stage=next_stage.value,
         rollback_to_stage=None,
-        celery_task_id=celery_task_id,
+        execution_id=execution_id,
     )
 
 
@@ -1045,13 +1052,13 @@ async def _reopen_from(
 
 
 async def _redispatch(db: AsyncSession, run: PipelineRun, now) -> str:
-    """Supervisor를 다시 발행한다. run.celery_task_id를 새로 발급해서 stale 이벤트를 끊는다."""
-    celery_task_id = str(uuid4())
-    run.celery_task_id = celery_task_id
+    """Supervisor를 다시 발행한다. run.execution_id를 새로 발급해서 stale 이벤트를 끊는다."""
+    execution_id = str(uuid4())
+    run.execution_id = execution_id
     await db.commit()
 
     try:
-        process_pipeline_run.apply_async(args=[run.id], task_id=celery_task_id)
+        _schedule_pipeline_execution(run.id, execution_id)
     except Exception as exc:
         run.status = PipelineRunStatus.FAILED.value
         run.current_stage = "DISPATCH"
@@ -1074,7 +1081,7 @@ async def _redispatch(db: AsyncSession, run: PipelineRun, now) -> str:
             "PIPELINE_DISPATCH_FAILED",
             "작업 큐에 요청을 발행하지 못했습니다.",
         ) from exc
-    return celery_task_id
+    return execution_id
 
 
 async def get_result_artifact(db: AsyncSession, run_id: int) -> Artifact:

@@ -1,1 +1,1 @@
-"""Celery worker and Redis status event infrastructure."""
+"""Redis status event infrastructure used by the pipeline executor."""

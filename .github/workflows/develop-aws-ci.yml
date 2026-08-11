@@ -1,0 +1,130 @@
+name: develop_aws CI
+
+on:
+  push:
+    branches: [develop_aws]
+  pull_request:
+    branches: [develop_aws]
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: app
+          POSTGRES_PASSWORD: app
+          POSTGRES_DB: app_test
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U app -d app_test"
+          --health-interval 5s --health-timeout 5s --health-retries 10
+      redis:
+        image: redis:7
+        ports: ["6379:6379"]
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 5s --health-timeout 3s --health-retries 10
+    env:
+      HANACARD_APP_DATABASE_URL: postgresql+asyncpg://app:app@localhost:5432/app_test
+      HANACARD_AGENT_DATABASE_URL: postgresql+asyncpg://app:app@localhost:5432/app_test
+      WORKER_STATUS_REDIS_URL: redis://localhost:6379/2
+      ENVIRONMENT: test
+      INTERNAL_SERVICE_KEY: ci-test-key
+      ARTIFACT_STORAGE_BACKEND: local
+      OPENAI_API_KEY: test-key
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - uses: actions/cache@v4
+        with:
+          path: ~/.cache/pip
+          key: ${{ runner.os }}-pip-${{ hashFiles('requirements.txt') }}
+      - run: pip install -r requirements.txt
+      - run: pytest -q
+
+  docker:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/setup-qemu-action@v3
+      - uses: docker/setup-buildx-action@v3
+      - uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: Dockerfile
+          platforms: linux/amd64
+          push: false
+          tags: backend-fastapi:ci
+      - uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: Dockerfile.agentcore
+          platforms: linux/arm64
+          push: false
+          tags: backend-fastapi-agentcore:ci
+
+  # 기존 ECR repository를 재사용한다. Repository 생성/삭제는 이 workflow가 수행하지 않는다.
+  # Repository 이름은 GitHub Actions Variables에서 ECR_API_REPOSITORY,
+  # ECR_AGENTCORE_REPOSITORY로 지정한다.
+  publish:
+    if: github.event_name == 'push' && github.ref == 'refs/heads/develop_aws'
+    needs: [test, docker]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@v4
+      - name: Validate AWS deployment configuration
+        env:
+          AWS_ROLE_ARN: ${{ secrets.AWS_GITHUB_ACTIONS_ROLE_ARN }}
+          API_REPOSITORY: ${{ vars.ECR_API_REPOSITORY }}
+          AGENTCORE_REPOSITORY: ${{ vars.ECR_AGENTCORE_REPOSITORY }}
+        run: |
+          test -n "$AWS_ROLE_ARN" || { echo 'Missing secret: AWS_GITHUB_ACTIONS_ROLE_ARN'; exit 1; }
+          test -n "$API_REPOSITORY" || { echo 'Missing variable: ECR_API_REPOSITORY'; exit 1; }
+          test -n "$AGENTCORE_REPOSITORY" || { echo 'Missing variable: ECR_AGENTCORE_REPOSITORY'; exit 1; }
+          case "$API_REPOSITORY" in */*) ;; *) echo 'ECR_API_REPOSITORY must be a full ECR URI'; exit 1 ;; esac
+          case "$AGENTCORE_REPOSITORY" in */*) ;; *) echo 'ECR_AGENTCORE_REPOSITORY must be a full ECR URI'; exit 1 ;; esac
+      - uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-region: ${{ vars.AWS_REGION || 'ap-northeast-2' }}
+          role-to-assume: ${{ secrets.AWS_GITHUB_ACTIONS_ROLE_ARN }}
+      - uses: aws-actions/amazon-ecr-login@v2
+      - uses: docker/setup-buildx-action@v3
+      - id: meta
+        run: echo "tag=${GITHUB_SHA::12}" >> "$GITHUB_OUTPUT"
+      - uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: Dockerfile
+          push: true
+          tags: |
+            ${{ vars.ECR_API_REPOSITORY }}:${{ steps.meta.outputs.tag }}
+            ${{ vars.ECR_API_REPOSITORY }}:latest
+      - uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: Dockerfile.agentcore
+          platforms: linux/arm64
+          push: true
+          tags: |
+            ${{ vars.ECR_AGENTCORE_REPOSITORY }}:${{ steps.meta.outputs.tag }}
+            ${{ vars.ECR_AGENTCORE_REPOSITORY }}:latest
+      - name: Write deployment image references
+        run: |
+          {
+            echo "API_IMAGE=${{ vars.ECR_API_REPOSITORY }}:${{ steps.meta.outputs.tag }}"
+            echo "AGENTCORE_IMAGE=${{ vars.ECR_AGENTCORE_REPOSITORY }}:${{ steps.meta.outputs.tag }}"
+          } > deployment-images.env
+      - uses: actions/upload-artifact@v4
+        with:
+          name: deployment-images-${{ steps.meta.outputs.tag }}
+          path: deployment-images.env
