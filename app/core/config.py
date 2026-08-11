@@ -1,6 +1,7 @@
 from decimal import Decimal
 from typing import Literal
 
+from pydantic import Field, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -18,6 +19,10 @@ class Settings(BaseSettings):
 
     # --- DB ---
     database_url: str = "postgresql+psycopg://appuser:change_me_strong_password@127.0.0.1:5432/appdb"
+    app_environment: Literal["local", "test", "dev", "staging", "production"] = Field(
+        default="local",
+        validation_alias="APP_ENV",
+    )
 
     # --- Celery / Redis 비동기 파이프라인 ---
     celery_broker_url: str = "redis://127.0.0.1:6379/0"
@@ -63,7 +68,9 @@ class Settings(BaseSettings):
     # Spring(인터넷 노출)이 사내 민감 DB에 직접 붙지 못하게, 여기 이 내부 전용
     # 엔드포인트로 API 키 검증·조회를 대신 해준다. Spring의 InternalServiceInterceptor와
     # 같은 값을 공유해야 한다(양쪽 다 INTERNAL_SERVICE_KEY 환경변수).
-    internal_service_key: str = "local-development-only-key"
+    # Production/staging must inject INTERNAL_SERVICE_KEY; there is no shared
+    # secret fallback in source code.
+    internal_service_key: str = ""
 
     # --- 문서 텍스트 추출 (documents 도메인) ---
     # 원본 파일은 디스크에 저장하지 않고 메모리에서 바로 파싱 후 폐기한다(A안).
@@ -131,6 +138,15 @@ class Settings(BaseSettings):
 
     # 익명화 배치에서 사용하는 가맹점 가명화 salt. 저장소에는 두지 않는다.
     anon_hash_salt: str = ""
+
+    @model_validator(mode="after")
+    def validate_internal_service_key(self) -> "Settings":
+        if self.app_environment in {"staging", "production"} and (
+            not self.internal_service_key
+            or self.internal_service_key == "local-development-only-key"
+        ):
+            raise ValueError("INTERNAL_SERVICE_KEY must be configured outside local/test environments")
+        return self
 
 
 settings = Settings()

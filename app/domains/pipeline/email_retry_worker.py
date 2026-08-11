@@ -52,16 +52,17 @@ async def purge_expired_recipient_data() -> int:
         EmailDeliveryStatus.BOUNCED.value,
         EmailDeliveryStatus.COMPLAINT.value,
     ]
-    redacted = "[REDACTED]"
+    # A per-delivery marker preserves audit distinguishability without retaining PII.
     async with AsyncSessionLocal() as db:
         deliveries = (await db.scalars(
             select(EmailDelivery).where(
                 EmailDelivery.status.in_(terminal_statuses),
                 EmailDelivery.updated_at < cutoff,
-                EmailDelivery.recipient != redacted,
+                ~EmailDelivery.recipient.like("[REDACTED:%"),
             )
         )).all()
         for delivery in deliveries:
+            redacted = f"[REDACTED:{delivery.delivery_id}]"
             delivery.recipient = redacted
             delivery.recipient_normalized = redacted
             delivery.updated_at = utcnow()
