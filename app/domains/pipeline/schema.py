@@ -141,7 +141,7 @@ class SamplePreviewResponse(BaseModel):
 class CreateEmailDeliveryRequest(BaseModel):
     recipient: str = Field(min_length=3, max_length=254)
     # DB 담당자가 CHECK를 생성할 때까지 코드 계약도 현재 확정된 값만 허용한다.
-    delivery_type: Literal["SELECTION_SAMPLE"] = "SELECTION_SAMPLE"
+    delivery_type: Literal["SELECTION_SAMPLE", "FINAL_ARTIFACT"] = "SELECTION_SAMPLE"
     template_version: str = Field(default="v1", min_length=1, max_length=50)
 
 
@@ -157,8 +157,25 @@ class EmailDeliveryResponse(BaseModel):
     idempotency_key: str
     sample_sha256: str
     template_version: str
+    provider_message_id: str | None = None
+    failure_code: str | None = None
     created_at: datetime
     updated_at: datetime
+
+
+class CustomerApiKeyResponse(BaseModel):
+    endpoint_url: str
+    api_key: str
+    key_last4: str
+    contract_no: str
+
+
+class InternalDeliveryLookupResponse(BaseModel):
+    """Spring(고객 API)이 이 정보로 직접 S3 presign한다. FastAPI는 S3를 안 건드린다."""
+
+    storage_key: str
+    mime_type: str
+    artifact_filename: str
 
 
 class ProcessingResultResponse(BaseModel):
@@ -184,6 +201,11 @@ class StageReviewRequest(BaseModel):
     # 선택값이 있으면 실패 정책표로 롤백 단계를 정한다. 없으면 현재 HITL 게이트 기준으로
     # 요구사항→요구사항 분석, 샘플→선별, 최종 산출물→가공 단계부터 다시 실행한다.
     failure_code: FailureCode | None = None
+    # 요구사항 분석 단계 승인 시에만 사용. AI가 판단한 전달 설정을 실무자가 덮어쓴다.
+    delivery_channel: Literal["email", "api"] | None = None
+    output_formats: list[Literal["csv", "visualization", "report"]] | None = Field(
+        default=None, min_length=1
+    )
 
 
 class StageReviewResponse(BaseModel):

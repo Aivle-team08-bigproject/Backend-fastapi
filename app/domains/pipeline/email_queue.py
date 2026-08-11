@@ -25,6 +25,18 @@ class EmailDeliveryQueueMessage:
     sample_rows: list[dict]
     sample_metadata: dict
     sample_sha256: str
+    # 메일 본문에 채울 안내 문구용 컨텍스트. 값이 없으면 빈 문자열로 내려온다.
+    request_no: str
+    request_title: str
+    client_company_name: str
+    owner_name: str
+    owner_email: str
+    # delivery_type == FINAL_ARTIFACT일 때만 채워진다. Spring이 이 storage_key로
+    # 자기 S3 자격증명으로 직접 presigned URL을 새로 만든다(FastAPI가 만든 URL을
+    # 그대로 넘기면 메일이 열릴 때쯤 만료됐을 수 있어서, 발송 시점에 다시 서명한다).
+    artifact_storage_key: str
+    artifact_filename: str
+    artifact_mime_type: str
 
 
 async def publish_email_delivery(message: EmailDeliveryQueueMessage) -> bool:
