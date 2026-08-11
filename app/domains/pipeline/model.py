@@ -198,7 +198,10 @@ class Client(Base):
     company_name: Mapped[str] = mapped_column(String(200), unique=True, nullable=False)
     business_registration_number: Mapped[str | None] = mapped_column(String(30), unique=True)
     contact_name: Mapped[str | None] = mapped_column(String(80))
-    contact_email: Mapped[str | None] = mapped_column(String(254))
+    contact_email: Mapped[str | None] = mapped_column(
+        String(254),
+        comment="고객사 담당자 이메일. 실제 연락처이므로 agent_svc에 노출하지 않는다(V010).",
+    )
     contact_phone: Mapped[str | None] = mapped_column(String(40))
     status: Mapped[str] = mapped_column(String(20), nullable=False, default=ClientStatus.ACTIVE.value)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
@@ -224,7 +227,13 @@ class DataRequest(Base):
     usage_period: Mapped[str | None] = mapped_column(String(200))
     data_sensitivity: Mapped[str] = mapped_column(String(20), nullable=False, default="UNKNOWN")
     analysis_condition: Mapped[dict] = mapped_column(JSONB, nullable=False, default=dict)
-    sample_email: Mapped[str | None] = mapped_column(String(254))
+    sample_email: Mapped[str | None] = mapped_column(
+        String(254),
+        comment=(
+            "샘플 전달용 이메일. 실제 연락처이므로 agent_svc에 노출하지 않는다(V010).\n"
+            "에이전트 경로는 익명/가공 데이터만 다룬다는 원칙의 일부."
+        ),
+    )
     status: Mapped[str] = mapped_column(String(30), nullable=False, default=DataRequestStatus.DRAFT.value, index=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
@@ -441,6 +450,7 @@ class EmailDelivery(Base):
             unique=True,
             postgresql_where=text("status IN ('QUEUED', 'SENDING')"),
         ),
+        {"comment": "이메일 발송 이력. FastAPI 소유이며 Spring 은 큐로만 접근한다"},
     )
 
     delivery_id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid4()))
@@ -448,8 +458,19 @@ class EmailDelivery(Base):
     stage_attempt_no: Mapped[int] = mapped_column(SmallInteger, nullable=False, default=1)
     requested_by: Mapped[int | None] = mapped_column(BigInteger, ForeignKey("service.employees.id"))
     delivery_type: Mapped[str] = mapped_column(String(40), nullable=False, default="SELECTION_SAMPLE")
-    recipient: Mapped[str] = mapped_column(String(254), nullable=False)
-    recipient_normalized: Mapped[str] = mapped_column(String(254), nullable=False)
+    recipient: Mapped[str] = mapped_column(
+        String(254),
+        nullable=False,
+        comment=(
+            "개인정보(이메일 주소). 보존기간·파기 주체 미정 — 2026-08-10 기준 협의 중. "
+            "파기는 created_at 기준 배치로 수행한다"
+        ),
+    )
+    recipient_normalized: Mapped[str] = mapped_column(
+        String(254),
+        nullable=False,
+        comment="개인정보(정규화된 이메일 주소). 중복 발송 판정용. recipient 와 함께 파기한다",
+    )
     status: Mapped[str] = mapped_column(String(30), nullable=False, default=EmailDeliveryStatus.QUEUED.value, index=True)
     idempotency_key: Mapped[str] = mapped_column(String(255), nullable=False)
     request_fingerprint: Mapped[str] = mapped_column(String(64), nullable=False)
@@ -457,7 +478,15 @@ class EmailDelivery(Base):
     template_version: Mapped[str | None] = mapped_column(String(50))
     provider_message_id: Mapped[str | None] = mapped_column(String(255))
     failure_code: Mapped[str | None] = mapped_column(String(80))
-    attempt_count: Mapped[int] = mapped_column(SmallInteger, nullable=False, default=0)
+    attempt_count: Mapped[int] = mapped_column(
+        SmallInteger,
+        nullable=False,
+        default=0,
+        comment=(
+            "재시도 횟수. 2026-08-10 기준 대입하는 코드가 없다(항상 0). "
+            "큐 백엔드가 재전달을 소유하므로, 사용 여부가 정해지면 갱신 주체를 명시할 것"
+        ),
+    )
     next_retry_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     delivered_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)

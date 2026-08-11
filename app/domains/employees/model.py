@@ -115,7 +115,12 @@ class RolePermission(Base):
 
     __tablename__ = "role_permissions"
 
-    role_code: Mapped[str] = mapped_column(String(30), ForeignKey("service.roles.role_code"), primary_key=True)
+    # 역할이 사라지면 그 역할의 권한 매핑도 함께 사라지는 게 맞다. 감사 자료가 아니다.
+    role_code: Mapped[str] = mapped_column(
+        String(30),
+        ForeignKey("service.roles.role_code", ondelete="CASCADE"),
+        primary_key=True,
+    )
     permission_code: Mapped[str] = mapped_column(
         String(40), ForeignKey("service.permissions.permission_code"), primary_key=True
     )
@@ -128,7 +133,15 @@ class ConsentLog(Base):
     __tablename__ = "consent_logs"
 
     id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
-    employee_id: Mapped[int] = mapped_column(BigInteger, ForeignKey("service.employees.id"), nullable=False, index=True)
+    # 🔴 RESTRICT — 동의 이력은 법적 증빙이라 직원 행을 지운다고 같이 사라지면 안 된다.
+    # 원래 CASCADE 였고 a3d7f21e9c84 에서 바꿨다. app_svc 에서 DELETE 권한을 회수해
+    # 둔 것(V015)이 FK CASCADE 로 우회되는 구멍이었다.
+    employee_id: Mapped[int] = mapped_column(
+        BigInteger,
+        ForeignKey("service.employees.id", ondelete="RESTRICT"),
+        nullable=False,
+        index=True,
+    )
     consent_type: Mapped[str] = mapped_column(String(30), nullable=False)  # "TERMS" | "PRIVACY"
     version: Mapped[str] = mapped_column(String(20), nullable=False)
     agreed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
