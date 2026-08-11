@@ -2,7 +2,7 @@ import asyncio
 
 import pytest
 
-from app.worker import tasks
+from app.domains.pipeline import executor as tasks
 
 
 class FakeLogSession:
