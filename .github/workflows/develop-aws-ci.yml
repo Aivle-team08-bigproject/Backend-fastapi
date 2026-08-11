@@ -30,10 +30,14 @@ jobs:
           --health-cmd "redis-cli ping"
           --health-interval 5s --health-timeout 3s --health-retries 10
     env:
-      HANACARD_APP_DATABASE_URL: postgresql+asyncpg://app:app@localhost:5432/app_test
-      HANACARD_AGENT_DATABASE_URL: postgresql+asyncpg://app:app@localhost:5432/app_test
+      DATABASE_URL: postgresql+asyncpg://app:app@localhost:5432/app_test
       WORKER_STATUS_REDIS_URL: redis://localhost:6379/2
-      ENVIRONMENT: test
+      APP_ENV: test
+      JWT_SECRET: ci-test-jwt-secret-at-least-32-bytes-long-2026
+      BOOTSTRAP_ADMIN_PASSWORD: TestAdmin!2026Secure
+      BOOTSTRAP_ADMIN_ID: HANA-ADMIN-001
+      BOOTSTRAP_ADMIN_EMAIL: admin@company.com
+      ALLOWED_EMAIL_DOMAINS: company.com
       INTERNAL_SERVICE_KEY: ci-test-key
       ARTIFACT_STORAGE_BACKEND: local
       OPENAI_API_KEY: test-key
