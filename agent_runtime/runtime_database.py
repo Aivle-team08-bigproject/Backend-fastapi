@@ -48,6 +48,13 @@ class RuntimeDatabase:
             connection_string = parsed.get("connection_string") or parsed.get("url")
             if isinstance(connection_string, str) and connection_string.strip():
                 return connection_string.strip()
+            # Some existing Secrets Manager entries use the secret name as the
+            # JSON key and store the connection string as its only value.
+            # Accept that shape while keeping structured RDS/Aurora JSON below.
+            if len(parsed) == 1:
+                only_value = next(iter(parsed.values()))
+                if isinstance(only_value, str) and only_value.strip():
+                    return only_value.strip()
             required = {"host", "username", "password"}
             if not required.issubset(parsed):
                 raise RuntimeError("database secret JSON requires host, username, and password")
