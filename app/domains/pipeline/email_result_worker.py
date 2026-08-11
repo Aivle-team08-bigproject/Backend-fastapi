@@ -88,3 +88,32 @@ async def _apply_result(payload: str) -> None:
         if status == EmailDeliveryStatus.DELIVERED.value:
             delivery.delivered_at = delivery.updated_at
         await db.commit()
+
+    await _publish_status(delivery_id, status, result.get("provider_message_id"), result.get("failure_code"))
+
+
+async def _publish_status(
+    delivery_id: str,
+    status: str,
+    provider_message_id: str | None,
+    failure_code: str | None,
+) -> None:
+    """DB 반영 직후 SSE 채널에 발행한다. 실패해도 폴백(재조회)이 가능하므로 무시한다."""
+    redis = Redis.from_url(settings.worker_status_redis_url, decode_responses=True)
+    try:
+        await redis.publish(
+            settings.email_delivery_sse_channel,
+            json.dumps(
+                {
+                    "delivery_id": delivery_id,
+                    "status": status,
+                    "provider_message_id": provider_message_id,
+                    "failure_code": failure_code,
+                },
+                ensure_ascii=False,
+            ),
+        )
+    except Exception:
+        logger.warning("Failed to publish email delivery status delivery_id=%s", delivery_id, exc_info=True)
+    finally:
+        await redis.aclose()

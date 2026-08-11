@@ -2,7 +2,7 @@ import asyncio
 import json
 
 from fastapi import APIRouter, Depends, Header, status
-from fastapi.responses import FileResponse, StreamingResponse
+from fastapi.responses import FileResponse, RedirectResponse, StreamingResponse
 from redis.asyncio import Redis
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -11,7 +11,14 @@ from app.common.errors import not_found
 from app.common.security_deps import CurrentAuth, get_current_auth
 from app.core.config import settings
 from app.db.session import AsyncSessionLocal, get_db
-from app.domains.pipeline.model import DataRequest, EventType, PipelineEvent, PipelineRun, StageRun
+from app.domains.pipeline.model import (
+    DataRequest,
+    EmailDeliveryStatus,
+    EventType,
+    PipelineEvent,
+    PipelineRun,
+    StageRun,
+)
 from app.domains.pipeline.failure import public_failure
 from app.domains.pipeline.analysis_steps import (
     ANALYSIS_STEP_ORDER,
@@ -29,6 +36,7 @@ from app.domains.pipeline.schema import (
     CreateDataRequestRequest,
     CreateDataRequestResponse,
     CreateEmailDeliveryRequest,
+    CustomerApiKeyResponse,
     EmailDeliveryResponse,
     PipelineRunResponse,
     ProcessingResultResponse,
@@ -39,15 +47,20 @@ from app.domains.pipeline.schema import (
 from app.domains.pipeline.service import (
     create_data_request,
     create_email_delivery,
+    customer_result_filename,
+    get_email_delivery,
+    get_email_delivery_context,
+    get_accessible_run,
     get_pipeline_run,
     get_processing_result,
     get_result_artifact,
     get_sample_preview,
+    issue_customer_api_key,
     result_download_filename,
     submit_stage_review,
 )
 from app.domains.pipeline.email_queue import EmailDeliveryQueueMessage, publish_email_delivery
-from app.worker.file_storage import resolve_storage_key
+from app.worker.file_storage import generate_download_url, resolve_storage_key
 from app.worker.status_event import PipelineStatusEvent
 
 router = APIRouter(prefix="/api/v1", tags=["pipeline"])
@@ -112,7 +125,26 @@ async def request_email_delivery(
     )
     # FastAPI가 인증·검증·상태 저장을 끝낸 뒤 큐에 발행한다. 큐가 비활성화된
     # 로컬 환경에서는 QUEUED 상태로 남겨 두어 운영 전환 시 재처리할 수 있다.
-    preview = await get_sample_preview(db, run_id, auth.employee, auth.permissions)
+    context = await get_email_delivery_context(db, run_id, auth.employee, auth.permissions)
+
+    if delivery.delivery_type == "FINAL_ARTIFACT":
+        artifact = await get_result_artifact(db, run_id)
+        filename = customer_result_filename(context["client_company_name"], context["request_title"], context["request_no"])
+        sample_columns: list = []
+        sample_rows: list = []
+        sample_metadata: dict = {}
+        artifact_storage_key = artifact.storage_key
+        artifact_filename = filename
+        artifact_mime_type = artifact.mime_type or "text/csv"
+    else:
+        preview = await get_sample_preview(db, run_id, auth.employee, auth.permissions)
+        sample_columns = [column.model_dump() for column in preview.columns]
+        sample_rows = preview.rows
+        sample_metadata = preview.metadata.model_dump()
+        artifact_storage_key = ""
+        artifact_filename = ""
+        artifact_mime_type = ""
+
     await publish_email_delivery(
         EmailDeliveryQueueMessage(
             delivery_id=delivery.delivery_id,
@@ -122,13 +154,104 @@ async def request_email_delivery(
             delivery_type=delivery.delivery_type,
             recipient=delivery.recipient,
             template_version=delivery.template_version,
-            sample_columns=[column.model_dump() for column in preview.columns],
-            sample_rows=preview.rows,
-            sample_metadata=preview.metadata,
+            sample_columns=sample_columns,
+            sample_rows=sample_rows,
+            sample_metadata=sample_metadata,
             sample_sha256=delivery.sample_sha256,
+            request_no=context["request_no"],
+            request_title=context["request_title"],
+            client_company_name=context["client_company_name"],
+            owner_name=context["owner_name"],
+            owner_email=context["owner_email"],
+            artifact_storage_key=artifact_storage_key,
+            artifact_filename=artifact_filename,
+            artifact_mime_type=artifact_mime_type,
+            api_endpoint_url=payload.api_endpoint_url or "",
+            api_key=payload.api_key or "",
         )
     )
     return delivery
+
+
+@router.post(
+    "/runs/{run_id}/api-key",
+    response_model=CustomerApiKeyResponse,
+    status_code=status.HTTP_201_CREATED,
+)
+async def request_customer_api_key(
+    run_id: int,
+    auth: CurrentAuth = Depends(get_current_auth),
+    db: AsyncSession = Depends(get_db),
+) -> CustomerApiKeyResponse:
+    """산출물 재다운로드용 고객 API 키를 발급한다. 평문 키는 이 응답에서만 노출된다."""
+    result = await issue_customer_api_key(db, run_id, auth.employee, auth.permissions)
+    return CustomerApiKeyResponse(**result)
+
+
+_EMAIL_DELIVERY_TERMINAL_STATUSES = {
+    EmailDeliveryStatus.SENT.value,
+    EmailDeliveryStatus.DELIVERED.value,
+    EmailDeliveryStatus.FAILED.value,
+    EmailDeliveryStatus.BOUNCED.value,
+    EmailDeliveryStatus.COMPLAINT.value,
+}
+
+
+@router.get("/runs/{run_id}/email-deliveries/{delivery_id}/events")
+async def stream_email_delivery_status(
+    run_id: int,
+    delivery_id: str,
+    auth: CurrentAuth = Depends(get_current_auth),
+    db: AsyncSession = Depends(get_db),
+):
+    """발송 요청 하나의 상태를 SSE로 전달한다. 종료 상태에 도달하면 스트림을 닫는다."""
+    delivery = await get_email_delivery(db, run_id, delivery_id, auth.employee, auth.permissions)
+
+    async def event_stream():
+        snapshot = json.dumps(
+            {
+                "delivery_id": delivery.delivery_id,
+                "status": delivery.status,
+                "provider_message_id": delivery.provider_message_id,
+                "failure_code": delivery.failure_code,
+            },
+            ensure_ascii=False,
+        )
+        yield _sse_message("status", snapshot)
+        if delivery.status in _EMAIL_DELIVERY_TERMINAL_STATUSES:
+            return
+
+        redis_client = Redis.from_url(settings.worker_status_redis_url, decode_responses=True)
+        pubsub = redis_client.pubsub(ignore_subscribe_messages=True)
+        await pubsub.subscribe(settings.email_delivery_sse_channel)
+        try:
+            while True:
+                message = await pubsub.get_message(timeout=15)
+                if message is None:
+                    yield ": heartbeat\n\n"
+                    continue
+                data = json.loads(message["data"])
+                if data.get("delivery_id") != delivery_id:
+                    continue
+                yield _sse_message("status", message["data"])
+                if data.get("status") in _EMAIL_DELIVERY_TERMINAL_STATUSES:
+                    return
+        except asyncio.CancelledError:
+            raise
+        finally:
+            await pubsub.unsubscribe(settings.email_delivery_sse_channel)
+            await pubsub.aclose()
+            await redis_client.aclose()
+
+    return StreamingResponse(
+        event_stream(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no",
+        },
+    )
 
 
 @router.get(
@@ -154,7 +277,12 @@ async def review_run_stage(
 
 
 @router.get("/runs/{run_id}/result.csv")
-async def download_run_result(run_id: int, db: AsyncSession = Depends(get_db)):
+async def download_run_result(
+    run_id: int,
+    auth: CurrentAuth = Depends(get_current_auth),
+    db: AsyncSession = Depends(get_db),
+):
+    await get_accessible_run(db, run_id, auth.employee, auth.permissions)
     artifact = await get_result_artifact(db, run_id)
     request_no = await db.scalar(
         select(DataRequest.request_no)
@@ -163,6 +291,10 @@ async def download_run_result(run_id: int, db: AsyncSession = Depends(get_db)):
     )
     if request_no is None:
         raise not_found("PIPELINE_RUN_NOT_FOUND", "파이프라인 실행을 찾을 수 없습니다.")
+    filename = result_download_filename(request_no, run_id)
+    presigned_url = generate_download_url(artifact.storage_key, filename, artifact.mime_type or "text/csv")
+    if presigned_url is not None:
+        return RedirectResponse(presigned_url, status_code=status.HTTP_307_TEMPORARY_REDIRECT)
     try:
         path = resolve_storage_key(artifact.storage_key)
     except ValueError as exc:
@@ -172,7 +304,7 @@ async def download_run_result(run_id: int, db: AsyncSession = Depends(get_db)):
     return FileResponse(
         path,
         media_type=artifact.mime_type or "text/csv",
-        filename=result_download_filename(request_no, run_id),
+        filename=filename,
     )
 
 
