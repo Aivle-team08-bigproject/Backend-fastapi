@@ -1,4 +1,5 @@
 from decimal import Decimal
+from typing import Literal
 
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
@@ -40,8 +41,25 @@ class Settings(BaseSettings):
     email_request_queue_key: str = "email:delivery:requests"
     email_result_queue_key: str = "email:delivery:results"
     email_result_poll_interval_seconds: float = 1.0
+    # 결과 worker가 DB 반영 직후 발행하는 채널(FastAPI SSE가 구독). pipeline
+    # run-status 채널(worker_status_sse_channel)과는 이벤트 스키마가 달라 분리한다.
+    email_delivery_sse_channel: str = "pipeline:email-delivery-status"
     upload_root: str = "/app/uploads"
     database_host_override: str | None = None
+    # 최종 산출물 저장소. "local"이 기본값이라 S3 미설정 환경은 그대로 동작한다.
+    # bigproject-infra/envs/dev가 만든 버킷을 쓰려면 s3로 바꾸고 bucket을 채운다.
+    # 목표 아키텍처(AgentCore -> S3 direct write)가 아직 없어서 지금은 이 Celery
+    # worker가 그 역할을 임시로 대신한다.
+    artifact_storage_backend: Literal["local", "s3"] = "local"
+    s3_artifacts_bucket: str = ""
+    s3_artifacts_presign_expires_seconds: int = 300
+    # 고객용 산출물 재다운로드 API를 서빙하는 Spring 서비스의 외부 base URL.
+    # 실무자 화면에 보여줄 Endpoint URL을 여기서 조립한다.
+    customer_api_base_url: str = "http://localhost:8082"
+    # Spring(인터넷 노출)이 사내 민감 DB에 직접 붙지 못하게, 여기 이 내부 전용
+    # 엔드포인트로 API 키 검증·조회를 대신 해준다. Spring의 InternalServiceInterceptor와
+    # 같은 값을 공유해야 한다(양쪽 다 INTERNAL_SERVICE_KEY 환경변수).
+    internal_service_key: str = "local-development-only-key"
 
     # --- 문서 텍스트 추출 (documents 도메인) ---
     # 원본 파일은 디스크에 저장하지 않고 메모리에서 바로 파싱 후 폐기한다(A안).

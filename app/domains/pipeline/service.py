@@ -1,20 +1,27 @@
 from uuid import uuid4
 import hashlib
 import json
+import re
+import secrets
 
 from fastapi import status
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.common.errors import DomainException, not_found
+from app.common.errors import DomainException, forbidden, not_found, unauthorized
 from app.common.time_utils import utcnow
+from app.core.config import settings
 from app.domains.pipeline.model import (
+    ApiKeyStatus,
+    ApiUsageLog,
     Artifact,
     Client,
     Contract,
+    ContractApiKey,
     ContractStatus,
     DataRequest,
     DataRequestStatus,
+    Delivery,
     EventType,
     FailureCode,
     PipelineEvent,
@@ -58,8 +65,29 @@ def _make_request_no() -> str:
 
 
 def result_download_filename(request_no: str, run_id: int) -> str:
-    """사용자가 작업과 재가공 실행을 함께 식별할 수 있는 결과 파일명."""
+    """실무자가 작업과 재가공 실행을 함께 식별할 수 있는 결과 파일명(내부용 CSV 다운로드 버튼)."""
     return f"{request_no}-run-{run_id}-result.csv"
+
+
+_FILENAME_UNSAFE_CHARS = re.compile(r'[\\/:*?"<>|\r\n\t\x00]')
+
+
+def _sanitize_filename_component(value: str, *, max_length: int = 60) -> str:
+    cleaned = _FILENAME_UNSAFE_CHARS.sub("", value)
+    cleaned = re.sub(r"\s+", " ", cleaned).strip()
+    return cleaned[:max_length].strip()
+
+
+def customer_result_filename(client_company_name: str, request_title: str, request_no: str) -> str:
+    """고객 수신 메일에 실을 파일명. 고객사·작업명이 있으면 그걸 쓰고, 없으면 요청번호로 대체한다."""
+    parts = [
+        _sanitize_filename_component(part)
+        for part in (client_company_name, request_title)
+        if part and part.strip()
+    ]
+    parts = [part for part in parts if part]
+    base = "_".join(parts) if parts else request_no
+    return f"{base}_최종산출물.csv"
 
 
 def _make_contract_no() -> str:
@@ -514,18 +542,34 @@ async def create_email_delivery(
         raise DomainException(status.HTTP_400_BAD_REQUEST, "INVALID_IDEMPOTENCY_KEY", "Idempotency-Key가 필요합니다.")
 
     run, _ = await _get_accessible_run(db, run_id, employee, permissions)
-    preview = await get_sample_preview(db, run.id, employee, permissions)
-    if payload.delivery_type == "SELECTION_SAMPLE" and len(preview.rows) != 5:
-        raise DomainException(status.HTTP_409_CONFLICT, "PIPELINE_SAMPLE_INVALID", "샘플 데이터는 정확히 5건이어야 합니다.")
+
+    if payload.delivery_type == "FINAL_ARTIFACT":
+        if settings.artifact_storage_backend != "s3":
+            # Spring이 storage_key로 S3 presigned URL을 만든다. 로컬 백엔드로 저장된
+            # 산출물은 S3에 없으므로 여기서 막지 않으면 링크가 항상 NoSuchKey로 깨진다.
+            raise DomainException(
+                status.HTTP_409_CONFLICT,
+                "ARTIFACT_STORAGE_NOT_EMAILABLE",
+                "이 산출물은 로컬 스토리지에 저장되어 메일로 발송할 수 없습니다. CSV 다운로드를 이용해주세요.",
+            )
+        artifact = await get_result_artifact(db, run.id)
+        stage_run = await db.get(StageRun, artifact.stage_run_id) if artifact.stage_run_id else None
+        attempt_no = stage_run.attempt_no if stage_run else 1
+        content_sha256 = artifact.checksum or ""
+    else:
+        preview = await get_sample_preview(db, run.id, employee, permissions)
+        if payload.delivery_type == "SELECTION_SAMPLE" and len(preview.rows) != 5:
+            raise DomainException(status.HTTP_409_CONFLICT, "PIPELINE_SAMPLE_INVALID", "샘플 데이터는 정확히 5건이어야 합니다.")
+        attempt_no = preview.attempt_no
+        sample_document = {"columns": [column.model_dump() for column in preview.columns], "rows": preview.rows}
+        content_sha256 = hashlib.sha256(
+            json.dumps(sample_document, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode()
+        ).hexdigest()
 
     recipient = _normalize_recipient(payload.recipient)
-    sample_document = {"columns": [column.model_dump() for column in preview.columns], "rows": preview.rows}
-    sample_sha256 = hashlib.sha256(
-        json.dumps(sample_document, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode()
-    ).hexdigest()
     fingerprint = hashlib.sha256(
         json.dumps(
-            {"run_id": run.id, "type": payload.delivery_type, "recipient": recipient, "sample_sha256": sample_sha256, "template": payload.template_version},
+            {"run_id": run.id, "type": payload.delivery_type, "recipient": recipient, "content_sha256": content_sha256, "template": payload.template_version},
             sort_keys=True,
             separators=(",", ":"),
         ).encode()
@@ -540,7 +584,7 @@ async def create_email_delivery(
     active = await db.scalar(
         select(EmailDelivery).where(
             EmailDelivery.run_id == run.id,
-            EmailDelivery.stage_attempt_no == preview.attempt_no,
+            EmailDelivery.stage_attempt_no == attempt_no,
             EmailDelivery.recipient_normalized == recipient,
             EmailDelivery.delivery_type == payload.delivery_type,
             EmailDelivery.status.in_([EmailDeliveryStatus.QUEUED.value, EmailDeliveryStatus.SENDING.value]),
@@ -552,7 +596,7 @@ async def create_email_delivery(
     now = utcnow()
     delivery = EmailDelivery(
         run_id=run.id,
-        stage_attempt_no=preview.attempt_no,
+        stage_attempt_no=attempt_no,
         requested_by=employee.id,
         delivery_type=payload.delivery_type,
         recipient=payload.recipient.strip(),
@@ -560,7 +604,7 @@ async def create_email_delivery(
         status=EmailDeliveryStatus.QUEUED.value,
         idempotency_key=key,
         request_fingerprint=fingerprint,
-        sample_sha256=sample_sha256,
+        sample_sha256=content_sha256,
         template_version=payload.template_version,
         created_at=now,
         updated_at=now,
@@ -571,6 +615,47 @@ async def create_email_delivery(
     # 재시작 복구 잡이 QUEUED 행을 다시 찾을 수 있다.
     await db.commit()
     return EmailDeliveryResponse.model_validate(delivery, from_attributes=True)
+
+
+async def get_email_delivery(
+    db: AsyncSession,
+    run_id: int,
+    delivery_id: str,
+    employee: Employee,
+    permissions: set[PermissionCode],
+) -> EmailDeliveryResponse:
+    """발송 상태 폴링/SSE 스냅샷 조회용. run 접근 권한을 재확인한다."""
+    run, _ = await _get_accessible_run(db, run_id, employee, permissions)
+    delivery = await db.scalar(
+        select(EmailDelivery).where(
+            EmailDelivery.delivery_id == delivery_id,
+            EmailDelivery.run_id == run.id,
+        )
+    )
+    if delivery is None:
+        raise not_found("EMAIL_DELIVERY_NOT_FOUND", "이메일 발송 요청을 찾을 수 없습니다.")
+    return EmailDeliveryResponse.model_validate(delivery, from_attributes=True)
+
+
+async def get_email_delivery_context(
+    db: AsyncSession,
+    run_id: int,
+    employee: Employee,
+    permissions: set[PermissionCode],
+) -> dict:
+    """메일 템플릿에 채울 요청/고객사/담당자 정보. 값이 없으면 빈 문자열로 내려서
+    Spring 쪽이 항상 같은 필드 계약으로 렌더링할 수 있게 한다.
+    """
+    run, data_request = await _get_accessible_run(db, run_id, employee, permissions)
+    client = await db.get(Client, data_request.client_id)
+    owner = await db.get(Employee, data_request.owner_id) if data_request.owner_id else None
+    return {
+        "request_no": data_request.request_no,
+        "request_title": data_request.title,
+        "client_company_name": (client.company_name if client else "") or "",
+        "owner_name": data_request.owner_name or (owner.name if owner else "") or "",
+        "owner_email": (owner.email if owner else "") or "",
+    }
 
 
 async def get_processing_result(db: AsyncSession, run_id: int) -> ProcessingResultResponse:
@@ -755,6 +840,36 @@ async def submit_stage_review(
             celery_task_id=celery_task_id,
         )
 
+    if reviewed_stage == StageName.REQUIREMENT_ANALYSIS and (
+        payload.delivery_channel is not None or payload.output_formats is not None
+    ):
+        if stage_run is None:
+            raise DomainException(
+                status.HTTP_409_CONFLICT,
+                "PIPELINE_REQUIREMENT_STAGE_NOT_FOUND",
+                "승인할 요구사항 분석 결과를 찾을 수 없습니다.",
+            )
+        stage_run.output_payload = {
+            **(stage_run.output_payload or {}),
+            **(
+                {"delivery_channel": payload.delivery_channel}
+                if payload.delivery_channel is not None
+                else {}
+            ),
+            **(
+                {"output_formats": payload.output_formats}
+                if payload.output_formats is not None
+                else {}
+            ),
+        }
+        data_request = await db.get(DataRequest, run.data_request_id)
+        if data_request is not None:
+            if payload.delivery_channel is not None:
+                data_request.delivery_channels = [payload.delivery_channel]
+            if payload.output_formats is not None:
+                data_request.output_formats = payload.output_formats
+            data_request.updated_at = now
+
     if reviewed_stage == STAGE_ORDER[-1]:
         run.status = PipelineRunStatus.COMPLETED.value
         run.current_stage = reviewed_stage.value
@@ -927,3 +1042,153 @@ async def get_result_artifact(db: AsyncSession, run_id: int) -> Artifact:
     if artifact is None:
         raise not_found("PIPELINE_RESULT_NOT_READY", "결과 CSV가 아직 준비되지 않았습니다.")
     return artifact
+
+
+async def issue_customer_api_key(
+    db: AsyncSession,
+    run_id: int,
+    employee: Employee,
+    permissions: set[PermissionCode],
+) -> dict:
+    """고객이 산출물을 API로 재다운로드할 수 있는 키를 발급한다.
+
+    평문 키는 이 응답에서만 노출되고 DB에는 해시만 저장한다. 실제 조회·presign은
+    Spring(고객 API)이 담당하므로, 여기서는 계약을 ACTIVE로 만들고 이번 산출물을
+    가리키는 Delivery 행을 남겨서 Spring이 어떤 artifact를 내려줄지 찾을 수 있게 한다.
+    """
+    if settings.artifact_storage_backend != "s3":
+        # Spring이 storage_key로 S3 presigned URL을 만든다. 로컬 백엔드로 저장된
+        # 산출물은 S3에 없으므로 여기서 막지 않으면 발급된 키가 항상 NoSuchKey로 깨진다.
+        raise DomainException(
+            status.HTTP_409_CONFLICT,
+            "ARTIFACT_STORAGE_NOT_API_READY",
+            "이 산출물은 로컬 스토리지에 저장되어 API로 제공할 수 없습니다.",
+        )
+    run, data_request = await _get_accessible_run(db, run_id, employee, permissions)
+    artifact = await get_result_artifact(db, run.id)
+
+    now = utcnow()
+    contract = await db.scalar(
+        select(Contract)
+        .where(Contract.data_request_id == data_request.id, Contract.status == ContractStatus.ACTIVE.value)
+    )
+    if contract is None:
+        contract = await db.scalar(
+            select(Contract)
+            .where(Contract.data_request_id == data_request.id)
+            .order_by(Contract.created_at.desc())
+        )
+    if contract is None:
+        contract = Contract(
+            data_request_id=data_request.id,
+            contract_no=_make_contract_no(),
+            status=ContractStatus.ACTIVE.value,
+            signed_at=now,
+            created_at=now,
+            updated_at=now,
+        )
+        db.add(contract)
+        await db.flush()
+    elif contract.status != ContractStatus.ACTIVE.value:
+        contract.status = ContractStatus.ACTIVE.value
+        contract.signed_at = contract.signed_at or now
+        contract.updated_at = now
+
+    db.add(
+        Delivery(
+            data_request_id=data_request.id,
+            artifact_id=artifact.id,
+            channel="API",
+            status="ACTIVE",
+            created_at=now,
+        )
+    )
+
+    raw_key = f"hnk_{secrets.token_urlsafe(32)}"
+    key_hash = hashlib.sha256(raw_key.encode()).hexdigest()
+    api_key = ContractApiKey(
+        contract_id=contract.id,
+        key_hash=key_hash,
+        key_last4=raw_key[-4:],
+        issued_at=now,
+        status=ApiKeyStatus.ACTIVE.value,
+        created_at=now,
+    )
+    db.add(api_key)
+    await db.commit()
+
+    return {
+        "endpoint_url": f"{settings.customer_api_base_url}/api/external/v1/deliveries/{contract.contract_no}",
+        "api_key": raw_key,
+        "key_last4": api_key.key_last4,
+        "contract_no": contract.contract_no,
+    }
+
+
+async def lookup_customer_delivery(db: AsyncSession, contract_no: str, raw_api_key: str) -> dict:
+    """Spring의 고객 API가 대신 물어보는 창구. 여기서만 사내 DB(민감 스키마)를 만진다.
+
+    Spring은 이 결과의 storage_key로 자기 S3 자격증명으로 직접 presign한다 —
+    이 함수는 S3를 건드리지 않는다("S3 -> Spring" 원칙 유지). DB 접근은 이 함수
+    하나로 좁혀서, 인터넷에 노출된 Spring이 사내 DB 자격증명을 갖지 않게 한다.
+    """
+    now = utcnow()
+    key_hash = hashlib.sha256(raw_api_key.encode()).hexdigest()
+    api_key = await db.scalar(select(ContractApiKey).where(ContractApiKey.key_hash == key_hash))
+    if api_key is None:
+        raise unauthorized("INVALID_API_KEY", "API Key가 유효하지 않습니다.")
+
+    async def _log(response_status: int) -> None:
+        db.add(
+            ApiUsageLog(
+                api_key_id=api_key.id,
+                endpoint=f"/api/external/v1/deliveries/{contract_no}",
+                response_status=response_status,
+                response_time_ms=None,
+                requested_at=now,
+            )
+        )
+        await db.commit()
+
+    if api_key.status != ApiKeyStatus.ACTIVE.value:
+        await _log(status.HTTP_403_FORBIDDEN)
+        raise forbidden("API_KEY_REVOKED", "폐기된 API Key입니다.")
+    if api_key.expires_at is not None and api_key.expires_at < now:
+        await _log(status.HTTP_403_FORBIDDEN)
+        raise forbidden("API_KEY_EXPIRED", "만료된 API Key입니다.")
+
+    contract = await db.scalar(select(Contract).where(Contract.contract_no == contract_no))
+    if contract is None:
+        await _log(status.HTTP_404_NOT_FOUND)
+        raise not_found("CONTRACT_NOT_FOUND", "계약을 찾을 수 없습니다.")
+    if contract.id != api_key.contract_id:
+        await _log(status.HTTP_403_FORBIDDEN)
+        raise forbidden("API_KEY_CONTRACT_MISMATCH", "이 계약에 속하지 않은 API Key입니다.")
+
+    delivery = await db.scalar(
+        select(Delivery)
+        .where(Delivery.data_request_id == contract.data_request_id, Delivery.channel == "API")
+        .order_by(Delivery.id.desc())
+    )
+    if delivery is None:
+        await _log(status.HTTP_404_NOT_FOUND)
+        raise not_found("DELIVERY_NOT_FOUND", "발급된 산출물이 아직 없습니다.")
+    artifact = await db.get(Artifact, delivery.artifact_id)
+    if artifact is None:
+        await _log(status.HTTP_404_NOT_FOUND)
+        raise not_found("ARTIFACT_NOT_FOUND", "산출물 파일을 찾을 수 없습니다.")
+
+    data_request = await db.get(DataRequest, contract.data_request_id)
+    client = await db.get(Client, data_request.client_id) if data_request else None
+    filename = customer_result_filename(
+        client.company_name if client else "",
+        data_request.title if data_request else "",
+        contract.contract_no,
+    )
+
+    await _log(status.HTTP_200_OK)
+    return {
+        "storage_key": artifact.storage_key,
+        "mime_type": artifact.mime_type or "text/csv",
+        "artifact_filename": filename,
+    }
