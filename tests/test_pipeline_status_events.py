@@ -60,7 +60,7 @@ def test_persist_running_pipeline_event():
         status="QUEUED",
         current_stage="REQUIREMENT_ANALYSIS",
         progress_percent=0,
-        celery_task_id="task-7",
+        execution_id="task-7",
         created_at=now,
         updated_at=now,
     )
@@ -92,7 +92,7 @@ def test_persist_running_pipeline_event():
     db = FakeAsyncSession(run, data_request, stage)
     event = PipelineStatusEvent(
         run_id=7,
-        celery_task_id="task-7",
+        execution_id="task-7",
         run_status=PipelineRunStatus.RUNNING,
         current_stage="REQUIREMENT_ANALYSIS",
         stage_status=StageRunStatus.RUNNING,
@@ -121,7 +121,7 @@ def test_persist_analysis_step_event_merges_into_output_payload():
         status="RUNNING",
         current_stage="REQUIREMENT_ANALYSIS",
         progress_percent=1,
-        celery_task_id="task-7",
+        execution_id="task-7",
         created_at=now,
         updated_at=now,
     )
@@ -153,7 +153,7 @@ def test_persist_analysis_step_event_merges_into_output_payload():
     db = FakeAsyncSession(run, data_request, stage)
     event = PipelineStatusEvent(
         run_id=7,
-        celery_task_id="task-7",
+        execution_id="task-7",
         run_status=PipelineRunStatus.RUNNING,
         current_stage="REQUIREMENT_ANALYSIS",
         stage_status=StageRunStatus.RUNNING,
@@ -184,7 +184,7 @@ def test_persist_processing_step_event_upgrades_legacy_four_step_snapshot():
         status="RUNNING",
         current_stage="DATA_PROCESSING",
         progress_percent=86,
-        celery_task_id="task-7",
+        execution_id="task-7",
         created_at=now,
         updated_at=now,
     )
@@ -231,7 +231,7 @@ def test_persist_processing_step_event_upgrades_legacy_four_step_snapshot():
     db = FakeAsyncSession(run, data_request, stage)
     event = PipelineStatusEvent(
         run_id=7,
-        celery_task_id="task-7",
+        execution_id="task-7",
         run_status=PipelineRunStatus.RUNNING,
         current_stage="DATA_PROCESSING",
         stage_status=StageRunStatus.RUNNING,
@@ -266,7 +266,7 @@ def test_sse_message_includes_database_event_id():
 def test_pipeline_status_event_serializes_optional_analysis_step_contract():
     event = PipelineStatusEvent(
         run_id=7,
-        celery_task_id="task-7",
+        execution_id="task-7",
         run_status=PipelineRunStatus.RUNNING,
         current_stage="REQUIREMENT_ANALYSIS",
         stage_status=StageRunStatus.RUNNING,
@@ -288,7 +288,7 @@ def test_pipeline_status_event_rejects_partial_analysis_step_fields():
     with pytest.raises(ValidationError, match="must be set together"):
         PipelineStatusEvent(
             run_id=7,
-            celery_task_id="task-7",
+            execution_id="task-7",
             run_status=PipelineRunStatus.RUNNING,
             analysis_step=AnalysisStepCode.REQUEST_ANALYSIS,
             progress_percent=1,
@@ -300,7 +300,7 @@ def test_pipeline_status_event_rejects_partial_analysis_step_fields():
 def test_pipeline_status_event_serializes_optional_selection_step_contract():
     event = PipelineStatusEvent(
         run_id=7,
-        celery_task_id="task-7",
+        execution_id="task-7",
         run_status=PipelineRunStatus.RUNNING,
         current_stage="DATA_SELECTION",
         stage_status=StageRunStatus.RUNNING,
@@ -321,7 +321,7 @@ def test_pipeline_status_event_serializes_optional_selection_step_contract():
 def test_pipeline_status_event_keeps_legacy_events_compatible():
     event = PipelineStatusEvent(
         run_id=7,
-        celery_task_id="task-7",
+        execution_id="task-7",
         run_status=PipelineRunStatus.RUNNING,
         progress_percent=5,
         message="started",
@@ -336,7 +336,7 @@ def test_pipeline_status_event_keeps_legacy_events_compatible():
 def test_pipeline_status_event_allows_attempt_transition_without_substep():
     event = PipelineStatusEvent(
         run_id=7,
-        celery_task_id="task-7",
+        execution_id="task-7",
         run_status=PipelineRunStatus.RUNNING,
         current_stage="DATA_SELECTION",
         stage_status=StageRunStatus.RUNNING,
@@ -353,7 +353,7 @@ def test_pipeline_status_event_allows_attempt_transition_without_substep():
 def test_pipeline_status_event_serializes_processing_step_contract():
     event = PipelineStatusEvent(
         run_id=7,
-        celery_task_id="task-7",
+        execution_id="task-7",
         run_status=PipelineRunStatus.RUNNING,
         current_stage="DATA_PROCESSING",
         stage_status=StageRunStatus.RUNNING,
@@ -374,7 +374,7 @@ def test_pipeline_status_event_rejects_partial_selection_step_fields():
     with pytest.raises(ValidationError, match="must be set together"):
         PipelineStatusEvent(
             run_id=7,
-            celery_task_id="task-7",
+            execution_id="task-7",
             run_status=PipelineRunStatus.RUNNING,
             selection_step=SelectionStepCode.SOURCE_COLUMN_SELECTION,
             progress_percent=34,

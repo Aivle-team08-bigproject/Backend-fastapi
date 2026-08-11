@@ -11,7 +11,7 @@ class FakeSecretsManager:
 
     def get_secret_value(self, *, SecretId):
         self.secret_id = SecretId
-        return {"SecretString": "postgresql+psycopg://agent_svc:password@example.neon.tech/portfolio?sslmode=require"}
+        return {"SecretString": "postgresql+psycopg://agent_svc:password@example.rds.amazonaws.com/portfolio?sslmode=require"}
 
 
 def test_runtime_database_reads_connection_string_from_exact_secret(monkeypatch):
@@ -19,8 +19,8 @@ def test_runtime_database_reads_connection_string_from_exact_secret(monkeypatch)
     captured = {}
 
     monkeypatch.setenv(
-        "NEON_DATABASE_SECRET_ARN",
-        "arn:aws:secretsmanager:ap-northeast-2:123456789012:secret:bigproject/local-dev/agentcore/neon-database-url-abcdef",
+        "AGENT_DATABASE_SECRET_ARN",
+        "arn:aws:secretsmanager:ap-northeast-2:123456789012:secret:bigproject/dev/agent-database-abcdef",
     )
     monkeypatch.setattr("agent_runtime.runtime_database.boto3.client", lambda *args, **kwargs: fake_client)
     monkeypatch.setattr(
@@ -35,14 +35,29 @@ def test_runtime_database_reads_connection_string_from_exact_secret(monkeypatch)
     database = RuntimeDatabase()
     asyncio.run(database.initialize())
 
-    assert fake_client.secret_id.endswith("neon-database-url-abcdef")
+    assert fake_client.secret_id.endswith("agent-database-abcdef")
     assert captured["url"].startswith("postgresql+psycopg://agent_svc:")
     assert captured["kwargs"]["pool_size"] == 1
     assert captured["kwargs"]["max_overflow"] == 1
 
 
-def test_runtime_database_requires_secret_arn(monkeypatch):
-    monkeypatch.delenv("NEON_DATABASE_SECRET_ARN", raising=False)
+def test_runtime_database_reads_rds_postgres_json(monkeypatch):
+    fake_client = FakeSecretsManager()
+    fake_client.get_secret_value = lambda **kwargs: {
+        "SecretString": '{"host":"db.rds.amazonaws.com","port":5432,"dbname":"portfolio","username":"app_svc","password":"p@ss"}'
+    }
+    captured = {}
+    monkeypatch.setenv("AGENT_DATABASE_SECRET_ARN", "arn:test:rds")
+    monkeypatch.setattr("agent_runtime.runtime_database.boto3.client", lambda *args, **kwargs: fake_client)
+    monkeypatch.setattr("agent_runtime.runtime_database.create_async_engine", lambda url, **kwargs: captured.update(url=url) or object())
+    monkeypatch.setattr("agent_runtime.runtime_database.async_sessionmaker", lambda *args, **kwargs: object())
 
-    with pytest.raises(RuntimeError, match="NEON_DATABASE_SECRET_ARN"):
+    asyncio.run(RuntimeDatabase().initialize())
+    assert captured["url"] == "postgresql+psycopg://app_svc:p%40ss@db.rds.amazonaws.com:5432/portfolio?sslmode=require"
+
+
+def test_runtime_database_requires_secret_arn(monkeypatch):
+    monkeypatch.delenv("AGENT_DATABASE_SECRET_ARN", raising=False)
+
+    with pytest.raises(RuntimeError, match="AGENT_DATABASE_SECRET_ARN"):
         asyncio.run(RuntimeDatabase().initialize())

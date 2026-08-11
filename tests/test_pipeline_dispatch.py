@@ -29,10 +29,10 @@ class FakeAsyncSession:
         self.commits += 1
 
 
-def test_create_data_request_persists_id_before_celery_publish(monkeypatch):
+def test_create_data_request_persists_id_before_direct_schedule(monkeypatch):
     db = FakeAsyncSession()
-    apply_async = Mock()
-    monkeypatch.setattr(service.process_pipeline_run, "apply_async", apply_async)
+    schedule = Mock()
+    monkeypatch.setattr(service, "_schedule_pipeline_execution", schedule)
 
     response = asyncio.run(
         service.create_data_request(
@@ -51,11 +51,11 @@ def test_create_data_request_persists_id_before_celery_publish(monkeypatch):
     stages = [value for value in db.added if isinstance(value, StageRun)]
 
     assert response.run_id == run.id
-    assert response.celery_task_id == run.celery_task_id
+    assert response.execution_id == run.execution_id
     assert response.run_status.value == "QUEUED"
     assert data_request.status.value == "QUEUED"
     assert data_request.owner_id == 42
     assert data_request.owner_name == "테스트 담당자"
     assert [stage.status.value for stage in stages] == ["PENDING"] * 3
-    apply_async.assert_called_once_with(args=[run.id], task_id=run.celery_task_id)
+    schedule.assert_called_once_with(run.id, run.execution_id)
     assert db.commits == 1

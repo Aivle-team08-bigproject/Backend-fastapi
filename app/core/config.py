@@ -26,9 +26,6 @@ class Settings(BaseSettings):
     )
 
     # --- Celery / Redis 비동기 파이프라인 ---
-    celery_broker_url: str = "redis://127.0.0.1:6379/0"
-    celery_result_backend: str = "redis://127.0.0.1:6379/1"
-    celery_task_always_eager: bool = False
     worker_status_redis_url: str = "redis://127.0.0.1:6379/2"
     # Worker가 DB에 상태를 쓴 뒤 프론트 화면 갱신용으로 발행하는 채널(FastAPI SSE가 구독)
     worker_status_sse_channel: str = "pipeline:run-status:persisted"
@@ -76,7 +73,7 @@ class Settings(BaseSettings):
     # --- 파이프라인 에이전트 실행 위치 ---
     # 기본값은 기존 로컬 개발 흐름이다. AGENTCORE로 바꾸면 Celery worker가
     # 단계 payload를 AWS Bedrock AgentCore Runtime으로 전달한다.
-    pipeline_execution_backend: Literal["CELERY", "AGENTCORE"] = "CELERY"
+    pipeline_execution_backend: Literal["AGENTCORE", "AGENTCORE_DIRECT"] = "AGENTCORE_DIRECT"
     agentcore_region: str = "ap-northeast-2"
     agentcore_runtime_arn: str | None = None
     agentcore_runtime_qualifier: str | None = None
@@ -159,6 +156,11 @@ class Settings(BaseSettings):
             or self.internal_service_key == "local-development-only-key"
         ):
             raise ValueError("INTERNAL_SERVICE_KEY must be configured outside local/test environments")
+        if self.app_environment in {"staging", "production"}:
+            if self.artifact_storage_backend != "s3":
+                raise ValueError("ARTIFACT_STORAGE_BACKEND must be s3 outside local/test environments")
+            if not self.s3_artifacts_bucket.strip():
+                raise ValueError("S3_ARTIFACTS_BUCKET is required outside local/test environments")
         return self
 
 

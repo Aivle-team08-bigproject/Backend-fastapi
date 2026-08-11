@@ -46,6 +46,8 @@ def _write_result_local(run_id: int, content: bytes) -> dict:
 def _write_result_s3(run_id: int, content: bytes) -> dict:
     import boto3
 
+    if not settings.s3_artifacts_bucket.strip():
+        raise RuntimeError("S3_ARTIFACTS_BUCKET is required for artifact storage")
     key = f"results/{run_id}/result-{uuid4().hex}.csv"
     checksum = hashlib.sha256(content).hexdigest()
     boto3.client("s3", region_name=settings.aws_region).put_object(
@@ -68,6 +70,8 @@ def generate_download_url(storage_key: str, filename: str, mime_type: str) -> st
     """S3 백엔드일 때만 presigned GET URL을 만든다. local 백엔드는 None(호출자가 FileResponse로 처리)."""
     if settings.artifact_storage_backend != "s3":
         return None
+    if not settings.s3_artifacts_bucket.strip():
+        raise RuntimeError("S3_ARTIFACTS_BUCKET is required for artifact downloads")
     import boto3
 
     client = boto3.client("s3", region_name=settings.aws_region)

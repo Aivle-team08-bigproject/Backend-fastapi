@@ -20,7 +20,6 @@ from sqlalchemy import create_engine, text
 from app.core.config import settings
 from app.domains.pipeline import supervisor
 from agent_runtime.data_processing.plan import processing_plan_sha256
-from app.worker.celery_app import celery_app
 from tests.test_auth_flow import _login_as_admin
 
 
@@ -166,19 +165,10 @@ class StubAgents:
 
 @pytest.fixture()
 def stub_agents(monkeypatch):
-    """Supervisor가 실제 에이전트 대신 스텁을 쓰게 하고 Celery를 eager로 돌린다."""
+    """Supervisor가 실제 에이전트 대신 스텁을 쓰게 한다."""
     stub = StubAgents()
     monkeypatch.setattr(supervisor, "AgentRuntimeClient", lambda: stub)
-
-    previous_eager = celery_app.conf.task_always_eager
-    previous_propagate = celery_app.conf.task_eager_propagates
-    celery_app.conf.task_always_eager = True
-    celery_app.conf.task_eager_propagates = True
-    try:
-        yield stub
-    finally:
-        celery_app.conf.task_always_eager = previous_eager
-        celery_app.conf.task_eager_propagates = previous_propagate
+    yield stub
 
 
 def _create_run(client: TestClient) -> int:

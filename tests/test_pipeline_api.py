@@ -7,11 +7,8 @@ from tests.test_auth_flow import _login_as_admin
 
 
 def test_create_request_then_read_pipeline_run(client: TestClient, monkeypatch):
-    apply_async = Mock()
-    monkeypatch.setattr(
-        "app.domains.pipeline.service.process_pipeline_run.apply_async",
-        apply_async,
-    )
+    schedule = Mock()
+    monkeypatch.setattr("app.domains.pipeline.service._schedule_pipeline_execution", schedule)
     marker = uuid4().hex[:8]
     headers = _login_as_admin(client)
     created = client.post(
@@ -29,11 +26,8 @@ def test_create_request_then_read_pipeline_run(client: TestClient, monkeypatch):
     assert created_body["request_status"] == "QUEUED"
     assert created_body["run_status"] == "QUEUED"
     assert created_body["current_stage"] == "REQUIREMENT_ANALYSIS"
-    assert created_body["celery_task_id"]
-    apply_async.assert_called_once_with(
-        args=[created_body["run_id"]],
-        task_id=created_body["celery_task_id"],
-    )
+    assert created_body["execution_id"]
+    schedule.assert_called_once_with(created_body["run_id"], created_body["execution_id"])
 
     response = client.get(f"/api/v1/runs/{created_body['run_id']}")
 
@@ -43,7 +37,7 @@ def test_create_request_then_read_pipeline_run(client: TestClient, monkeypatch):
     assert body["request_title"] == f"프론트 연동 테스트 {marker}"
     assert [stage["status"] for stage in body["stages"]] == ["PENDING"] * 3
     assert [stage["executor"] for stage in body["stages"]] == ["CELERY"] * 3
-    assert body["celery_task_id"] == created_body["celery_task_id"]
+    assert body["execution_id"] == created_body["execution_id"]
     assert body["events"] == []
 
     response = client.get("/api/v1/runs/2147483647")

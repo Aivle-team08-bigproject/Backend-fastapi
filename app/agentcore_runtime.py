@@ -11,6 +11,10 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI, HTTPException, Request
 
 from app.domains.pipeline.agent_client import AgentRuntimeClient
+from app.domains.pipeline.agentcore_contract import (
+    AgentCoreInvocationRequest,
+    AgentCoreInvocationResponse,
+)
 from app.domains.pipeline.model import StageName
 from app.domains.pipeline.validation import validate_stage_output
 from agent_runtime.runtime_database import RuntimeDatabase
@@ -48,11 +52,14 @@ async def invoke(request: Request) -> dict:
     global _active_invocations
 
     body = await request.json()
-    agent_name = body.get("agent_name")
-    model_name = body.get("model_name", "")
-    payload = body.get("payload")
-    if not isinstance(agent_name, str) or not isinstance(payload, dict):
-        raise HTTPException(status_code=400, detail="agent_name and payload are required")
+    try:
+        invocation = AgentCoreInvocationRequest.model_validate(body)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail="invalid invocation contract") from exc
+
+    agent_name = invocation.agent_name
+    model_name = invocation.model_name
+    payload = invocation.payload
 
     _active_invocations += 1
     try:
@@ -77,4 +84,4 @@ async def invoke(request: Request) -> dict:
         raise HTTPException(status_code=500, detail="agent execution failed") from exc
     finally:
         _active_invocations -= 1
-    return {"output": output}
+    return AgentCoreInvocationResponse(output=output).model_dump()

@@ -302,7 +302,7 @@ class PipelineRun(Base):
     status: Mapped[str] = mapped_column(String(40), nullable=False, default=PipelineRunStatus.QUEUED.value, index=True)
     current_stage: Mapped[str | None] = mapped_column(String(80), index=True)
     progress_percent: Mapped[int] = mapped_column(SmallInteger, nullable=False, default=0)
-    celery_task_id: Mapped[str | None] = mapped_column(String(255), unique=True, index=True)
+    execution_id: Mapped[str | None] = mapped_column(String(255), unique=True, index=True)
     # 검증 실패·반려 사유와, 반려 시 되돌아갈 단계(Supervisor가 다음 dispatch에서 읽는다)
     error_message: Mapped[str | None] = mapped_column(Text)
     rollback_to_stage: Mapped[str | None] = mapped_column(String(80))

@@ -22,7 +22,7 @@ async def load_dataset_metadata(
     session: AsyncSession,
     available_data: list[str] | None = None,
 ) -> list[dict]:
-    """Neon의 테이블·컬럼 타입과 COMMENT를 선별 Agent 입력 형태로 반환한다."""
+    """RDS/Aurora PostgreSQL의 테이블·컬럼 타입과 COMMENT를 선별 Agent 입력 형태로 반환한다."""
     canonical_names = canonical_dataset_names(available_data)
     requested = set(canonical_names)
     rows = (

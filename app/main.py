@@ -2,11 +2,15 @@ from contextlib import asynccontextmanager
 import asyncio
 
 from fastapi import FastAPI
+from fastapi.responses import JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
+from redis.asyncio import Redis
+from sqlalchemy import text
 
 from app.common.session_activity_middleware import SessionActivityMiddleware
 from app.api.router import api_router
 from app.core.config import settings
+from app.db.session import engine
 from app.domains.pipeline.email_result_worker import consume_email_result_queue
 from app.domains.pipeline.email_retry_worker import monitor_stale_email_deliveries
 
@@ -40,6 +44,39 @@ app.add_middleware(
 app.include_router(api_router)
 
 
+@app.get("/health/live")
+async def health_live() -> dict[str, str]:
+    return {"status": "ok"}
+
+
+@app.get("/health/ready")
+async def health_ready() -> JSONResponse:
+    """Return readiness only when the dependencies needed to serve requests work."""
+    checks: dict[str, str] = {}
+    try:
+        async with engine.connect() as connection:
+            await connection.execute(text("SELECT 1"))
+        checks["database"] = "ok"
+    except Exception:
+        checks["database"] = "unavailable"
+
+    redis_client = Redis.from_url(settings.worker_status_redis_url, socket_connect_timeout=2)
+    try:
+        await redis_client.ping()
+        checks["redis"] = "ok"
+    except Exception:
+        checks["redis"] = "unavailable"
+    finally:
+        await redis_client.aclose()
+
+    ready = all(value == "ok" for value in checks.values())
+    return JSONResponse(
+        status_code=200 if ready else 503,
+        content={"status": "ok" if ready else "unavailable", "checks": checks},
+    )
+
+
 @app.get("/health")
 async def health() -> dict[str, str]:
-    return {"status": "ok"}
+    """Backward-compatible alias for the liveness probe."""
+    return await health_live()
