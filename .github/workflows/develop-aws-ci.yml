@@ -31,6 +31,9 @@ jobs:
           --health-interval 5s --health-timeout 3s --health-retries 10
     env:
       DATABASE_URL: postgresql+asyncpg://app:app@localhost:5432/app_test
+      HANACARD_APP_DATABASE_URL: postgresql+asyncpg://app:app@localhost:5432/app_test
+      HANACARD_AGENT_DATABASE_URL: postgresql+asyncpg://app:app@localhost:5432/app_test
+      HANACARD_MIGRATION_DATABASE_URL: postgresql+psycopg://app:app@localhost:5432/app_test
       WORKER_STATUS_REDIS_URL: redis://localhost:6379/2
       APP_ENV: test
       JWT_SECRET: ci-test-jwt-secret-at-least-32-bytes-long-2026
