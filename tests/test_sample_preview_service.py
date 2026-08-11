@@ -8,6 +8,20 @@ from app.common.errors import DomainException
 from app.domains.pipeline.service import get_sample_preview
 
 
+def _owner():
+    return SimpleNamespace(id=7)
+
+
+def _accessible_run_db(stage):
+    db = AsyncMock()
+    db.get.side_effect = [
+        SimpleNamespace(id=17, data_request_id=3),
+        SimpleNamespace(id=3, owner_id=7),
+    ]
+    db.scalar.return_value = stage
+    return db
+
+
 def _selection_output() -> dict:
     return {
         "selected_tables": [{"table": "merchant", "reason": "지역 분석"}],
@@ -71,14 +85,12 @@ def _selection_output() -> dict:
 
 
 def test_get_sample_preview_returns_saved_selection_sample():
-    db = AsyncMock()
-    db.get.return_value = SimpleNamespace(id=17)
-    db.scalar.return_value = SimpleNamespace(
+    db = _accessible_run_db(SimpleNamespace(
         attempt_no=2,
         output_payload=_selection_output(),
-    )
+    ))
 
-    response = asyncio.run(get_sample_preview(db, 17))
+    response = asyncio.run(get_sample_preview(db, 17, _owner(), set()))
 
     assert response.run_id == 17
     assert response.stage == "DATA_SELECTION"
@@ -102,27 +114,37 @@ def test_get_sample_preview_returns_saved_selection_sample():
 
 
 def test_get_sample_preview_reports_not_ready_without_completed_selection():
-    db = AsyncMock()
-    db.get.return_value = SimpleNamespace(id=17)
-    db.scalar.return_value = None
+    db = _accessible_run_db(None)
 
     with pytest.raises(DomainException) as error:
-        asyncio.run(get_sample_preview(db, 17))
+        asyncio.run(get_sample_preview(db, 17, _owner(), set()))
 
     assert error.value.status_code == 404
     assert error.value.code == "PIPELINE_SAMPLE_NOT_READY"
 
 
 def test_get_sample_preview_rejects_invalid_saved_payload():
-    db = AsyncMock()
-    db.get.return_value = SimpleNamespace(id=17)
-    db.scalar.return_value = SimpleNamespace(
+    db = _accessible_run_db(SimpleNamespace(
         attempt_no=1,
         output_payload={"sample_columns": [], "sample_rows": []},
-    )
+    ))
 
     with pytest.raises(DomainException) as error:
-        asyncio.run(get_sample_preview(db, 17))
+        asyncio.run(get_sample_preview(db, 17, _owner(), set()))
 
     assert error.value.status_code == 409
     assert error.value.code == "PIPELINE_SAMPLE_INVALID"
+
+
+def test_get_sample_preview_hides_another_owners_run():
+    db = AsyncMock()
+    db.get.side_effect = [
+        SimpleNamespace(id=17, data_request_id=3),
+        SimpleNamespace(id=3, owner_id=99),
+    ]
+
+    with pytest.raises(DomainException) as error:
+        asyncio.run(get_sample_preview(db, 17, _owner(), set()))
+
+    assert error.value.status_code == 404
+    assert error.value.code == "PIPELINE_RUN_NOT_FOUND"

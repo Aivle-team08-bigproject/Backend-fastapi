@@ -28,6 +28,8 @@ from app.domains.pipeline.processing_steps import (
 from app.domains.pipeline.schema import (
     CreateDataRequestRequest,
     CreateDataRequestResponse,
+    CreateEmailDeliveryRequest,
+    EmailDeliveryResponse,
     PipelineRunResponse,
     ProcessingResultResponse,
     SamplePreviewResponse,
@@ -36,6 +38,7 @@ from app.domains.pipeline.schema import (
 )
 from app.domains.pipeline.service import (
     create_data_request,
+    create_email_delivery,
     get_pipeline_run,
     get_processing_result,
     get_result_artifact,
@@ -43,6 +46,7 @@ from app.domains.pipeline.service import (
     result_download_filename,
     submit_stage_review,
 )
+from app.domains.pipeline.email_queue import EmailDeliveryQueueMessage, publish_email_delivery
 from app.worker.file_storage import resolve_storage_key
 from app.worker.status_event import PipelineStatusEvent
 
@@ -80,9 +84,51 @@ async def get_run(
 )
 async def get_run_sample_preview(
     run_id: int,
+    auth: CurrentAuth = Depends(get_current_auth),
     db: AsyncSession = Depends(get_db),
 ) -> SamplePreviewResponse:
-    return await get_sample_preview(db, run_id)
+    return await get_sample_preview(db, run_id, auth.employee, auth.permissions)
+
+
+@router.post(
+    "/runs/{run_id}/email-deliveries",
+    response_model=EmailDeliveryResponse,
+    status_code=status.HTTP_202_ACCEPTED,
+)
+async def request_email_delivery(
+    run_id: int,
+    payload: CreateEmailDeliveryRequest,
+    idempotency_key: str | None = Header(default=None, alias="Idempotency-Key"),
+    auth: CurrentAuth = Depends(get_current_auth),
+    db: AsyncSession = Depends(get_db),
+) -> EmailDeliveryResponse:
+    delivery = await create_email_delivery(
+        db,
+        run_id,
+        payload,
+        idempotency_key or "",
+        auth.employee,
+        auth.permissions,
+    )
+    # FastAPI가 인증·검증·상태 저장을 끝낸 뒤 큐에 발행한다. 큐가 비활성화된
+    # 로컬 환경에서는 QUEUED 상태로 남겨 두어 운영 전환 시 재처리할 수 있다.
+    preview = await get_sample_preview(db, run_id, auth.employee, auth.permissions)
+    await publish_email_delivery(
+        EmailDeliveryQueueMessage(
+            delivery_id=delivery.delivery_id,
+            idempotency_key=(idempotency_key or "").strip(),
+            run_id=delivery.run_id,
+            stage_attempt_no=delivery.stage_attempt_no,
+            delivery_type=delivery.delivery_type,
+            recipient=delivery.recipient,
+            template_version=delivery.template_version,
+            sample_columns=[column.model_dump() for column in preview.columns],
+            sample_rows=preview.rows,
+            sample_metadata=preview.metadata,
+            sample_sha256=delivery.sample_sha256,
+        )
+    )
+    return delivery
 
 
 @router.get(
