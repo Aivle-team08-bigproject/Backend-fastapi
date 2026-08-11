@@ -15,6 +15,7 @@ from app.core.config import settings
 from app.db.session import AsyncSessionLocal
 from app.domains.pipeline.model import EmailDelivery, EmailDeliveryStatus
 from app.common.time_utils import utcnow
+from app.common.errors import conflict, not_found
 
 logger = logging.getLogger(__name__)
 
@@ -22,19 +23,75 @@ logger = logging.getLogger(__name__)
 async def monitor_stale_email_deliveries(stop_event: asyncio.Event) -> None:
     if not settings.email_queue_enabled:
         return
-    # 운영 SQS는 visibility timeout와 DLQ가 재시도를 소유한다. FastAPI가
-    # 여기서 임의로 FAILED 처리하면 SQS 재전달 중인 메시지와 상태가 경합한다.
-    if settings.email_queue_backend.lower() == "sqs":
-        return
     while not stop_event.is_set():
         try:
-            await _close_stale_deliveries()
+            # 운영 SQS는 visibility timeout와 DLQ가 재시도를 소유한다. FastAPI가
+            # SQS 대기 건을 임의로 FAILED 처리하면 재전달과 상태가 경합하므로,
+            # 로컬 Redis에서만 stale 종결을 수행한다.
+            if settings.email_queue_backend.lower() != "sqs":
+                await _close_stale_deliveries()
+            await purge_expired_recipient_data()
         except Exception:
             logger.exception("email stale delivery monitor failed")
         try:
             await asyncio.wait_for(stop_event.wait(), timeout=settings.email_retry_poll_interval_seconds)
         except asyncio.TimeoutError:
             continue
+
+
+async def purge_expired_recipient_data() -> int:
+    """종료된 발송 이력에서 보존기간이 지난 이메일 주소를 파기한다."""
+    if settings.email_recipient_retention_days <= 0:
+        return 0
+
+    cutoff = utcnow() - timedelta(days=settings.email_recipient_retention_days)
+    terminal_statuses = [
+        EmailDeliveryStatus.SENT.value,
+        EmailDeliveryStatus.DELIVERED.value,
+        EmailDeliveryStatus.FAILED.value,
+        EmailDeliveryStatus.BOUNCED.value,
+        EmailDeliveryStatus.COMPLAINT.value,
+    ]
+    # A per-delivery marker preserves audit distinguishability without retaining PII.
+    async with AsyncSessionLocal() as db:
+        deliveries = (await db.scalars(
+            select(EmailDelivery).where(
+                EmailDelivery.status.in_(terminal_statuses),
+                EmailDelivery.updated_at < cutoff,
+                ~EmailDelivery.recipient.like("[REDACTED:%"),
+            )
+        )).all()
+        for delivery in deliveries:
+            redacted = f"[REDACTED:{delivery.delivery_id}]"
+            delivery.recipient = redacted
+            delivery.recipient_normalized = redacted
+            delivery.updated_at = utcnow()
+        if deliveries:
+            await db.commit()
+            logger.info("Redacted %d expired email recipients", len(deliveries))
+        return len(deliveries)
+
+
+async def close_dlq_delivery(db, delivery_id: str) -> EmailDelivery:
+    """DLQ에서 수동 확인한 발송 건을 최종 실패로 종결한다."""
+    delivery = await db.scalar(
+        select(EmailDelivery).where(EmailDelivery.delivery_id == delivery_id)
+    )
+    if delivery is None:
+        raise not_found("EMAIL_DELIVERY_NOT_FOUND", "이메일 발송 요청을 찾을 수 없습니다.")
+    if delivery.status not in {
+        EmailDeliveryStatus.QUEUED.value,
+        EmailDeliveryStatus.SENDING.value,
+    }:
+        raise conflict("EMAIL_DELIVERY_ALREADY_TERMINAL", "이미 종결된 이메일 발송 요청입니다.")
+
+    delivery.status = EmailDeliveryStatus.FAILED.value
+    delivery.failure_code = "DLQ_MANUAL_CLOSE"
+    delivery.next_retry_at = None
+    delivery.updated_at = utcnow()
+    await db.commit()
+    await db.refresh(delivery)
+    return delivery
 
 
 async def _close_stale_deliveries() -> None:
