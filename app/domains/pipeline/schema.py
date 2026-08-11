@@ -1,7 +1,7 @@
 from datetime import date, datetime
 from typing import Literal
 
-from pydantic import BaseModel, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from app.domains.pipeline.model import (
     DataRequestStatus,
@@ -136,6 +136,29 @@ class SamplePreviewResponse(BaseModel):
     catalog_issues: list[dict]
     catalog_matches: list[dict]
     review_summary: SamplePreviewReviewSummary
+
+
+class CreateEmailDeliveryRequest(BaseModel):
+    recipient: str = Field(min_length=3, max_length=254)
+    # DB 담당자가 CHECK를 생성할 때까지 코드 계약도 현재 확정된 값만 허용한다.
+    delivery_type: Literal["SELECTION_SAMPLE"] = "SELECTION_SAMPLE"
+    template_version: str = Field(default="v1", min_length=1, max_length=50)
+
+
+class EmailDeliveryResponse(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    delivery_id: str
+    run_id: int
+    stage_attempt_no: int
+    delivery_type: str
+    recipient: str
+    status: str
+    idempotency_key: str
+    sample_sha256: str
+    template_version: str
+    created_at: datetime
+    updated_at: datetime
 
 
 class ProcessingResultResponse(BaseModel):
