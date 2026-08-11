@@ -13,7 +13,7 @@ bcrypt==4.2.1
 PyJWT==2.10.1  # strands-agents -> mcp가 PyJWT>=2.10.1 요구
 celery[redis]==5.5.3
 redis==5.2.1
-boto3==1.43.61  # Bedrock AgentCore Runtime InvokeAgentRuntime 호출
+boto3==1.43.61  # Bedrock AgentCore Runtime, SQS 이메일 큐, S3 artifact adapter
 python-multipart==0.0.20  # UploadFile/File(...) 멀티파트 파싱에 필요 (documents 텍스트 추출)
 
 # --- 자동화 파이프라인 (Strands Agents SDK) ---

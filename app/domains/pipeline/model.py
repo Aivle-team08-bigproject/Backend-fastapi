@@ -3,6 +3,7 @@
 import enum
 from datetime import date, datetime
 from decimal import Decimal
+from uuid import uuid4
 
 from sqlalchemy import (
     BigInteger, Boolean, Date, DateTime, ForeignKey, Index, Numeric,
@@ -176,6 +177,18 @@ class DeliveryChannel(str, enum.Enum):
     FILE_DOWNLOAD = "FILE_DOWNLOAD"
     API = "API"
     EMAIL = "EMAIL"
+
+
+class EmailDeliveryStatus(str, enum.Enum):
+    """FastAPI가 소유하는 외부 이메일 발송 상태."""
+
+    QUEUED = "QUEUED"
+    SENDING = "SENDING"
+    SENT = "SENT"
+    DELIVERED = "DELIVERED"
+    FAILED = "FAILED"
+    BOUNCED = "BOUNCED"
+    COMPLAINT = "COMPLAINT"
 
 
 class Client(Base):
@@ -413,3 +426,39 @@ class Delivery(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
 
     artifact: Mapped[Artifact] = relationship(back_populates="deliveries")
+
+
+class EmailDelivery(Base):
+    """B안의 발송 이력. Spring은 이 테이블에 접근하지 않는다."""
+
+    __tablename__ = "email_deliveries"
+    __table_args__ = (
+        UniqueConstraint("idempotency_key", name="uq_email_deliveries_idempotency_key"),
+        Index("ix_email_deliveries_run_status", "run_id", "status"),
+        Index(
+            "uq_email_deliveries_active_target",
+            "run_id", "stage_attempt_no", "recipient_normalized", "delivery_type",
+            unique=True,
+            postgresql_where=text("status IN ('QUEUED', 'SENDING')"),
+        ),
+    )
+
+    delivery_id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid4()))
+    run_id: Mapped[int] = mapped_column(BigInteger, ForeignKey("service.pipeline_runs.id"), nullable=False)
+    stage_attempt_no: Mapped[int] = mapped_column(SmallInteger, nullable=False, default=1)
+    requested_by: Mapped[int | None] = mapped_column(BigInteger, ForeignKey("service.employees.id"))
+    delivery_type: Mapped[str] = mapped_column(String(40), nullable=False, default="SELECTION_SAMPLE")
+    recipient: Mapped[str] = mapped_column(String(254), nullable=False)
+    recipient_normalized: Mapped[str] = mapped_column(String(254), nullable=False)
+    status: Mapped[str] = mapped_column(String(30), nullable=False, default=EmailDeliveryStatus.QUEUED.value, index=True)
+    idempotency_key: Mapped[str] = mapped_column(String(255), nullable=False)
+    request_fingerprint: Mapped[str] = mapped_column(String(64), nullable=False)
+    sample_sha256: Mapped[str | None] = mapped_column(String(64))
+    template_version: Mapped[str | None] = mapped_column(String(50))
+    provider_message_id: Mapped[str | None] = mapped_column(String(255))
+    failure_code: Mapped[str | None] = mapped_column(String(80))
+    attempt_count: Mapped[int] = mapped_column(SmallInteger, nullable=False, default=0)
+    next_retry_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    delivered_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)

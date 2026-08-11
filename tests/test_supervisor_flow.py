@@ -253,7 +253,9 @@ def test_full_approval_path_walks_every_stage_and_completes(client, stub_agents)
     assert _run_row(run_id)[0] == "WAITING_SAMPLE_REVIEW"
     assert stub_agents.calls[-1] == "data-selection-agent"
 
-    sample_response = client.get(f"/api/v1/runs/{run_id}/sample-preview")
+    sample_response = client.get(
+        f"/api/v1/runs/{run_id}/sample-preview", headers=headers
+    )
     assert sample_response.status_code == 200, sample_response.text
     sample = sample_response.json()
     assert sample["run_id"] == run_id
@@ -361,7 +363,9 @@ def test_rejection_rolls_back_and_creates_a_new_attempt(client, stub_agents):
     # 되돌아간 단계가 다시 실행되어 같은 게이트에 멈춘다.
     assert _run_row(run_id)[0] == "WAITING_SAMPLE_REVIEW"
     assert second_attempt["DATA_SELECTION"] == "COMPLETED"
-    sample_response = client.get(f"/api/v1/runs/{run_id}/sample-preview")
+    sample_response = client.get(
+        f"/api/v1/runs/{run_id}/sample-preview", headers=headers
+    )
     assert sample_response.status_code == 200, sample_response.text
     assert sample_response.json()["attempt_no"] == 2
     assert stub_agents.calls == [
