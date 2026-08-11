@@ -19,8 +19,9 @@ class Settings(BaseSettings):
 
     # --- DB ---
     database_url: str = "postgresql+psycopg://appuser:change_me_strong_password@127.0.0.1:5432/appdb"
+    # 실행 환경은 반드시 배포 설정에서 명시한다. 기본값을 두면 운영 배포에서
+    # APP_ENV 누락이 local로 조용히 처리되어 보안 검증이 우회될 수 있다.
     app_environment: Literal["local", "test", "dev", "staging", "production"] = Field(
-        default="local",
         validation_alias="APP_ENV",
     )
 
