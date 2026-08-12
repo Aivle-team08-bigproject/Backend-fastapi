@@ -417,8 +417,11 @@ def test_run_retries_empty_derived_columns_three_times_then_fails(monkeypatch):
     assert len(messages["source"]) == 1
     assert len(messages["derived"]) == 3
     assert messages["sample"] == []
-    assert "파생 컬럼 정의 단계가 3회 시도 후에도 실패" in result["error_message"]
-    assert "derived_columns는 최소 1개" in result["error_message"]
+    # 화면 문구는 실무자가 읽을 수 있는 문장이어야 한다. 기술 원문은 재시도 피드백과
+    # failure_snapshot.technical_error에 남는다.
+    assert "파생 컬럼 정의 단계를 3회 시도했지만 완료하지 못했습니다" in result["error_message"]
+    assert "파생 컬럼이 하나도 정의되지 않았습니다" in result["error_message"]
+    # 기술 원문은 재시도 피드백에 그대로 실려 모델이 고칠 수 있다(아래 단언).
     assert '"retry_feedback": "직전 1회차 파생 컬럼 정의 결과 검증 실패' in messages["derived"][1]
 
 
@@ -730,3 +733,20 @@ def test_selection_failure_keeps_safe_model_response_diagnostics(monkeypatch):
         "finish_reason": "max_tokens",
     }
     assert events[-1][1] == "FAILED"
+
+
+def test_validation_errors_are_human_readable_but_keep_technical_text():
+    """화면에는 사람이 읽을 문장을, 재시도·디버깅에는 원문을 남긴다."""
+    from agent_runtime.data_selection.agent import _humanize
+
+    assert _humanize("bucketize bins/labels 계약이 올바르지 않음") == (
+        "구간 나누기 설정이 맞지 않습니다(구간 경계와 이름 개수 불일치)."
+    )
+    assert _humanize("bucketize parameters 계약 불일치: missing=[], extra=['part']") == (
+        "파생 컬럼 계산 방식에 맞지 않는 설정 항목이 섞였습니다."
+    )
+    assert _humanize("DB 메타데이터에 없는 source column: ('x', 'y')") == (
+        "데이터베이스에 없는 컬럼을 선택했습니다."
+    )
+    # 규칙에 없는 오류도 개발자 문구를 그대로 노출하지 않는다.
+    assert _humanize("something totally unexpected") == "결과가 요구한 형식과 맞지 않습니다."
