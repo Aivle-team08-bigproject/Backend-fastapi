@@ -69,7 +69,11 @@ def _load_runtime_secrets() -> None:
         ):
             value = bundle.get(key)
             if isinstance(value, str) and value.strip() and not os.getenv(key):
-                os.environ[key] = value.strip()
+                os.environ[key] = (
+                    _normalize_psycopg_url(value.strip())
+                    if key.endswith("DATABASE_URL")
+                    else value.strip()
+                )
 
     db_arn = os.getenv("PORTFOLIO_APP_DATABASE_SECRET_ARN", "").strip()
     if db_arn:
