@@ -48,8 +48,10 @@ stage를 이 계약으로 AgentCore에 위임한다. 다음 단계에서 orchest
 { "output": { "...": "stage result" } }
 ```
 
-FastAPI는 stage별 validation을 다시 수행하고 DB 상태를 기록한다. Runtime은 실행
-결과를 DB에 직접 기록하지 않는다.
+Celery Worker는 stage별 최종 validation, HITL 전이, Artifact·delivery 기록을 담당한다.
+Runtime은 실행 중인 내부 checklist와 기술 로그를 NeonDB의 `PipelineRun`, `StageRun`,
+`PipelineEvent`에 직접 기록한다. 이때 Runtime은 `execution_id`로 현재 attempt를 다시
+검증하고, Redis에는 연결하지 않는다.
 
 실패 시 Runtime은 원문 예외·payload·credential을 응답하지 않고 HTTP 500과 다음 내부
 계약을 사용한다.
@@ -68,11 +70,15 @@ FastAPI는 stage별 validation을 다시 수행하고 DB 상태를 기록한다.
 
 ## Redis SSE 상태 이벤트
 
-Redis는 broker/result backend가 아니라 화면 갱신용 상태 이벤트 채널로만 사용한다.
+Redis는 Worker가 발행하는 화면 갱신용 상태 이벤트 채널이다. AgentCore Runtime은 Redis
+권한 없이 PostgreSQL 이벤트만 commit하며, FastAPI SSE가 1초 polling으로 Runtime 이벤트를
+같은 stream에 합친다.
 이벤트에는 반드시 `run_id`, `execution_id`(전환 전에는 `celery_task_id` 필드에 저장),
 `event_kind`, `occurred_at`, `run_status`, `progress_percent`를 포함한다.
 
-- DB 상태를 먼저 commit한 뒤 이벤트를 발행한다.
+- DB 상태를 먼저 commit한 뒤 Worker 이벤트만 Redis에 발행한다.
+- Runtime 이벤트는 DB의 `PipelineEvent.id`를 SSE cursor로 사용해 Redis 이벤트와 중복 없이
+  전달한다.
 - recorder는 현재 run의 execution ID와 다른 이벤트를 stale 이벤트로 버린다.
 - `status`는 timeline 상태 전이, `agent_log`는 기술 로그다.
 - 원천 데이터 행, credential, LLM secret은 이벤트에 넣지 않는다.

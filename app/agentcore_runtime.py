@@ -10,6 +10,7 @@ from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, HTTPException, Request
 
+from app.agentcore_status_reporter import AgentCoreStatusReporter
 from app.domains.pipeline.agent_client import AgentRuntimeClient
 from app.domains.pipeline.agentcore_contract import (
     AgentCoreInvocationRequest,
@@ -63,7 +64,20 @@ async def invoke(request: Request) -> dict:
 
     _active_invocations += 1
     try:
-        client = AgentRuntimeClient(agent_session_factory=runtime_database.session_factory)
+        # AgentCore가 내부 step/log를 NeonDB에 직접 기록한다. Redis publish는 하지 않으며,
+        # FastAPI SSE가 PipelineEvent를 polling해 브라우저에 전달한다.
+        reporter = AgentCoreStatusReporter(
+            execution_id=invocation.execution_id,
+            agent_name=agent_name,
+            session_factory=runtime_database.session_factory,
+        )
+        client = AgentRuntimeClient(
+            requirement_analysis_step_callback=reporter.requirement_analysis_step_callback,
+            selection_step_callback=reporter.selection_step_callback,
+            processing_step_callback=reporter.processing_step_callback,
+            agent_log_callback=reporter.agent_log_callback,
+            agent_session_factory=runtime_database.session_factory,
+        )
         output = await client.run(agent_name, model_name, payload)
         if agent_name == "data-processing-agent":
             # 유효하지 않은 산출물은 S3에 남기지 않는다. 유효한 CSV만 Runtime execution
@@ -79,7 +93,7 @@ async def invoke(request: Request) -> dict:
         logger.exception(
             "Agent execution failed: agent_name=%s execution_id=%s",
             agent_name,
-            payload.get("execution_id"),
+            invocation.execution_id,
         )
         raise HTTPException(status_code=500, detail="agent execution failed") from exc
     finally:

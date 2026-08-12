@@ -6,8 +6,10 @@
 환경변수로 선택할 수 있게 한다. 기본값은 `CELERY`이고, AWS 테스트에서는
 `PIPELINE_EXECUTION_BACKEND=AGENTCORE`와 `AGENTCORE_RUNTIME_ARN`을 설정한다.
 
-현재 단계에서 Celery는 파이프라인 orchestration과 DB 상태 기록을 담당하고, 각 stage의
-agent 실행은 `InvokeAgentRuntime`으로 위임한다. `DATA_SELECTION`의 스키마 메타데이터
+현재 단계에서 Celery는 파이프라인 orchestration, 최종 validation, HITL 전이를 담당하고,
+각 stage의 agent 실행은 `InvokeAgentRuntime`으로 위임한다. AgentCore Runtime은 에이전트
+내부 step·기술 로그를 NeonDB의 `PipelineRun`·`StageRun`·`PipelineEvent`에 직접 기록한다.
+`DATA_SELECTION`의 스키마 메타데이터
 조회와 `DATA_PROCESSING`의 승인된 데이터 조회·결정론적 가공은 AgentCore Runtime 내부에서
 실행한다. 따라서 Runtime 컨테이너에는 `Dockerfile.agentcore`를 사용하고, `/ping`과
 `/invocations`를 제공해야 한다.
@@ -19,9 +21,14 @@ agent 실행은 `InvokeAgentRuntime`으로 위임한다. `DATA_SELECTION`의 스
 
 Runtime은 `AGENT_DATABASE_SECRET_ARN`으로 지정된 Secrets Manager 값만 읽는다. 연결 문자열은
 Terraform 변수·AgentCore 환경변수·이미지에 직접 저장하지 않으며, Runtime execution role에는
-해당 Secret의 `secretsmanager:GetSecretValue`만 허용한다. 실제 조회는 여전히
+해당 Secret의 `secretsmanager:GetSecretValue`만 허용한다. Secret의 PostgreSQL 계정에는
+데이터셋 allowlist 읽기 권한과 `service.pipeline_runs`, `service.stage_runs`,
+`service.pipeline_events`의 상태 기록 권한이 필요하다. 실제 데이터 조회는 여전히
 `DatabaseQueryExecutor`의 등록된 데이터셋·컬럼·필터 allowlist를 거치므로 LLM 생성 SQL을 직접
 실행하지 않는다.
+
+Runtime은 Redis에 접속하지 않는다. FastAPI SSE는 Worker의 Redis Pub/Sub 이벤트를 즉시 받고,
+Runtime이 DB에 기록한 이벤트는 1초 이내 polling으로 같은 stream에 전달한다.
 
 ## 환경변수
 
