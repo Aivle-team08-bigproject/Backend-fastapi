@@ -644,3 +644,30 @@ def test_multiple_window_aggregates_preserve_rows_and_columns():
         {"transaction_id": "t2", "merchant_visit_count": 2, "monthly_visit_count": 2},
         {"transaction_id": "t3", "merchant_visit_count": 1, "monthly_visit_count": 1},
     ]
+
+
+def test_left_right_parameters_are_normalized_into_operands():
+    """compare의 left/right를 arithmetic에 쓴 경우를 정식 계약으로 바꾼다.
+
+    2026-08-12 실측: 'operation derived-4 has unsupported parameters: left, right'로
+    파생 컬럼 생성 순서 결정이 3회 재시도를 모두 소진했다.
+    """
+    from agent_runtime.data_processing.plan import ProcessingOperation, _validate_operation
+
+    operation = ProcessingOperation(
+        id="derived-4",
+        type="arithmetic",
+        source_columns=["a", "b"],
+        target_column="c",
+        reason="두 금액의 차이를 구한다",
+        parameters={
+            "operator": "subtract",
+            "left": {"column": "a"},
+            "right": {"column": "b"},
+        },
+    )
+
+    _validate_operation(operation)
+
+    assert operation.parameters["operands"] == [{"column": "a"}, {"column": "b"}]
+    assert "left" not in operation.parameters

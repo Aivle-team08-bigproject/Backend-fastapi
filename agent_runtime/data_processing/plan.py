@@ -316,7 +316,23 @@ def processing_plan_sha256(plan: ProcessingPlan | dict) -> str:
     return hashlib.sha256(canonical).hexdigest()
 
 
+def _normalize_operation_parameters(operation: ProcessingOperation) -> None:
+    """의미가 단일하게 결정되는 표현만 정식 계약으로 정규화한다.
+
+    left/right는 compare의 정식 파라미터라 LLM이 arithmetic·logical에도 그대로 쓴다.
+    이 둘의 정식 형태는 operands 배열이고 의미가 같으므로 코드로 바꿔준다. 데이터 선별에서
+    selection_query.columns와 derived source_columns를 결정적으로 생성한 것과 같은 처방이다
+    (프롬프트 보강만으로는 재시도 3회를 모두 소진했다 — 2026-08-12 실측).
+    """
+    parameters = operation.parameters
+    if operation.type in {"arithmetic", "logical"} and "operands" not in parameters:
+        left, right = parameters.pop("left", None), parameters.pop("right", None)
+        if left is not None and right is not None:
+            parameters["operands"] = [left, right]
+
+
 def _validate_operation(operation: ProcessingOperation) -> None:
+    _normalize_operation_parameters(operation)
     allowed_parameters = {
         "cast": {"data_type"},
         "fill_missing": {"strategy"},

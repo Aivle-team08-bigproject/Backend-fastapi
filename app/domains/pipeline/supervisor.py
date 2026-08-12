@@ -258,14 +258,22 @@ async def run_stage(
             stage.model_name or "",
             payload,
         )
-        if stage_name == StageName.DATA_PROCESSING:
+        # 에이전트가 통제된 실패(_agent_error)를 돌려준 경우에는 검증 substep을 돌리지
+        # 않는다. 이미 실패한 단계(예: 파생 컬럼 생성 순서 결정)가 있는데 최종 산출물
+        # 검증까지 FAILED로 찍으면, 실제 원인과 무관한 두 번째 실패가 화면에 남아
+        # 실무자가 어디를 고쳐야 하는지 오해한다.
+        agent_reported_failure = isinstance(output, dict) and "_agent_error" in output
+        emit_output_validation = (
+            stage_name == StageName.DATA_PROCESSING and not agent_reported_failure
+        )
+        if emit_output_validation:
             await _emit_processing_step(
                 processing_step_callback,
                 ProcessingStepCode.OUTPUT_VALIDATION,
                 ProcessingStepStatus.RUNNING,
             )
         validation = validate_stage_output(stage_name, output)
-        if stage_name == StageName.DATA_PROCESSING:
+        if emit_output_validation:
             await _emit_processing_step(
                 processing_step_callback,
                 ProcessingStepCode.OUTPUT_VALIDATION,

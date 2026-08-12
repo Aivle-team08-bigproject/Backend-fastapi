@@ -25,15 +25,26 @@ class DatabaseQueryExecutor:
     def __init__(self, session: AsyncSession):
         self.session = session
 
-    async def execute(self, selection: dict[str, Any]) -> list[dict[str, Any]]:
+    async def probe(self, selection: dict[str, Any]) -> int | None:
+        """행을 가져오지 않고 조건에 맞는 고유 고객 수만 확인한다.
+
+        선별 단계가 계획을 확정하기 전에 실행 가능성을 검사하는 용도다. 지금까지는
+        가공 단계에서야 실제 데이터를 처음 만나서, 조건이 잘못돼도 LLM이 그 사실을
+        피드백받지 못한 채 두 단계를 더 진행한 뒤 실패했다.
+
+        고객 축이 없는 선별(예: 업종 카탈로그만)은 검사 대상이 아니라 None을 돌려준다.
+        """
         plan = SelectionPlan.from_agent_output(selection)
         privacy_statement = self.build_privacy_count_statement(plan)
-        if privacy_statement is not None:
-            distinct_customers = int((await self.session.scalar(privacy_statement)) or 0)
-            _enforce_minimum_group_size(
-                distinct_customers,
-                _minimum_distinct_customers(),
-            )
+        if privacy_statement is None:
+            return None
+        distinct_customers = int((await self.session.scalar(privacy_statement)) or 0)
+        _enforce_minimum_group_size(distinct_customers, _minimum_distinct_customers())
+        return distinct_customers
+
+    async def execute(self, selection: dict[str, Any]) -> list[dict[str, Any]]:
+        plan = SelectionPlan.from_agent_output(selection)
+        await self.probe(selection)
         statement = self.build_statement(plan)
         result = await self.session.execute(statement)
         return [_json_safe(dict(row)) for row in result.mappings().all()]
@@ -268,6 +279,16 @@ def _minimum_distinct_customers() -> int:
 
 
 def _enforce_minimum_group_size(actual: int, required: int) -> None:
+    """조회 전 고유 고객 수를 검사한다.
+
+    0건과 K 미만은 원인도 처방도 다르다. 0건은 개인정보 문제가 아니라 "그 조건에 맞는
+    데이터가 없다"는 뜻이고, 실무자는 조건을 바꿔야 한다. 둘을 같은 오류로 묶으면
+    "개인정보 임계 미달"이라는 잘못된 안내를 받고 엉뚱한 곳을 고치게 된다.
+    """
+    if actual == 0:
+        raise NoMatchingDataError(
+            "선택한 조건에 해당하는 데이터가 없습니다. 필터 조건이나 대상 컬럼을 조정해야 합니다."
+        )
     if actual < required:
         raise PrivacyThresholdError(
             f"privacy threshold not met: {actual} distinct customers; "
@@ -277,3 +298,7 @@ def _enforce_minimum_group_size(actual: int, required: int) -> None:
 
 class PrivacyThresholdError(QueryPolicyError):
     """Raised before row retrieval when fewer than K distinct customers match."""
+
+
+class NoMatchingDataError(QueryPolicyError):
+    """조건에 맞는 데이터가 아예 없을 때. 개인정보 임계와 구분해서 보고한다."""

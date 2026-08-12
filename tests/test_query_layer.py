@@ -400,3 +400,32 @@ def test_k_anonymity_is_configurable():
     """데이터 규모가 커지면 K를 올릴 수 있어야 한다."""
     assert K_ANONYMITY >= 5
     assert isinstance(K_ANONYMITY, int)
+
+
+def test_zero_matches_is_reported_as_missing_data_not_privacy():
+    """0건은 개인정보 임계 미달이 아니라 '조건에 맞는 데이터 없음'이다.
+
+    2026-08-12 실측: 조인 결과가 비어 0이 나왔는데 PRIVACY_THRESHOLD_NOT_MET으로
+    보고돼, 실무자가 개인정보 문제로 오해하고 엉뚱한 곳을 고치게 됐다.
+    """
+    from agent_runtime.query.executors import (
+        NoMatchingDataError,
+        PrivacyThresholdError,
+        _enforce_minimum_group_size,
+    )
+
+    with pytest.raises(NoMatchingDataError):
+        _enforce_minimum_group_size(0, 5)
+
+    with pytest.raises(PrivacyThresholdError):
+        _enforce_minimum_group_size(3, 5)
+
+    # K 이상이면 통과한다.
+    _enforce_minimum_group_size(5, 5)
+
+
+def test_zero_match_error_is_not_a_privacy_error():
+    """두 오류를 구분해서 잡을 수 있어야 롤백 사유가 갈린다."""
+    from agent_runtime.query.executors import NoMatchingDataError, PrivacyThresholdError
+
+    assert not issubclass(NoMatchingDataError, PrivacyThresholdError)
