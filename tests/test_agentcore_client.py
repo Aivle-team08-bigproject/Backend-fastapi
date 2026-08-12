@@ -97,9 +97,9 @@ def test_runtime_session_id_is_stable_per_pipeline_run():
     """
     from app.domains.pipeline.agent_client import runtime_session_id
 
-    first = runtime_session_id("bigproject", 42)
-    second = runtime_session_id("bigproject", 42)
-    other_run = runtime_session_id("bigproject", 43)
+    first = runtime_session_id("bigproject", 42, scope="run")
+    second = runtime_session_id("bigproject", 42, scope="run")
+    other_run = runtime_session_id("bigproject", 43, scope="run")
 
     assert first == second
     assert first != other_run
@@ -119,6 +119,7 @@ def test_agentcore_client_uses_run_scoped_session(monkeypatch):
         "agentcore_runtime_arn",
         "arn:aws:bedrock-agentcore:ap-northeast-2:123456789012:runtime/test",
     )
+    monkeypatch.setattr(settings, "agentcore_session_scope", "run")
     fake = FakeAgentCoreClient(
         {"contentType": "application/json", "response": [b'{"output": {"ok": true}}']}
     )
@@ -394,3 +395,44 @@ def test_exhausted_attempts_report_controlled_failure(monkeypatch):
     assert fake.calls == 3
     assert result["_failure_code"] == "SELECTION_RULE_INVALID"
     assert "계약 위반" in result["_agent_error"]
+
+
+class SessionRecordingClient:
+    def __init__(self):
+        self.sessions = []
+
+    def invoke_agent_runtime(self, **kwargs):
+        self.sessions.append(kwargs["runtimeSessionId"])
+        request = json.loads(kwargs["payload"])
+        outputs = {
+            "SOURCE_COLUMN_SELECTION": {"source_columns": [{"column": "age_band"}]},
+            "DERIVED_COLUMN_DESIGN": {"derived_columns": [{"name": "d1"}]},
+            "SYNTHETIC_SAMPLE_GENERATION": {"sample_rows": []},
+        }
+        body = json.dumps({"output": outputs[request["step"]]}).encode("utf-8")
+        return {"contentType": "application/json", "response": [body]}
+
+
+def test_invocation_scope_sessions_are_all_distinct(monkeypatch):
+    _arn(monkeypatch)
+    monkeypatch.setattr(settings, "agentcore_session_scope", "invocation")
+    fake = SessionRecordingClient()
+    client = AgentCoreRuntimeClient("exec-1", client=fake, pipeline_run_id=7)
+
+    asyncio.run(client.run("data-selection-agent", "", {}))
+
+    assert len(fake.sessions) == 3
+    assert len(set(fake.sessions)) == 3
+    assert all(len(s) >= 33 for s in fake.sessions)
+
+
+def test_run_scope_reuses_one_session(monkeypatch):
+    """AWS가 세션 재사용 경로를 고치면 run scope로 복귀할 수 있어야 한다."""
+    _arn(monkeypatch)
+    monkeypatch.setattr(settings, "agentcore_session_scope", "run")
+    fake = SessionRecordingClient()
+    client = AgentCoreRuntimeClient("exec-1", client=fake, pipeline_run_id=7)
+
+    asyncio.run(client.run("data-selection-agent", "", {}))
+
+    assert len(set(fake.sessions)) == 1

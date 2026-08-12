@@ -408,19 +408,24 @@ def _is_retryable_conflict(exc: Exception) -> bool:
     return False
 
 
-def runtime_session_id(prefix: str, pipeline_run_id: int | None) -> str:
-    """pipeline run 하나가 모든 stage에서 같은 AgentCore 세션을 쓰게 만든다.
+def runtime_session_id(
+    prefix: str, pipeline_run_id: int | None, scope: str = "invocation"
+) -> str:
+    """AgentCore ``runtimeSessionId``를 발급한다.
 
-    stage마다 새 세션을 발급하면, 앞 stage를 처리한 컨테이너가 아직 살아 있는 상태에서
-    AgentCore가 새 세션용 런타임 인스턴스를 추가로 기동한다. 2026-08-12 실측에서 그
-    기동이 실패하면서, 따뜻한 컨테이너가 응답을 정상 반환했는데도 호출자는 HTTP 424
-    ``RuntimeClientError``("An error occurred when starting the runtime")를 받았다.
-    run 단위로 세션을 고정하면 뒤따르는 stage가 같은 세션으로 라우팅되어 이 경합이 없다.
+    기본은 ``invocation`` — **호출마다 새 세션**이다. 2026-08-12 run 1~12 전수에서
+    세션의 첫 invocation은 한 번도 실패하지 않았고, 424는 전부 같은 세션의 2~4번째
+    invocation에서 났다(응답은 정상 반환됐는데 data plane이 전달하지 못하는 정황,
+    agentcore-samples#904와 동일 증상). 모든 호출을 "첫 invocation"으로 만들어 그
+    경로를 탄다. step 간 문맥은 세션이 아니라 payload.prior와 NeonDB로 흐르므로
+    상태 연속성에는 영향이 없다. 비용은 콜드스타트 ~5초 x 호출 수다.
 
-    run id를 알 수 없는 경로(단위 테스트, 임시 호출)는 기존처럼 임의 세션을 쓴다.
+    ``run`` scope는 run 단위 결정적 세션(따뜻한 컨테이너 재사용)이다. AWS가 세션
+    재사용 경로를 고치면 AGENTCORE_SESSION_SCOPE=run으로 복귀한다.
+
     AgentCore는 33자 이상을 요구하므로 prefix + 32자 hex 형식을 유지한다.
     """
-    if pipeline_run_id is None:
+    if scope != "run" or pipeline_run_id is None:
         return f"{prefix}-{uuid4().hex}"
     return f"{prefix}-{uuid5(_RUNTIME_SESSION_NAMESPACE, f'run-{pipeline_run_id}').hex}"
 
@@ -452,8 +457,12 @@ class AgentCoreRuntimeClient(AgentClient):
         self.selection_step_callback = selection_step_callback
         self.processing_step_callback = processing_step_callback
         self.agent_log_callback = agent_log_callback
+        self.pipeline_run_id = pipeline_run_id
+        self.session_scope = settings.agentcore_session_scope
+        # run scope에서는 고정 세션 하나를 재사용하고, invocation scope에서는 호출마다
+        # _invoke_remote가 새로 발급한다(아래 runtime_session_id docstring 참조).
         self.runtime_session_id = runtime_session_id(
-            settings.agentcore_session_prefix, pipeline_run_id
+            settings.agentcore_session_prefix, pipeline_run_id, self.session_scope
         )
         if client is not None:
             self.client = client
@@ -533,6 +542,13 @@ class AgentCoreRuntimeClient(AgentClient):
                 "runtime_session_id": self.runtime_session_id,
             },
         )
+        if self.session_scope != "run":
+            # 호출마다 새 세션 = 항상 "첫 invocation" 경로. 세션 재사용 경로의
+            # data plane 전달 실패(424)를 회피한다.
+            self.runtime_session_id = runtime_session_id(
+                self.settings.agentcore_session_prefix, self.pipeline_run_id,
+                self.session_scope,
+            )
         kwargs = {
             "agentRuntimeArn": self.settings.agentcore_runtime_arn,
             "runtimeSessionId": self.runtime_session_id,

@@ -163,6 +163,9 @@ class Settings(BaseSettings):
     agentcore_runtime_arn: str | None = None
     agentcore_runtime_qualifier: str | None = None
     agentcore_session_prefix: str = "bigproject"
+    # invocation: 호출마다 새 세션(기본; 세션 재사용 경로의 424 회피).
+    # run: pipeline run 단위 결정적 세션(따뜻한 컨테이너 재사용).
+    agentcore_session_scope: Literal["invocation", "run"] = "invocation"
     agentcore_endpoint_url: str | None = None
     agentcore_connect_timeout_seconds: int = 10
     agentcore_read_timeout_seconds: int = 900
