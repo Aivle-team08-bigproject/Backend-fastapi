@@ -128,7 +128,7 @@ class AgentRuntimeClient(AgentClient):
             "output_formats": data["output_format"],
         }
 
-    async def run_selection_step(self, step_code: str, payload: dict) -> dict:
+    async def run_selection_step(self, step_code: str, payload: dict) -> dict:  # noqa: D401
         """데이터 선별의 prompt step 하나만 실행한다(AgentCore invocation 분할용).
 
         메타데이터 조회와 실패 처리는 _run_data_selection과 동일한 경계를 쓴다.
@@ -156,6 +156,8 @@ class AgentRuntimeClient(AgentClient):
                     payload.get("prior") or {},
                     self.selection_step_callback,
                     self.agent_log_callback,
+                    int(payload.get("attempt") or 1),
+                    payload.get("retry_feedback"),
                 )
             return run_data_selection_steps(
                 payload["raw_requirement"],
@@ -376,6 +378,7 @@ _CONFLICT_RETRY_BASE_DELAY_SECONDS = 1.0
 # 요청이 에이전트에 도달하기 전에 발생하는 오류만 넣는다. 여기에 424를 추가하면
 # 이미 실행된 단계를 다시 실행하게 된다.
 # 데이터 선별의 prompt step 순서. invocation을 이 단위로 쪼갠다.
+_SELECTION_MAX_ATTEMPTS = 3
 _SELECTION_STEPS = (
     "SOURCE_COLUMN_SELECTION",
     "DERIVED_COLUMN_DESIGN",
@@ -592,13 +595,42 @@ class AgentCoreRuntimeClient(AgentClient):
         """
         merged: dict = {}
         for step in _SELECTION_STEPS:
-            step_output = await self._invoke_remote(
-                agent_name, model_name, {**payload, "prior": merged}, step=step
-            )
-            if "_agent_error" in step_output:
-                # 계약 검증 소진 등 통제된 실패는 그대로 상위로 전달한다.
-                return step_output
-            merged.update(step_output)
+            retry_feedback: str | None = None
+            last_retry: dict | None = None
+            for attempt in range(1, _SELECTION_MAX_ATTEMPTS + 1):
+                step_output = await self._invoke_remote(
+                    agent_name,
+                    model_name,
+                    {
+                        **payload,
+                        "prior": merged,
+                        "attempt": attempt,
+                        "retry_feedback": retry_feedback,
+                    },
+                    step=step,
+                )
+                if "_agent_error" in step_output:
+                    # 계약 검증 외 실패(메타데이터 조회 등)는 그대로 상위로 전달한다.
+                    return step_output
+                retry = step_output.get("_step_retry")
+                if retry is None:
+                    merged.update(step_output)
+                    break
+                # 검증 실패는 다음 회차를 새 invocation으로 부른다. 회차마다 나눠야
+                # 한 invocation이 68초 한도에 걸리지 않는다.
+                last_retry = retry
+                retry_feedback = retry.get("retry_feedback")
+            else:
+                snapshot = (last_retry or {}).get("failure_snapshot") or {}
+                failure = {
+                    "_agent_error": (
+                        f"selection agent failed: {(last_retry or {}).get('error')}"
+                    ),
+                    "_failure_code": snapshot.get("failure_code") or "SELECTION_RULE_INVALID",
+                }
+                if snapshot:
+                    failure["failure_snapshot"] = snapshot
+                return failure
         return merged
 
     @staticmethod

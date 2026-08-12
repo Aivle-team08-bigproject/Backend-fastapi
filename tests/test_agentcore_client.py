@@ -308,3 +308,89 @@ def test_selection_step_failure_stops_remaining_invocations(monkeypatch):
 
     assert fake.calls == 1
     assert result["_failure_code"] == "SELECTION_RULE_INVALID"
+
+
+class RetryingStepClient:
+    """파생 단계가 1회 실패 후 2회차에 성공한다. 회차마다 별도 invocation이어야 한다."""
+
+    def __init__(self):
+        self.requests = []
+
+    def invoke_agent_runtime(self, **kwargs):
+        request = json.loads(kwargs["payload"])
+        self.requests.append(request)
+        step, attempt = request["step"], request["payload"]["attempt"]
+        if step == "SOURCE_COLUMN_SELECTION":
+            out = {"source_columns": [{"column": "age_band"}]}
+        elif step == "DERIVED_COLUMN_DESIGN" and attempt == 1:
+            out = {
+                "_step_retry": {
+                    "step": step,
+                    "attempt": 1,
+                    "error": "data_type 불일치",
+                    "retry_feedback": "data_type을 맞추세요.",
+                    "failure_snapshot": {"failure_code": "SELECTION_RULE_INVALID"},
+                }
+            }
+        elif step == "DERIVED_COLUMN_DESIGN":
+            out = {"derived_columns": [{"name": "d1"}]}
+        else:
+            out = {"sample_rows": []}
+        return {
+            "contentType": "application/json",
+            "response": [json.dumps({"output": out}).encode("utf-8")],
+        }
+
+
+def test_each_retry_attempt_is_its_own_invocation(monkeypatch):
+    """한 step이 3회 재시도하면 68초 한도를 넘는다. 회차도 invocation으로 나눈다."""
+    _arn(monkeypatch)
+    fake = RetryingStepClient()
+    client = AgentCoreRuntimeClient("exec-1", client=fake, pipeline_run_id=7)
+
+    result = asyncio.run(client.run("data-selection-agent", "", {}))
+
+    calls = [(r["step"], r["payload"]["attempt"]) for r in fake.requests]
+    assert calls == [
+        ("SOURCE_COLUMN_SELECTION", 1),
+        ("DERIVED_COLUMN_DESIGN", 1),
+        ("DERIVED_COLUMN_DESIGN", 2),
+        ("SYNTHETIC_SAMPLE_GENERATION", 1),
+    ]
+    # 실패 안내가 다음 회차 invocation으로 전달된다.
+    assert fake.requests[2]["payload"]["retry_feedback"] == "data_type을 맞추세요."
+    assert "derived_columns" in result
+
+
+def test_exhausted_attempts_report_controlled_failure(monkeypatch):
+    """3회를 모두 소진하면 기존과 동일한 _agent_error 계약으로 상위에 전달한다."""
+    _arn(monkeypatch)
+
+    class AlwaysRetry:
+        def __init__(self):
+            self.calls = 0
+
+        def invoke_agent_runtime(self, **kwargs):
+            self.calls += 1
+            out = {
+                "_step_retry": {
+                    "step": "SOURCE_COLUMN_SELECTION",
+                    "attempt": self.calls,
+                    "error": "계약 위반",
+                    "retry_feedback": "고치세요.",
+                    "failure_snapshot": {"failure_code": "SELECTION_RULE_INVALID"},
+                }
+            }
+            return {
+                "contentType": "application/json",
+                "response": [json.dumps({"output": out}).encode("utf-8")],
+            }
+
+    fake = AlwaysRetry()
+    client = AgentCoreRuntimeClient("exec-1", client=fake, pipeline_run_id=7)
+
+    result = asyncio.run(client.run("data-selection-agent", "", {}))
+
+    assert fake.calls == 3
+    assert result["_failure_code"] == "SELECTION_RULE_INVALID"
+    assert "계약 위반" in result["_agent_error"]
