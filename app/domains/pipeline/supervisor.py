@@ -229,8 +229,8 @@ async def run_stage(
 ) -> dict:
     """단계 에이전트를 실행하고 산출물을 검증한다.
 
-    DB에 쓰지 않고 판단 결과만 돌려준다 — 호출자(Celery task)가 status_recorder로 DB에
-    쓰고 화면 갱신까지 처리한다.
+    DB에 쓰지 않고 판단 결과만 돌려준다 — 실행 오케스트레이터가 status_recorder로
+    DB에 쓰고 화면 갱신까지 처리한다.
 
     반환: {stage_name, passed, output, validation, run_status, progress_percent, artifact}
     """
