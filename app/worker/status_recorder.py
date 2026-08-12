@@ -120,6 +120,10 @@ async def persist_status_event(db: AsyncSession, event: PipelineStatusEvent) -> 
     stage = None
     if event.current_stage and event.stage_status is not None:
         # 롤백 재시도로 같은 stage_code가 여러 attempt 존재할 수 있으므로 최신 시도를 잡는다.
+        # AGENTCORE 모드에서 substep 스냅샷은 AgentCore Runtime이 자기 세션으로 직접
+        # 쓴다. 이 세션의 identity map에 남아 있는 StageRun은 그 갱신을 모르므로,
+        # populate_existing으로 DB 값을 다시 읽어야 한다. 이걸 빼면 아래 스냅샷 병합이
+        # 비어 있는 초기값을 집어 Runtime이 기록한 진행 상황을 통째로 덮어쓴다.
         stage = await db.scalar(
             select(StageRun)
             .where(
@@ -128,6 +132,7 @@ async def persist_status_event(db: AsyncSession, event: PipelineStatusEvent) -> 
             )
             .order_by(StageRun.attempt_no.desc(), StageRun.id.desc())
             .limit(1)
+            .execution_options(populate_existing=True)
         )
         if stage is not None:
             event.stage_run_id = stage.id

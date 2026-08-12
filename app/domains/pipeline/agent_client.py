@@ -551,7 +551,9 @@ class AgentCoreRuntimeClient(AgentClient):
             final_output = None
             for line in body.iter_lines(chunk_size=10):
                 if isinstance(line, bytes):
-                    line = line.decode("utf-8")
+                    # JSON 경로와 같은 이유로 손실 없이 decode한다. 줄 단위라 보통은
+                    # 안전하지만, 잘린 바이트를 조용히 버리지 않도록 명시한다.
+                    line = line.decode("utf-8", errors="strict")
                 if not line or not line.startswith("data: "):
                     continue
                 data = line[6:]
@@ -566,13 +568,18 @@ class AgentCoreRuntimeClient(AgentClient):
                 raise AgentCoreInvocationError("AgentCore SSE response contract is invalid") from exc
 
         if content_type == "application/json":
-            chunks = []
+            # 청크마다 따로 decode하면 안 된다. botocore StreamingBody는 1024바이트
+            # 단위로 끊어 주는데, 한글은 3바이트라 한 글자가 청크 경계에 걸치면
+            # UnicodeDecodeError("unexpected end of data")로 터진다. 응답이 길고 한글이
+            # 많을수록(재시도 소진 시 failure_snapshot의 model_response.excerpt 등)
+            # 확률이 올라간다. 바이트를 먼저 이어붙인 뒤 한 번만 decode한다.
+            buffer = bytearray()
             for chunk in body or []:
-                chunks.append(chunk.decode("utf-8") if isinstance(chunk, bytes) else chunk)
+                buffer.extend(chunk if isinstance(chunk, bytes) else str(chunk).encode("utf-8"))
             try:
-                value = json.loads("".join(chunks))
+                value = json.loads(buffer.decode("utf-8"))
                 return AgentCoreInvocationResponse.model_validate(value).output
-            except (TypeError, json.JSONDecodeError, ValueError) as exc:
+            except (TypeError, UnicodeDecodeError, json.JSONDecodeError, ValueError) as exc:
                 raise AgentCoreInvocationError("AgentCore JSON response is invalid") from exc
 
         raise AgentCoreInvocationError(f"unsupported AgentCore content type: {content_type}")
