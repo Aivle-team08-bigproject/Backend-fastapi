@@ -282,6 +282,43 @@ async def review_run_stage(
     return await submit_stage_review(db, run_id, auth.employee, payload)
 
 
+@router.get("/runs/{run_id}/result-download-url")
+async def issue_run_result_download_url(
+    run_id: int,
+    auth: CurrentAuth = Depends(get_current_auth),
+    db: AsyncSession = Depends(get_db),
+) -> dict:
+    """결과 파일 다운로드 주소를 발급한다.
+
+    브라우저가 파일을 받으려면 새 창/탭으로 열어야 하는데, 그 요청에는 JS가 들고 있는
+    Authorization 헤더가 실리지 않는다. 그래서 인증이 필요한 /result.csv를 직접 열면
+    401이 난다. 인증은 이 엔드포인트에서 헤더로 끝내고, 브라우저에는 S3 presigned URL만
+    넘겨 파일은 S3가 직접 서빙하게 한다(EC2 대역폭도 아낀다).
+
+    S3 백엔드가 아니면 기존 스트리밍 경로를 그대로 알려준다.
+    """
+    await get_accessible_run(db, run_id, auth.employee, auth.permissions)
+    artifact = await get_result_artifact(db, run_id)
+    request_no = await db.scalar(
+        select(DataRequest.request_no)
+        .join(PipelineRun, PipelineRun.data_request_id == DataRequest.id)
+        .where(PipelineRun.id == run_id)
+    )
+    if request_no is None:
+        raise not_found("PIPELINE_RUN_NOT_FOUND", "파이프라인 실행을 찾을 수 없습니다.")
+    filename = result_download_filename(request_no, run_id)
+    presigned_url = generate_download_url(
+        artifact.storage_key, filename, artifact.mime_type or "text/csv"
+    )
+    return {
+        "download_url": presigned_url or f"/api/v1/runs/{run_id}/result.csv",
+        "filename": filename,
+        "expires_in_seconds": settings.s3_artifacts_presign_expires_seconds
+        if presigned_url
+        else None,
+    }
+
+
 @router.get("/runs/{run_id}/result.csv")
 async def download_run_result(
     run_id: int,
