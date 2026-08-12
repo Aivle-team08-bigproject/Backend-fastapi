@@ -2,6 +2,7 @@ import asyncio
 from datetime import datetime, timezone
 
 from app.agentcore_status_reporter import AgentCoreStatusReporter
+from app.db.base import Base
 from app.domains.pipeline.model import PipelineRun, StageRun
 
 
@@ -47,6 +48,11 @@ def _runtime_context():
         created_at=now,
     )
     return run, stage
+
+
+def test_runtime_reporter_registers_employee_foreign_key_target():
+    """DataRequest flush resolves owner_id even in the slim Runtime process."""
+    assert "service.employees" in Base.metadata.tables
 
 
 def test_runtime_selection_callback_persists_step_without_redis(monkeypatch):

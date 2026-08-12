@@ -11,6 +11,7 @@ from collections.abc import Awaitable, Callable
 
 from sqlalchemy import select
 
+from app.domains.employees import model as employee_model  # noqa: F401
 from app.domains.pipeline.analysis_steps import analysis_step_message, analysis_step_progress
 from app.domains.pipeline.model import (
     AnalysisStepCode,
