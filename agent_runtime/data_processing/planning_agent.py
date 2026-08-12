@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import re
 import time
 from copy import deepcopy
@@ -14,11 +15,46 @@ from agent_runtime.data_processing.config import settings
 from agent_runtime.data_processing.plan import (
     ProcessingOperation,
     ProcessingPlan,
+    column_roles,
+    group_by_axes,
     order_derived_operations,
     validate_processing_operations,
     validate_processing_plan,
     validate_approved_derived_coverage,
 )
+
+logger = logging.getLogger(__name__)
+
+
+def _drop_inapplicable_unique_checks(result: dict, operations: list[ProcessingOperation]) -> None:
+    """집계 축에 걸린 unique 를 제거한다. 계획을 버리지 않고 그 검사만 뺀다.
+
+    raise 하지 않는 이유 — _run_prompt_step 이 검증 실패 시 재시도(MAX_ATTEMPTS=3)하는데,
+    LLM 이 세 번 다 같은 판단을 하면 파이프라인이 멈춘다. 검사 하나가 빠지는 것보다
+    나쁘다.
+
+    제거한 사실은 로그로 남긴다. 조용히 넘기면 나중에 "왜 검증이 없었나"를 못 찾는다.
+
+    축이 1개면 그 축은 유일한 게 맞으므로 건드리지 않는다.
+    """
+    axes = group_by_axes(operations)
+    if len(axes) <= 1:
+        return
+
+    kept, dropped = [], []
+    for check in result.get("quality_checks") or []:
+        if isinstance(check, dict) and check.get("type") == "unique" and check.get("column") in axes:
+            dropped.append(str(check.get("column")))
+            continue
+        kept.append(check)
+
+    if dropped:
+        result["quality_checks"] = kept
+        logger.warning(
+            "quality check 제거: %s — 집계 축(%d개)에 걸린 unique 는 성립하지 않는다",
+            ", ".join(dropped),
+            len(axes),
+        )
 
 
 COMMON_RULES = """실제 데이터 행은 제공되지 않으며 보려고 시도해서도 안 된다.
@@ -174,6 +210,12 @@ FINAL_COLUMN_VALIDATION_PROMPT = f"""역할:
 - 마지막에 select_columns operation을 정확히 하나 만든다.
 - output.columns와 select_columns.parameters.columns는 동일한 최종 컬럼을 사용한다.
 - quality_checks는 최종 출력 컬럼에만 적용하며 각 검증의 근거를 목적에 맞춘다.
+- unique는 column_roles.group_by에 있는 컬럼에 걸지 않는다. 집계 결과에서 축 값은
+  여러 행에 반복되는 것이 정상이며, 유일해야 하는 것은 축 조합이고 그것은 집계가
+  이미 보장한다.
+- not_null은 column_roles.metrics의 target에 건다. 집계는 항상 값을 낸다.
+- non_negative는 column_roles.metrics 중 function이 count인 target에만 건다.
+  sum·avg는 환불·조정으로 음수가 될 수 있다.
 - 앞의 중복·결측·파생 operation을 변경하거나 새 가공 operation을 만들지 않는다.
 규칙END.
 
@@ -677,6 +719,8 @@ def create_processing_plan(payload: dict, on_step=None, on_log=None) -> dict:
             "deduplication_plan": dedup,
             "missing_value_plan": missing,
             "derived_column_order": derived,
+            # quality_checks 판단 재료. 앞 operation 에서 계산한 사실이라 추측할 게 없다.
+            "column_roles": column_roles(accumulated),
         },
         validate=lambda value: _validate_final_result(value, accumulated, selection),
         step_code="FINAL_COLUMN_VALIDATION",
@@ -711,6 +755,9 @@ def _validate_final_result(
         previous_operations=previous_operations,
         selection=selection,
     )
+    # 프롬프트로 유도해도 LLM 은 확률적이라 가끔 뚫린다. 여기서 결정론적으로 정정한다.
+    # result 는 호출부가 그대로 쓰는 dict 이므로 여기 수정이 최종 계획에 반영된다.
+    _drop_inapplicable_unique_checks(result, [*previous_operations, *final_operations])
     plan = ProcessingPlan.model_validate(
         {
             **result,

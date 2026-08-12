@@ -7,6 +7,7 @@ import csv
 import hashlib
 import hmac
 import io
+import logging
 import os
 import statistics
 from collections import Counter
@@ -17,9 +18,12 @@ from typing import Any
 from agent_runtime.data_processing.plan import (
     ProcessingOperation,
     ProcessingPlan,
+    group_by_axes,
     processing_plan_sha256,
     validate_processing_plan,
 )
+
+logger = logging.getLogger(__name__)
 
 
 DIRECT_IDENTIFIER_NAMES = {
@@ -539,6 +543,9 @@ def _sortable(value: Any) -> tuple[bool, str]:
 def _run_quality_checks(rows: list[dict[str, Any]], plan: ProcessingPlan | None) -> None:
     if plan is None:
         return
+    # 안전망. 정상 경로에서는 planning_agent 가 이미 걸러내지만, 저장된 옛 계획을
+    # 재시도하는 경로는 그 단계를 거치지 않는다.
+    group_axes = group_by_axes(plan.operations)
     for check in plan.quality_checks:
         values = [row.get(check.column) for row in rows]
         if check.type == "not_null" and any(value is None for value in values):
@@ -548,6 +555,22 @@ def _run_quality_checks(rows: list[dict[str, Any]], plan: ProcessingPlan | None)
         ):
             raise ProcessingError(f"quality check failed: {check.column} contains negative values")
         if check.type == "unique" and len(values) != len({repr(value) for value in values}):
+            # 집계 축이 2개 이상이면 개별 축은 반복되는 게 정상이다.
+            #   (서울 강남구, 09시) / (서울 서초구, 09시)  ← 09시가 반복된다
+            # 유일해야 하는 것은 group_by 조합이고 그건 집계가 보장한다.
+            #
+            # 조합 유일성을 대신 검사하는 안도 검토했으나 채택하지 않았다 — 축 목록이
+            # 최종 결과와 어긋나면 없는 컬럼으로 조합을 만들어 정상 결과를 오판한다.
+            # 이 검사는 어차피 정보를 주지 않으므로 건너뛰는 쪽이 안전하다.
+            #
+            # 축이 1개면 그 축은 유일해야 하므로 기존대로 실패시킨다.
+            if check.column in group_axes and len(group_axes) > 1:
+                logger.warning(
+                    "quality check 건너뜀: %s 는 집계 축 %d개 중 하나라 unique 가 성립하지 않는다",
+                    check.column,
+                    len(group_axes),
+                )
+                continue
             raise ProcessingError(f"quality check failed: {check.column} is not unique")
 
 
