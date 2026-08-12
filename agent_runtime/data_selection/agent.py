@@ -424,6 +424,9 @@ JSON 하나만 출력한다. 부수적인 설명, Markdown, 코드 블록을 출
 
 _JSON_BLOCK_RE = re.compile(r"\{.*\}", re.DOTALL)
 MAX_ATTEMPTS = 3
+# 화면·로그에 표시하는 전체 회차 수. invocation을 회차 단위로 쪼개도 사용자에게는
+# 같은 '1/3회차' 표기가 보여야 한다.
+TOTAL_ATTEMPTS = 3
 # AgentCore Runtime에서는 gunicorn error logger가 stderr -> CloudWatch로 나간다.
 _runtime_logger = logging.getLogger("gunicorn.error")
 
@@ -1180,16 +1183,28 @@ def _run_prompt_step(
     step_code: str,
     on_step=None,
     on_log=None,
+    max_attempts: int | None = None,
+    attempt_offset: int = 0,
+    retry_feedback: str | None = None,
+    raise_on_exhaustion: bool = True,
 ) -> dict:
-    if on_step is not None:
+    """prompt 한 단계를 실행한다.
+
+    ``max_attempts=1``이면 LLM 호출 한 번만 하고, 실패해도 예외 대신 재시도 정보를
+    돌려준다(``raise_on_exhaustion=False``). AgentCore invocation 하나가 68초를 넘기면
+    끊기므로, 재시도 루프를 호출자(FastAPI)로 올려 회차마다 invocation을 나누기 위한
+    모드다. ``attempt_offset``은 화면에 표시할 실제 회차 번호를 맞춘다.
+    """
+    attempt_limit = MAX_ATTEMPTS if max_attempts is None else max_attempts
+    if on_step is not None and attempt_offset == 0:
         on_step(step_code, "RUNNING", None)
     last_error: str | None = None
     last_response_excerpt: str | None = None
     last_response_length = 0
     last_finish_reason: str | None = None
     attempts_used = 0
-    retry_payload = {**request_payload, "retry_feedback": None}
-    for attempt in range(1, MAX_ATTEMPTS + 1):
+    retry_payload = {**request_payload, "retry_feedback": retry_feedback}
+    for attempt in range(1 + attempt_offset, attempt_limit + 1 + attempt_offset):
         attempts_used = attempt
         started = time.monotonic()
         try:
@@ -1206,7 +1221,7 @@ def _run_prompt_step(
             if on_log is not None:
                 on_log(
                     "INFO",
-                    f"{step_label} LLM 응답 수신 ({attempt}/{MAX_ATTEMPTS}회차, "
+                    f"{step_label} LLM 응답 수신 ({attempt}/{TOTAL_ATTEMPTS}회차, "
                     f"{elapsed_ms}ms, {last_response_length}자)",
                     {
                         "step": step_code,
@@ -1239,10 +1254,10 @@ def _run_prompt_step(
             # 재시도는 실패가 아니지만 왜 다시 도는지는 화면에 보여야 한다 — 안 그러면
             # 실무자 눈에는 몇 분간 아무 일도 안 일어나는 것처럼 보인다.
             if on_log is not None:
-                remaining = MAX_ATTEMPTS - attempt
+                remaining = TOTAL_ATTEMPTS - attempt
                 on_log(
                     "WARN" if remaining > 0 else "ERROR",
-                    f"{step_label} 검증 실패 ({attempt}/{MAX_ATTEMPTS}회차): {last_error}"
+                    f"{step_label} 검증 실패 ({attempt}/{TOTAL_ATTEMPTS}회차): {last_error}"
                     + (f" — 재시도합니다." if remaining > 0 else ""),
                     {
                         "step": step_code,
@@ -1265,7 +1280,7 @@ def _run_prompt_step(
                 step_code, attempt, time.monotonic() - started,
             )
             return parsed
-    error_message = f"{step_label} 단계가 {MAX_ATTEMPTS}회 시도 후에도 실패: {last_error}"
+    error_message = f"{step_label} 단계가 {TOTAL_ATTEMPTS}회 시도 후에도 실패: {last_error}"
     failure_snapshot = {
         "failed_step": step_code,
         "validation_errors": [last_error] if last_error else [],
@@ -1277,6 +1292,18 @@ def _run_prompt_step(
             "finish_reason": last_finish_reason,
         },
     }
+    if not raise_on_exhaustion:
+        # 호출자가 다음 회차를 별도 invocation으로 다시 부른다. 아직 단계 실패가
+        # 아니므로 FAILED로 마감하지 않는다.
+        return {
+            "_step_retry": {
+                "step": step_code,
+                "attempt": attempts_used + attempt_offset,
+                "error": last_error,
+                "retry_feedback": retry_payload.get("retry_feedback"),
+                "failure_snapshot": failure_snapshot,
+            }
+        }
     if on_step is not None:
         on_step(
             step_code,
@@ -1477,12 +1504,19 @@ def run_single_step(
     prior: dict | None = None,
     on_step=None,
     on_log=None,
+    attempt: int = 1,
+    retry_feedback: str | None = None,
 ) -> dict:
-    """prompt step 하나만 실행한다.
+    """prompt step 하나의 **한 회차**만 실행한다.
 
     AgentCore는 68초 언저리에서 invocation을 끊는다(2026-08-12 실측). 세 prompt를 한
-    호출에 담으면 그 한도를 넘기므로, 호출자가 step 단위로 나눠 부른다. ``prior``에는
-    앞선 step의 결과를 합쳐 넘긴다.
+    호출에 담으면 한도를 넘겼고, step 단위로만 나눴을 때도 재시도가 3회까지 가면
+    한 step이 다시 68초를 넘겼다(run 10의 파생 컬럼 정의). 그래서 회차까지 쪼개
+    invocation 하나가 LLM 호출 한 번만 담당하게 한다.
+
+    ``prior``에는 앞선 step 결과를, ``retry_feedback``에는 직전 회차의 실패 안내를 넘긴다.
+    검증에 실패하면 예외 대신 ``{"_step_retry": {...}}``를 돌려주고, 다음 회차는
+    호출자가 새 invocation으로 부른다.
     """
     schema_metadata, available_data, reference_catalogs, common_payload = _prepare_common_payload(
         raw_requirement, analysis, available_data, schema_metadata, hitl_feedback,
@@ -1503,6 +1537,10 @@ def run_single_step(
             step_code=step_code,
             on_step=on_step,
             on_log=on_log,
+            max_attempts=1,
+            attempt_offset=attempt - 1,
+            retry_feedback=retry_feedback,
+            raise_on_exhaustion=False,
         )
     if step_code == "DERIVED_COLUMN_DESIGN":
         if not source_result:
@@ -1517,6 +1555,10 @@ def run_single_step(
             step_code=step_code,
             on_step=on_step,
             on_log=on_log,
+            max_attempts=1,
+            attempt_offset=attempt - 1,
+            retry_feedback=retry_feedback,
+            raise_on_exhaustion=False,
         )
     if step_code == "SYNTHETIC_SAMPLE_GENERATION":
         if not source_result or not derived_result:
@@ -1535,7 +1577,13 @@ def run_single_step(
             step_code=step_code,
             on_step=on_step,
             on_log=on_log,
+            max_attempts=1,
+            attempt_offset=attempt - 1,
+            retry_feedback=retry_feedback,
+            raise_on_exhaustion=False,
         )
+        if "_step_retry" in sample_result:
+            return sample_result
         # 마지막 step에서 병합 결과를 최종 계약으로 한 번 더 검증한다(run_steps와 동일).
         final_result = {**source_result, **derived_result, **sample_result}
         _validate_contract(final_result, schema_metadata, reference_catalogs)
