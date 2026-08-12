@@ -7,6 +7,7 @@ AgentCore InvokeAgentRuntime IAM 정책 경계에서 처리하고, stage 결과 
 
 import asyncio
 import logging
+import traceback
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, HTTPException, Request
@@ -92,6 +93,17 @@ async def invoke(request: Request) -> dict:
                     raise ValueError("artifact_context.pipeline_run_id is required")
                 output = await store_final_csv_artifact(output, run_id)
     except Exception as exc:  # noqa: BLE001 - Runtime caller receives a controlled 500
+        # Managed Runtime logs can omit worker stderr. Persist the traceback in
+        # the pipeline event stream so the invoking API and UI retain the real
+        # failure cause.
+        try:
+            await reporter._record_log(  # noqa: SLF001 - Runtime-owned reporter
+                "ERROR",
+                "AgentCore Runtime 내부 실행 예외",
+                {"error_type": type(exc).__name__, "traceback": traceback.format_exc()},
+            )
+        except Exception:  # noqa: BLE001 - never hide the original Runtime error
+            logger.exception("Unable to persist AgentCore Runtime failure")
         logger.exception(
             "Agent execution failed: agent_name=%s execution_id=%s",
             agent_name,
