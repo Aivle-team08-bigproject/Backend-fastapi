@@ -10,6 +10,10 @@ from app.domains.pipeline.agent_client import (
 )
 
 
+async def _no_sleep(_seconds):
+    return None
+
+
 class FakeAgentCoreClient:
     def __init__(self, response):
         self.response = response
@@ -124,3 +128,84 @@ def test_agentcore_client_uses_run_scoped_session(monkeypatch):
 
     asyncio.run(stage_one.run("requirement-analysis-agent", "", {}))
     assert fake.kwargs["runtimeSessionId"] == stage_one.runtime_session_id
+
+
+class ConflictThenSuccessClient:
+    """첫 호출은 세션 프로비저닝 경합으로 거절하고 두 번째에 성공한다."""
+
+    def __init__(self, response, failures=1, code="RetryableConflictException"):
+        self.response = response
+        self.remaining = failures
+        self.code = code
+        self.calls = 0
+        self.kwargs = None
+
+    def invoke_agent_runtime(self, **kwargs):
+        self.calls += 1
+        self.kwargs = kwargs
+        if self.remaining > 0:
+            self.remaining -= 1
+            error = Exception("session operation in progress")
+            error.response = {
+                "Error": {"Code": self.code, "Message": "Session operation in progress"},
+                "ResponseMetadata": {"HTTPStatusCode": 409},
+            }
+            raise error
+        return self.response
+
+
+def _arn(monkeypatch):
+    monkeypatch.setattr(
+        settings,
+        "agentcore_runtime_arn",
+        "arn:aws:bedrock-agentcore:ap-northeast-2:123456789012:runtime/test",
+    )
+
+
+def test_retries_session_provisioning_conflict(monkeypatch):
+    """409는 요청이 에이전트에 도달하기 전 오류라 재시도해도 중복 실행이 없다."""
+    _arn(monkeypatch)
+    monkeypatch.setattr("app.domains.pipeline.agent_client.asyncio.sleep", _no_sleep)
+    fake = ConflictThenSuccessClient(
+        {"contentType": "application/json", "response": [b'{"output": {"ok": true}}']}
+    )
+    client = AgentCoreRuntimeClient("exec-1", client=fake, pipeline_run_id=7)
+
+    assert asyncio.run(client.run("requirement-analysis-agent", "", {})) == {"ok": True}
+    assert fake.calls == 2
+
+
+def test_does_not_retry_runtime_client_error(monkeypatch):
+    """424는 에이전트가 이미 실행을 마친 뒤일 수 있어 재시도하면 단계가 중복 실행된다."""
+    _arn(monkeypatch)
+
+    class AlwaysRuntimeClientError:
+        def __init__(self):
+            self.calls = 0
+
+        def invoke_agent_runtime(self, **kwargs):
+            self.calls += 1
+            error = Exception("Received error (424) from runtime")
+            error.response = {
+                "Error": {"Code": "RuntimeClientError", "Message": "runtime error"},
+                "ResponseMetadata": {"HTTPStatusCode": 424},
+            }
+            raise error
+
+    fake = AlwaysRuntimeClientError()
+    client = AgentCoreRuntimeClient("exec-1", client=fake, pipeline_run_id=7)
+
+    with pytest.raises(AgentCoreInvocationError):
+        asyncio.run(client.run("requirement-analysis-agent", "", {}))
+    assert fake.calls == 1
+
+
+def test_gives_up_after_repeated_conflicts(monkeypatch):
+    _arn(monkeypatch)
+    monkeypatch.setattr("app.domains.pipeline.agent_client.asyncio.sleep", _no_sleep)
+    fake = ConflictThenSuccessClient({}, failures=99)
+    client = AgentCoreRuntimeClient("exec-1", client=fake, pipeline_run_id=7)
+
+    with pytest.raises(AgentCoreInvocationError):
+        asyncio.run(client.run("requirement-analysis-agent", "", {}))
+    assert fake.calls == 3
