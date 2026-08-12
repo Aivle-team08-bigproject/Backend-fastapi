@@ -106,7 +106,7 @@ class Settings(BaseSettings):
         validation_alias="APP_ENV",
     )
 
-    # --- Celery / Redis 비동기 파이프라인 ---
+    # --- 파이프라인 상태 이벤트 / Redis 인프라 ---
     worker_status_redis_url: str = "redis://127.0.0.1:6379/2"
     # Worker가 DB에 상태를 쓴 뒤 프론트 화면 갱신용으로 발행하는 채널(FastAPI SSE가 구독)
     worker_status_sse_channel: str = "pipeline:run-status:persisted"
@@ -136,7 +136,7 @@ class Settings(BaseSettings):
     database_host_override: str | None = None
     # 최종 산출물 저장소. "local"이 기본값이라 S3 미설정 환경은 그대로 동작한다.
     # bigproject-infra/envs/dev가 만든 버킷을 쓰려면 s3로 바꾸고 bucket을 채운다.
-    # AgentCore 실행에서는 Runtime execution role이 S3에 직접 저장한다. 로컬/Celery
+    # AgentCore 실행에서는 Runtime execution role이 S3에 직접 저장한다. 로컬 실행은
     # 실행은 이 설정을 따라 worker가 저장해 동일한 artifact 계약을 유지한다.
     artifact_storage_backend: Literal["local", "s3"] = "local"
     s3_artifacts_bucket: str = ""
@@ -152,8 +152,8 @@ class Settings(BaseSettings):
     internal_service_key: str = ""
 
     # --- 파이프라인 에이전트 실행 위치 ---
-    # 기본값은 기존 로컬 개발 흐름이다. AGENTCORE로 바꾸면 Celery worker가
-    # 단계 payload를 AWS Bedrock AgentCore Runtime으로 전달한다.
+    # 파이프라인 단계 실행은 AgentCore를 사용한다. 직접 실행 모드는
+    # 로컬/테스트에서 런타임 호출 경계를 동일하게 검증할 때 사용한다.
     pipeline_execution_backend: Literal["AGENTCORE", "AGENTCORE_DIRECT"] = "AGENTCORE_DIRECT"
     agentcore_region: str = "ap-northeast-2"
     agentcore_runtime_arn: str | None = None

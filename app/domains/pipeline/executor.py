@@ -437,9 +437,9 @@ async def _record_processing_step(
 async def run_pipeline_stage_direct(run_id: int) -> dict:
     """Run one pending pipeline stage without a queue worker.
 
-    This is the transition path for ``AGENTCORE_DIRECT``.  It deliberately
-    executes only the next pending stage: HITL review and redispatch create the
-    next execution attempt just as the eventual Celery-free orchestration will.
+    This is the direct AgentCore execution path. It deliberately executes only
+    the next pending stage: HITL review and redispatch create the next execution
+    attempt within the same orchestration.
     """
     dispatched = await _dispatch(run_id)
     return await _run_stage(dispatched["stage_id"], dispatched["execution_id"])

@@ -293,7 +293,7 @@ async def create_data_request(
                 pipeline_run_id=run.id,
                 event_type=EventType.FAILED.value,
                 severity="ERROR",
-                message="Celery 작업 발행에 실패했습니다.",
+                message="파이프라인 실행 요청 발행에 실패했습니다.",
                 payload={"error_message": str(exc)},
                 occurred_at=run.completed_at,
             )
@@ -1041,7 +1041,7 @@ async def _reopen_from(
                 stage_code=stage_code,
                 attempt_no=(previous.attempt_no if previous else 0) + 1,
                 status=StageRunStatus.PENDING.value,
-                executor="CELERY",
+                executor=settings.pipeline_execution_backend,
                 # 승인된 선별 계획 등 단계 입력은 재시도에서도 그대로 유지한다.
                 input_payload=dict(previous.input_payload or {}) if previous else {},
                 output_payload={},
@@ -1070,7 +1070,7 @@ async def _redispatch(db: AsyncSession, run: PipelineRun, now) -> str:
                 pipeline_run_id=run.id,
                 event_type=EventType.FAILED.value,
                 severity="ERROR",
-                message="Celery 작업 발행에 실패했습니다.",
+                message="파이프라인 실행 요청 발행에 실패했습니다.",
                 payload={"error_message": str(exc)},
                 occurred_at=run.completed_at,
             )

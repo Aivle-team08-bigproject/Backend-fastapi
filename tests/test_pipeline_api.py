@@ -36,7 +36,7 @@ def test_create_request_then_read_pipeline_run(client: TestClient, monkeypatch):
     assert body["request_no"] == created_body["request_no"]
     assert body["request_title"] == f"프론트 연동 테스트 {marker}"
     assert [stage["status"] for stage in body["stages"]] == ["PENDING"] * 3
-    assert [stage["executor"] for stage in body["stages"]] == ["CELERY"] * 3
+    assert [stage["executor"] for stage in body["stages"]] == ["AGENTCORE_DIRECT"] * 3
     assert body["execution_id"] == created_body["execution_id"]
     assert body["events"] == []
 
