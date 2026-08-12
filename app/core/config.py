@@ -65,6 +65,7 @@ def _load_runtime_secrets() -> None:
             "JWT_SECRET",
             "ANON_HASH_SALT",
             "DEEPSEEK_API_KEY",
+            "INTERNAL_SERVICE_KEY",
         ):
             value = bundle.get(key)
             if isinstance(value, str) and value.strip() and not os.getenv(key):
