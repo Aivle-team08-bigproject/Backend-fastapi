@@ -273,8 +273,18 @@ async def run_stage(
                 {"validation_errors": validation["errors"]} if not validation["passed"] else None,
             )
     except Exception as exc:  # noqa: BLE001 - 실패도 이벤트로 남겨야 한다
+        from app.domains.pipeline.agent_client import AgentCoreInvocationError
+
         output = {"_worker_error": str(exc)}
-        validation = {"passed": False, "errors": [str(exc)], "failure_code": None}
+        # 산출물 결함과 전송 실패를 구분한다. 전송 실패는 앞 단계 산출물이 멀쩡하므로
+        # 롤백 대상이 달라야 한다(executor가 이 코드로 분기).
+        validation = {
+            "passed": False,
+            "errors": [str(exc)],
+            "failure_code": FailureCode.AGENT_RUNTIME_UNAVAILABLE.value
+            if isinstance(exc, AgentCoreInvocationError)
+            else None,
+        }
 
     if not validation["passed"]:
         return {

@@ -7,6 +7,7 @@ AgentCore InvokeAgentRuntime IAM 정책 경계에서 처리하고, stage 결과 
 
 import asyncio
 import logging
+import time
 import traceback
 from contextlib import asynccontextmanager
 
@@ -72,6 +73,16 @@ async def invoke(request: Request) -> JSONResponse:
 
     reporter = None
     _active_invocations += 1
+    started = time.monotonic()
+    # 에이전트 진행 로그는 NeonDB로만 나간다. invocation이 424로 끊기면 DB 경로째
+    # 사라지므로, 컨테이너가 어디까지 진행했는지는 stderr(CloudWatch Runtime 로그)에
+    # 남은 이 경계 로그로만 판독할 수 있다.
+    logger.info(
+        "AgentCore invocation start: agent_name=%s execution_id=%s active=%d",
+        agent_name,
+        invocation.execution_id,
+        _active_invocations,
+    )
     try:
         # AgentCore가 내부 step/log를 NeonDB에 직접 기록한다. Redis publish는 하지 않으며,
         # FastAPI SSE가 PipelineEvent를 polling해 브라우저에 전달한다.
@@ -89,6 +100,12 @@ async def invoke(request: Request) -> JSONResponse:
             agent_session_factory=runtime_database.session_factory,
         )
         output = await client.run(agent_name, model_name, payload)
+        logger.info(
+            "AgentCore agent finished: agent_name=%s execution_id=%s elapsed=%.1fs",
+            agent_name,
+            invocation.execution_id,
+            time.monotonic() - started,
+        )
         if agent_name == "data-processing-agent":
             # 유효하지 않은 산출물은 S3에 남기지 않는다. 유효한 CSV만 Runtime execution
             # role로 저장한 뒤, base64 대신 storage_key 메타데이터를 호출자에게 돌려준다.
@@ -103,6 +120,13 @@ async def invoke(request: Request) -> JSONResponse:
         # FastAPI의 응답 직렬화가 try 바깥에서 실행되어 Decimal/datetime 같은 값이
         # 포함되면 제어되지 않은 HTTP 500으로 빠질 수 있었다.
         response_payload = AgentCoreInvocationResponse(output=output).model_dump(mode="json")
+        logger.info(
+            "AgentCore invocation returning: agent_name=%s execution_id=%s elapsed=%.1fs keys=%d",
+            agent_name,
+            invocation.execution_id,
+            time.monotonic() - started,
+            len(response_payload.get("output") or {}),
+        )
         return JSONResponse(content=response_payload)
     except Exception as exc:  # noqa: BLE001 - Runtime caller receives a controlled failure payload
         # Managed Runtime logs can omit worker stderr. Persist the traceback in
@@ -118,9 +142,10 @@ async def invoke(request: Request) -> JSONResponse:
             except Exception:  # noqa: BLE001 - never hide the original Runtime error
                 logger.exception("Unable to persist AgentCore Runtime failure")
         logger.exception(
-            "Agent execution failed: agent_name=%s execution_id=%s",
+            "Agent execution failed: agent_name=%s execution_id=%s elapsed=%.1fs",
             agent_name,
             invocation.execution_id,
+            time.monotonic() - started,
         )
         # AgentCore의 HTTP 500은 호출자에게 RuntimeClientError만 남기고 실제 원인을
         # 버린다. 단계 실행 실패는 기존 AgentClient 계약의 _agent_error로 내려보내

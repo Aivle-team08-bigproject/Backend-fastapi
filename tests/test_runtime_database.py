@@ -37,8 +37,10 @@ def test_runtime_database_reads_connection_string_from_exact_secret(monkeypatch)
 
     assert fake_client.secret_id.endswith("agent-database-abcdef")
     assert captured["url"].startswith("postgresql+psycopg://agent_svc:")
-    assert captured["kwargs"]["pool_size"] == 1
-    assert captured["kwargs"]["max_overflow"] == 1
+    # 상태 write(step/log)와 메타데이터 조회가 같은 pool을 공유한다. pool_size=1이면
+    # 동시 write 하나만 늘어도 pool_timeout까지 대기하다 진행 상태 기록이 밀린다.
+    assert captured["kwargs"]["pool_size"] == 5
+    assert captured["kwargs"]["max_overflow"] == 2
 
 
 def test_runtime_database_reads_rds_postgres_json(monkeypatch):

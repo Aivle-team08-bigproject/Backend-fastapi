@@ -95,8 +95,11 @@ class RuntimeDatabase:
             echo=False,
             future=True,
             pool_pre_ping=True,
-            pool_size=1,
-            max_overflow=1,
+            # 상태 write(step/log)와 메타데이터 조회가 같은 pool을 쓴다. pool_size=1이면
+            # 동시 write 하나만 늘어도 pool_timeout까지 대기하다 상태 기록이 밀린다.
+            # Runtime 컨테이너는 invocation 1건만 처리하므로 소폭 확대해도 부담이 없다.
+            pool_size=5,
+            max_overflow=2,
             pool_timeout=10,
             pool_recycle=300,
         )

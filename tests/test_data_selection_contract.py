@@ -137,11 +137,28 @@ def test_column_design_contract_rejects_unknown_db_column():
 
 
 def test_column_design_contract_rejects_unselected_derived_source():
+    """정책 경계는 derivation_spec의 실제 참조다.
+
+    source_columns 선언은 표현식에서 다시 채우므로 검증 대상이 아니다. 선택되지 않은
+    컬럼을 실제로 참조할 때만 실패해야 한다.
+    """
     selection = _selection()
-    selection["derived_columns"][0]["source_columns"] = ["transaction_amount"]
+    selection["derived_columns"][0]["derivation_spec"]["parameters"]["operands"][0] = {
+        "column": "transaction_amount"
+    }
 
     with pytest.raises(ValueError, match="원본 또는 앞에서 정의된 파생 컬럼"):
         _validate_contract(selection, SCHEMA_METADATA)
+
+
+def test_column_design_contract_ignores_declared_source_columns_drift():
+    """선언이 표현식과 달라도 실패시키지 않고 실제 참조로 정규화한다."""
+    selection = _selection()
+    selection["derived_columns"][0]["source_columns"] = ["transaction_amount"]
+
+    _validate_contract(selection, SCHEMA_METADATA)
+
+    assert selection["derived_columns"][0]["source_columns"] == ["krw_converted_amount"]
 
 
 def test_source_contract_rejects_privacy_unsafe_query_before_approval():
@@ -584,7 +601,8 @@ def test_derivation_alias_conflict_is_rejected_instead_of_overwritten():
         selection_agent._normalize_derivation_spec(column)
 
 
-def test_derivation_source_mismatch_reports_declared_and_referenced_columns():
+def test_derivation_rejects_reference_outside_available_columns():
+    """표현식이 승인되지 않은 컬럼을 참조하면 여전히 실패한다."""
     column = {
         "name": "transaction_month",
         "data_type": "integer",
@@ -604,10 +622,62 @@ def test_derivation_source_mismatch_reports_declared_and_referenced_columns():
         selection_agent._validate_derivation_spec(column, {"approved_at"})
 
     message = str(exc_info.value)
-    assert "declared=['approved_at']" in message
-    assert "referenced=['transaction_datetime']" in message
-    assert "missing_in_expression=['approved_at']" in message
-    assert "undeclared_in_expression=['transaction_datetime']" in message
+    assert "사용할 수 없는 참조" in message
+    assert "transaction_datetime" in message
+
+
+def test_derivation_normalizes_source_columns_to_expression_references():
+    """선언이 표현식보다 좁아도 실패시키지 않고 실제 참조로 정규화한다.
+
+    2026-08-12 AWS 테스트에서 반복 실패한
+    ``declared=['transaction_id'], referenced=['mcc_code','transaction_id']`` 형태다.
+    두 컬럼 모두 승인된 원본이므로 정책 위반이 아니다.
+    """
+    column = {
+        "name": "transaction_count",
+        "data_type": "integer",
+        "source_columns": ["transaction_id"],
+        "derivation_spec": {
+            "spec_version": "1.0",
+            "operation": "aggregate",
+            "parameters": {
+                "group_by": [{"column": "mcc_code"}],
+                "metrics": [
+                    {
+                        "source": {"column": "transaction_id"},
+                        "function": "count",
+                        "target": "transaction_count",
+                    }
+                ],
+            },
+            "evidence": "거래 식별자와 업종 코드 COMMENT",
+        },
+    }
+
+    selection_agent._validate_derivation_spec(column, {"transaction_id", "mcc_code"})
+
+    assert column["source_columns"] == ["mcc_code", "transaction_id"]
+
+
+def test_derivation_rejects_spec_without_any_column_reference():
+    column = {
+        "name": "constant_flag",
+        "data_type": "boolean",
+        "source_columns": ["transaction_id"],
+        "derivation_spec": {
+            "spec_version": "1.0",
+            "operation": "compare",
+            "parameters": {
+                "operator": "eq",
+                "left": {"literal": 1},
+                "right": {"literal": 1},
+            },
+            "evidence": "근거 없음",
+        },
+    }
+
+    with pytest.raises(ValueError, match="어떤 원본 컬럼도"):
+        selection_agent._validate_derivation_spec(column, {"transaction_id"})
 
 
 def test_derived_prompt_contains_operation_specific_single_contracts():
@@ -621,7 +691,8 @@ def test_derived_prompt_contains_operation_specific_single_contracts():
 
 def test_source_mismatch_retry_hint_contains_correct_date_and_logical_examples():
     hint = selection_agent._selection_retry_hint(
-        "derived column 'transaction_month' source mismatch"
+        "derived column 'transaction_month'은 원본 또는 앞에서 정의된 파생 컬럼만 "
+        "참조해야 함: 사용할 수 없는 참조=['approved_at']"
     )
 
     assert '"source":{"column":"컬럼명"}' in hint

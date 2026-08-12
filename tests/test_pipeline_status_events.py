@@ -388,3 +388,119 @@ def test_sse_rejects_missing_bearer_token(client):
 
     assert response.status_code == 401
     assert response.json()["detail"]["code"] == "UNAUTHORIZED"
+
+
+def test_failed_stage_terminalizes_running_selection_steps():
+    """424 등 전송 실패로 substep callback이 끊겨도 RUNNING이 남지 않아야 한다.
+
+    2026-08-12 AWS 테스트 재현: 파생 컬럼 정의가 RUNNING인 채로 AgentCore invocation이
+    종료돼 좌측 체크리스트만 진행 중으로 남았다.
+    """
+    now = datetime.now(timezone.utc)
+    run = PipelineRun(
+        id=7,
+        data_request_id=3,
+        attempt_no=1,
+        status="RUNNING",
+        current_stage="DATA_SELECTION",
+        progress_percent=45,
+        execution_id="task-7",
+        created_at=now,
+        updated_at=now,
+    )
+    data_request = DataRequest(
+        id=3,
+        client_id=1,
+        request_no="REQ-TEST",
+        title="test",
+        raw_requirement="test",
+        output_formats=[],
+        delivery_channels=[],
+        analysis_condition={},
+        status="RUNNING",
+        created_at=now,
+        updated_at=now,
+    )
+    stage = StageRun(
+        id=19,
+        pipeline_run_id=7,
+        stage_code="DATA_SELECTION",
+        attempt_no=2,
+        status="RUNNING",
+        executor="AGENTCORE",
+        input_payload={},
+        output_payload={
+            "selection_steps": {
+                SelectionStepCode.SOURCE_COLUMN_SELECTION.value: {
+                    "status": "COMPLETED",
+                    "started_at": now.isoformat(),
+                    "completed_at": now.isoformat(),
+                    "metadata": None,
+                    "error_message": None,
+                },
+                SelectionStepCode.DERIVED_COLUMN_DESIGN.value: {
+                    "status": "RUNNING",
+                    "started_at": now.isoformat(),
+                    "completed_at": None,
+                    "metadata": None,
+                    "error_message": None,
+                },
+                SelectionStepCode.SYNTHETIC_SAMPLE_GENERATION.value: {
+                    "status": "PENDING",
+                    "started_at": None,
+                    "completed_at": None,
+                    "metadata": None,
+                    "error_message": None,
+                },
+            }
+        },
+        validation_result={},
+        created_at=now,
+    )
+    db = FakeAsyncSession(run, data_request, stage)
+    event = PipelineStatusEvent(
+        run_id=7,
+        execution_id="task-7",
+        run_status=PipelineRunStatus.FAILED,
+        current_stage="DATA_SELECTION",
+        stage_status=StageRunStatus.FAILED,
+        progress_percent=0,
+        message="DATA_SELECTION 산출물 검증에 실패했습니다.",
+        error_message="AgentCore Runtime invocation failed",
+        rollback_to_stage="DATA_SELECTION",
+        occurred_at=now,
+    )
+
+    assert asyncio.run(persist_status_event(db, event)) is True
+
+    steps = stage.output_payload["selection_steps"]
+    derived = steps[SelectionStepCode.DERIVED_COLUMN_DESIGN.value]
+    assert derived["status"] == "FAILED"
+    assert derived["completed_at"] == now.isoformat()
+    assert derived["error_message"] == "AgentCore Runtime invocation failed"
+    # 완료된 앞 단계와 아직 시작하지 않은 뒤 단계는 그대로 둔다.
+    assert steps[SelectionStepCode.SOURCE_COLUMN_SELECTION.value]["status"] == "COMPLETED"
+    assert steps[SelectionStepCode.SYNTHETIC_SAMPLE_GENERATION.value]["status"] == "PENDING"
+
+
+def test_failed_stage_step_sweep_always_sets_error_message():
+    """FAILED 스냅샷은 error_message가 필수다. 상위 오류가 없으면 고정 문구로 채운다."""
+    now = datetime.now(timezone.utc)
+    swept = __import__(
+        "app.worker.status_recorder", fromlist=["_terminalize_running_steps"]
+    )._terminalize_running_steps(
+        {
+            "DERIVED_COLUMN_DESIGN": {
+                "status": "RUNNING",
+                "started_at": now.isoformat(),
+                "completed_at": None,
+                "metadata": None,
+                "error_message": None,
+            }
+        },
+        now,
+        None,
+    )
+
+    assert swept["DERIVED_COLUMN_DESIGN"]["status"] == "FAILED"
+    assert swept["DERIVED_COLUMN_DESIGN"]["error_message"]
