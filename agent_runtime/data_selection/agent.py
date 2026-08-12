@@ -1257,8 +1257,9 @@ def _run_prompt_step(
                 remaining = TOTAL_ATTEMPTS - attempt
                 on_log(
                     "WARN" if remaining > 0 else "ERROR",
-                    f"{step_label} 검증 실패 ({attempt}/{TOTAL_ATTEMPTS}회차): {last_error}"
-                    + (f" — 재시도합니다." if remaining > 0 else ""),
+                    f"{step_label} 검증 실패 ({attempt}/{TOTAL_ATTEMPTS}회차): "
+                    f"{_humanize(last_error)}"
+                    + (" — 다시 시도합니다." if remaining > 0 else ""),
                     {
                         "step": step_code,
                         "attempt": attempt,
@@ -1280,10 +1281,16 @@ def _run_prompt_step(
                 step_code, attempt, time.monotonic() - started,
             )
             return parsed
-    error_message = f"{step_label} 단계가 {TOTAL_ATTEMPTS}회 시도 후에도 실패: {last_error}"
+    error_message = (
+        f"{step_label} 단계를 {TOTAL_ATTEMPTS}회 시도했지만 완료하지 못했습니다: "
+        f"{_humanize(last_error)}"
+    )
     failure_snapshot = {
         "failed_step": step_code,
-        "validation_errors": [last_error] if last_error else [],
+        # 화면 실패 사유로 그대로 노출되므로 사람이 읽을 수 있는 문장을 넣는다.
+        # 원문은 아래 model_response와 재시도 피드백에 남아 있어 디버깅에 지장이 없다.
+        "validation_errors": [_humanize(last_error)] if last_error else [],
+        "technical_error": last_error,
         "retry_count": attempts_used,
         "failure_code": "SELECTION_RULE_INVALID",
         "model_response": {
@@ -1293,8 +1300,12 @@ def _run_prompt_step(
         },
     }
     if not raise_on_exhaustion:
-        # 호출자가 다음 회차를 별도 invocation으로 다시 부른다. 아직 단계 실패가
-        # 아니므로 FAILED로 마감하지 않는다.
+        # 호출자가 다음 회차를 별도 invocation으로 다시 부른다. 중간 회차는 아직 단계
+        # 실패가 아니므로 마감하지 않지만, 마지막 회차까지 실패하면 여기서 FAILED로
+        # 마감해야 한다. 회차 분할 전에는 이 함수가 소진 시 직접 FAILED를 찍었는데,
+        # 분할하면서 그 경로가 끊겨 화면이 계속 '진행 중'으로 남았다(2026-08-12 회귀).
+        if on_step is not None and attempts_used + attempt_offset >= TOTAL_ATTEMPTS:
+            on_step(step_code, "FAILED", failure_snapshot)
         return {
             "_step_retry": {
                 "step": step_code,
@@ -1312,6 +1323,35 @@ def _run_prompt_step(
         )
     raise SelectionPlanningError(error_message, failure_snapshot)
 
+
+
+# 계약 위반 메시지는 LLM 교정용이라 개발자 어휘를 쓴다. 화면에는 실무자가 무엇을
+# 기다리면 되는지, 무엇이 문제인지만 보이면 된다. 재시도 피드백에는 원문을 그대로
+# 쓰고(모델이 고칠 수 있어야 한다) 화면 문구만 여기서 바꾼다.
+_HUMAN_ERROR_RULES: tuple[tuple[str, str], ...] = (
+    ("bins/labels", "구간 나누기 설정이 맞지 않습니다(구간 경계와 이름 개수 불일치)."),
+    ("derived_columns는 최소 1개", "파생 컬럼이 하나도 정의되지 않았습니다."),
+    ("parameters 계약 불일치", "파생 컬럼 계산 방식에 맞지 않는 설정 항목이 섞였습니다."),
+    ("operand 계약", "계산에 쓸 값의 표현 방식이 계약과 다릅니다."),
+    ("사용할 수 없는 참조", "선택하지 않은 컬럼을 계산에 사용하려 했습니다."),
+    ("어떤 원본 컬럼도", "계산 근거가 될 원본 컬럼이 지정되지 않았습니다."),
+    ("data_type이", "파생 컬럼의 자료형이 계산 결과와 맞지 않습니다."),
+    ("DB 메타데이터에 없는", "데이터베이스에 없는 컬럼을 선택했습니다."),
+    ("필터 value는 비어", "조건 값이 비어 있습니다."),
+    ("인적 속성 여러 개와 개별 식별자", "개인정보 보호 규칙상 함께 선택할 수 없는 컬럼 조합입니다."),
+    ("카탈로그", "제공된 분류 항목에 없는 값을 사용했습니다."),
+    ("sample_rows", "미리보기 샘플이 요구한 형식과 다릅니다."),
+    ("허용되지 않은 키", "결과에 예상치 못한 항목이 포함됐습니다."),
+    ("필수 키 누락", "결과에 필요한 항목이 빠졌습니다."),
+)
+
+
+def _humanize(error: str) -> str:
+    """검증 오류를 실무자가 읽을 수 있는 한 문장으로 바꾼다."""
+    for needle, message in _HUMAN_ERROR_RULES:
+        if needle in error:
+            return message
+    return "결과가 요구한 형식과 맞지 않습니다."
 
 def _selection_retry_hint(error: str) -> str:
     if "인적 속성 여러 개와 개별 식별자" in error:
