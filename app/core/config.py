@@ -46,6 +46,30 @@ def _load_runtime_secrets() -> None:
     ECS task definitions or EC2 bootstrap scripts provide only the ARNs; the
     image never contains `.env` files or long-lived credentials.
     """
+    bundle_arn = os.getenv("FASTAPI_RUNTIME_SECRET_ARN", "").strip()
+    if bundle_arn:
+        bundle_value = boto3.client(
+            "secretsmanager",
+            region_name=os.getenv("AWS_REGION", "ap-northeast-2"),
+        ).get_secret_value(SecretId=bundle_arn).get("SecretString")
+        try:
+            bundle = json.loads(bundle_value or "")
+        except json.JSONDecodeError as exc:
+            raise RuntimeError("FASTAPI_RUNTIME_SECRET_ARN must contain a JSON object") from exc
+        if not isinstance(bundle, dict):
+            raise RuntimeError("FASTAPI_RUNTIME_SECRET_ARN must contain a JSON object")
+        for key in (
+            "DATABASE_URL",
+            "PORTFOLIO_APP_DATABASE_URL",
+            "PORTFOLIO_AGENT_DATABASE_URL",
+            "JWT_SECRET",
+            "ANON_HASH_SALT",
+            "DEEPSEEK_API_KEY",
+        ):
+            value = bundle.get(key)
+            if isinstance(value, str) and value.strip() and not os.getenv(key):
+                os.environ[key] = value.strip()
+
     db_arn = os.getenv("PORTFOLIO_APP_DATABASE_SECRET_ARN", "").strip()
     if db_arn:
         os.environ["PORTFOLIO_APP_DATABASE_URL"] = _normalize_psycopg_url(_secret_string(db_arn))
