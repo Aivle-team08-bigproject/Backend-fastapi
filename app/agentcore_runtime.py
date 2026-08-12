@@ -7,7 +7,6 @@ AgentCore InvokeAgentRuntime IAM 정책 경계에서 처리하고, stage 결과 
 
 import asyncio
 import logging
-import traceback
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, HTTPException, Request
@@ -98,10 +97,6 @@ async def invoke(request: Request) -> dict:
             agent_name,
             invocation.execution_id,
         )
-        # AgentCore's managed log collector reliably captures process stderr.
-        # Keep the traceback there even when Gunicorn's logger handler is not
-        # attached to the worker process, otherwise a Runtime 500 is opaque.
-        traceback.print_exc()
         raise HTTPException(status_code=500, detail="agent execution failed") from exc
     finally:
         _active_invocations -= 1
