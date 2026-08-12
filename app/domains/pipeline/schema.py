@@ -85,6 +85,10 @@ class PipelineRunResponse(BaseModel):
     run_id: int
     request_no: str
     request_title: str
+    # 산출물 메일 수신자 기본값. 고객사 담당자 연락처가 등록돼 있을 때만 채운다.
+    # 값이 없으면 화면은 빈 칸으로 두고 사용자가 직접 입력해야 한다 — 로그인한
+    # 실무자 이메일로 대신 채우면 고객 대신 자기 자신에게 보내는 사고가 난다.
+    client_contact_email: str | None = None
     raw_requirement: str
     request_status: DataRequestStatus
     run_status: PipelineRunStatus

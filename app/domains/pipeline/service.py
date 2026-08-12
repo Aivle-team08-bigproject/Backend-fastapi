@@ -376,10 +376,16 @@ async def get_pipeline_run(db: AsyncSession, run_id: int) -> PipelineRunResponse
         if latest_failed_stage is not None
         else None
     )
+    client = (
+        await db.get(Client, data_request.client_id) if data_request.client_id else None
+    )
     return PipelineRunResponse(
         run_id=run.id,
         request_no=data_request.request_no,
         request_title=data_request.title,
+        # 등록된 고객사 연락처가 있을 때만 채운다. 없으면 None으로 두고 화면이 빈 칸을
+        # 보여준다(로그인 사용자 이메일로 대체하지 않는다).
+        client_contact_email=(client.contact_email or None) if client else None,
         raw_requirement=data_request.raw_requirement,
         request_status=data_request.status,
         run_status=run.status,

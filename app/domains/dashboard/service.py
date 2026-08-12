@@ -799,7 +799,10 @@ async def get_task_detail(
     elif run.status == "COMPLETED":
         available_actions = ["DOWNLOAD"]
 
+    client = await db.get(Client, request.client_id) if request.client_id else None
     return TaskDetailResponse(
+        # 고객사 연락처가 없으면 None. 화면이 로그인 사용자 이메일로 대체하지 않는다.
+        client_contact_email=(client.contact_email or None) if client else None,
         request_no=request.request_no,
         run_id=run.id,
         title=request.title,
