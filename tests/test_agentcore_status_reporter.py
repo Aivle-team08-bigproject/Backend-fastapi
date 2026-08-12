@@ -137,3 +137,18 @@ def test_runtime_callback_uses_runtime_event_loop(monkeypatch):
 
     assert captured["publish"] is False
     assert captured["selection_step_status"].value == "RUNNING"
+
+
+def test_runtime_status_failure_does_not_abort_agent_callback(monkeypatch):
+    async def fail_record_step(**_kwargs):
+        raise RuntimeError("temporary database failure")
+
+    reporter = AgentCoreStatusReporter(
+        execution_id="exec-7",
+        agent_name="data-selection-agent",
+        session_factory=lambda: None,
+    )
+    monkeypatch.setattr(reporter, "_record_step", fail_record_step)
+
+    # 진행 상태 DB 기록은 부가 경로이므로 실패해도 LLM 실행 스레드로 전파하지 않는다.
+    reporter.selection_step_callback("SOURCE_COLUMN_SELECTION", "RUNNING", None)

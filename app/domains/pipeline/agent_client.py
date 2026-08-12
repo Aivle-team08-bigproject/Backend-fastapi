@@ -387,7 +387,10 @@ class AgentCoreRuntimeClient(AgentClient):
             config=Config(
                 connect_timeout=self.settings.agentcore_connect_timeout_seconds,
                 read_timeout=self.settings.agentcore_read_timeout_seconds,
-                retries={"mode": "standard", "max_attempts": 3},
+                # AgentCore invocation은 NeonDB 상태를 갱신하는 stateful 작업이다.
+                # SDK가 HTTP 5xx를 투명하게 재시도하면 동일 단계를 중복 실행하므로,
+                # 재시도/롤백은 pipeline supervisor 한 곳에서만 소유한다.
+                retries={"mode": "standard", "total_max_attempts": 1},
             ),
         )
 
@@ -418,6 +421,13 @@ class AgentCoreRuntimeClient(AgentClient):
             response = await asyncio.to_thread(self.client.invoke_agent_runtime, **kwargs)
             result = self._decode_response(response)
         except Exception as exc:  # noqa: BLE001 - supervisor가 공통 실패 상태를 기록한다
+            aws_response = getattr(exc, "response", None)
+            aws_error = aws_response.get("Error", {}) if isinstance(aws_response, dict) else {}
+            response_metadata = (
+                aws_response.get("ResponseMetadata", {})
+                if isinstance(aws_response, dict)
+                else {}
+            )
             await self._log(
                 "ERROR",
                 "AgentCore Runtime 호출에 실패했습니다.",
@@ -427,6 +437,10 @@ class AgentCoreRuntimeClient(AgentClient):
                     "error_message": str(exc),
                     "cause_type": type(exc.__cause__).__name__ if exc.__cause__ else None,
                     "cause_message": str(exc.__cause__) if exc.__cause__ else None,
+                    "aws_error_code": aws_error.get("Code"),
+                    "aws_error_message": aws_error.get("Message"),
+                    "aws_http_status": response_metadata.get("HTTPStatusCode"),
+                    "aws_request_id": response_metadata.get("RequestId"),
                 },
             )
             if isinstance(exc, AgentCoreInvocationError):

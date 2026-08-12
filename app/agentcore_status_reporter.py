@@ -7,7 +7,9 @@ Runtime은 Redis에 접속하지 않는다. 내부 단계 이벤트를 PipelineE
 from __future__ import annotations
 
 import asyncio
+import logging
 from collections.abc import Awaitable, Callable
+from concurrent.futures import TimeoutError as FutureTimeoutError
 
 from sqlalchemy import select
 
@@ -36,6 +38,8 @@ _STAGE_BY_AGENT = {
     "data-selection-agent": StageName.DATA_SELECTION,
     "data-processing-agent": StageName.DATA_PROCESSING,
 }
+logger = logging.getLogger("gunicorn.error")
+_STATUS_WRITE_TIMEOUT_SECONDS = 30
 
 
 class AgentCoreStatusReporter:
@@ -76,12 +80,25 @@ class AgentCoreStatusReporter:
         # asyncpg pool은 Runtime event loop에 귀속되므로, callback thread에서 asyncio.run()
         # 으로 새 loop를 만들면 "Future attached to a different loop"가 난다. 반드시
         # Runtime loop에 coroutine을 예약하고 완료를 기다린다.
-        if self.event_loop is None:
-            # 단위 테스트 등 Runtime loop 밖에서만 쓰는 fallback이다.
-            asyncio.run(operation())
-            return
-        future = asyncio.run_coroutine_threadsafe(operation(), self.event_loop)
-        future.result()
+        try:
+            if self.event_loop is None:
+                # 단위 테스트 등 Runtime loop 밖에서만 쓰는 fallback이다.
+                asyncio.run(operation())
+                return
+            future = asyncio.run_coroutine_threadsafe(operation(), self.event_loop)
+            try:
+                future.result(timeout=_STATUS_WRITE_TIMEOUT_SECONDS)
+            except FutureTimeoutError:
+                future.cancel()
+                raise TimeoutError("AgentCore status write timed out") from None
+        except Exception:  # noqa: BLE001 - 상태 기록 장애가 에이전트 산출물을 폐기하면 안 된다
+            # PostgreSQL 이벤트는 실시간 표시용 부가 경로다. 중간 상태 저장이 일시적으로
+            # 실패해도 최종 산출물은 호출 FastAPI가 기록할 수 있도록 invocation을 계속한다.
+            logger.exception(
+                "AgentCore status write failed: execution_id=%s stage=%s",
+                self.execution_id,
+                self.stage_name.value,
+            )
 
     async def _record_log(self, level: str, message: str, detail: dict | None) -> None:
         async with self.session_factory() as db:
