@@ -41,6 +41,11 @@ async def lifespan(_: FastAPI):
 
 runtime_app = FastAPI(title="BigProject AgentCore Runtime", lifespan=lifespan)
 _active_invocations = 0
+_RUNTIME_FAILURE_CODE = {
+    "requirement-analysis-agent": "REQUIRED_KEY_MISSING",
+    "data-selection-agent": "SELECTION_RULE_INVALID",
+    "data-processing-agent": "PROCESSING_RULE_INVALID",
+}
 
 
 @runtime_app.get("/ping")
@@ -92,7 +97,7 @@ async def invoke(request: Request) -> dict:
                 if not isinstance(run_id, int) or run_id <= 0:
                     raise ValueError("artifact_context.pipeline_run_id is required")
                 output = await store_final_csv_artifact(output, run_id)
-    except Exception as exc:  # noqa: BLE001 - Runtime caller receives a controlled 500
+    except Exception as exc:  # noqa: BLE001 - Runtime caller receives a controlled failure payload
         # Managed Runtime logs can omit worker stderr. Persist the traceback in
         # the pipeline event stream so the invoking API and UI retain the real
         # failure cause.
@@ -109,7 +114,20 @@ async def invoke(request: Request) -> dict:
             agent_name,
             invocation.execution_id,
         )
-        raise HTTPException(status_code=500, detail="agent execution failed") from exc
+        # AgentCore의 HTTP 500은 호출자에게 RuntimeClientError만 남기고 실제 원인을
+        # 버린다. 단계 실행 실패는 기존 AgentClient 계약의 _agent_error로 내려보내
+        # FastAPI가 validation/failure_code 경로에서 DB와 화면에 정확히 기록하게 한다.
+        return AgentCoreInvocationResponse(
+            output={
+                "_agent_error": (
+                    "AgentCore runtime execution failed: "
+                    f"{type(exc).__name__}: {exc}"
+                ),
+                "_failure_code": _RUNTIME_FAILURE_CODE.get(
+                    agent_name, "SELECTION_RULE_INVALID"
+                ),
+            }
+        ).model_dump()
     finally:
         _active_invocations -= 1
     return AgentCoreInvocationResponse(output=output).model_dump()
