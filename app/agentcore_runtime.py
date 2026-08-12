@@ -101,7 +101,12 @@ async def invoke(request: Request) -> JSONResponse:
             agent_log_callback=reporter.agent_log_callback,
             agent_session_factory=runtime_database.session_factory,
         )
-        output = await client.run(agent_name, model_name, payload)
+        if invocation.step:
+            # invocation 하나가 prompt step 하나만 담당한다. 68초 한도를 넘기지 않도록
+            # 호출자가 세 번 나눠 부르고, 앞선 step 결과는 payload["prior"]로 온다.
+            output = await client.run_selection_step(invocation.step, payload)
+        else:
+            output = await client.run(agent_name, model_name, payload)
         logger.info(
             "AgentCore agent finished: agent_name=%s execution_id=%s elapsed=%.1fs",
             agent_name,

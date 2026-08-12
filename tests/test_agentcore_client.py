@@ -85,7 +85,8 @@ def test_agentcore_client_delegates_db_stages_to_runtime(monkeypatch, agent_name
     assert result == {"ok": True}
     request = json.loads(fake.kwargs["payload"])
     assert request["agent_name"] == agent_name
-    assert request["payload"] == {"x": 1}
+    # 데이터 선별은 prompt step 단위 invocation으로 나뉘므로 앞선 step 결과가 prior로 실린다.
+    assert request["payload"]["x"] == 1
 
 
 def test_runtime_session_id_is_stable_per_pipeline_run():
@@ -242,3 +243,68 @@ def test_invalid_json_still_raises_contract_error(monkeypatch):
 
     with pytest.raises(AgentCoreInvocationError, match="JSON response is invalid"):
         asyncio.run(client.run("data-selection-agent", "", {}))
+
+
+class RecordingStepClient:
+    """step별 부분 결과를 돌려주며 요청을 기록한다."""
+
+    def __init__(self):
+        self.requests = []
+        self._outputs = {
+            "SOURCE_COLUMN_SELECTION": {"source_columns": [{"column": "age_band"}]},
+            "DERIVED_COLUMN_DESIGN": {"derived_columns": [{"name": "d1"}]},
+            "SYNTHETIC_SAMPLE_GENERATION": {"sample_rows": [{"age_band": "20대"}]},
+        }
+
+    def invoke_agent_runtime(self, **kwargs):
+        request = json.loads(kwargs["payload"])
+        self.requests.append(request)
+        body = json.dumps({"output": self._outputs[request["step"]]}).encode("utf-8")
+        return {"contentType": "application/json", "response": [body]}
+
+
+def test_data_selection_is_split_into_three_step_invocations(monkeypatch):
+    """AgentCore는 68초 근처에서 invocation을 끊는다. step마다 나눠 호출해야 한다."""
+    _arn(monkeypatch)
+    fake = RecordingStepClient()
+    client = AgentCoreRuntimeClient("exec-1", client=fake, pipeline_run_id=7)
+
+    result = asyncio.run(client.run("data-selection-agent", "", {"raw_requirement": "요청"}))
+
+    assert [r["step"] for r in fake.requests] == [
+        "SOURCE_COLUMN_SELECTION",
+        "DERIVED_COLUMN_DESIGN",
+        "SYNTHETIC_SAMPLE_GENERATION",
+    ]
+    # 앞선 step 결과가 다음 invocation에 누적되어 전달된다.
+    assert fake.requests[0]["payload"]["prior"] == {}
+    assert "source_columns" in fake.requests[1]["payload"]["prior"]
+    assert "derived_columns" in fake.requests[2]["payload"]["prior"]
+    # 세 step 모두 같은 세션으로 라우팅된다.
+    assert len({r["execution_id"] for r in fake.requests}) == 1
+    # 호출자에게는 기존과 동일한 병합 결과가 돌아간다.
+    assert set(result) == {"source_columns", "derived_columns", "sample_rows"}
+
+
+def test_selection_step_failure_stops_remaining_invocations(monkeypatch):
+    """통제된 실패는 뒤 step을 실행하지 않고 그대로 전달한다."""
+    _arn(monkeypatch)
+
+    class FailingStepClient:
+        def __init__(self):
+            self.calls = 0
+
+        def invoke_agent_runtime(self, **kwargs):
+            self.calls += 1
+            body = json.dumps(
+                {"output": {"_agent_error": "boom", "_failure_code": "SELECTION_RULE_INVALID"}}
+            ).encode("utf-8")
+            return {"contentType": "application/json", "response": [body]}
+
+    fake = FailingStepClient()
+    client = AgentCoreRuntimeClient("exec-1", client=fake, pipeline_run_id=7)
+
+    result = asyncio.run(client.run("data-selection-agent", "", {}))
+
+    assert fake.calls == 1
+    assert result["_failure_code"] == "SELECTION_RULE_INVALID"

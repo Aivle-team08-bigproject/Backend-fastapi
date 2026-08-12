@@ -1,4 +1,5 @@
 import asyncio
+import logging
 from uuid import uuid4
 import hashlib
 import json
@@ -688,6 +689,38 @@ async def get_email_delivery(
     )
     if delivery is None:
         raise not_found("EMAIL_DELIVERY_NOT_FOUND", "이메일 발송 요청을 찾을 수 없습니다.")
+    return EmailDeliveryResponse.model_validate(delivery, from_attributes=True)
+
+
+logger = logging.getLogger(__name__)
+
+EMAIL_QUEUE_UNAVAILABLE_CODE = "EMAIL_QUEUE_NOT_CONFIGURED"
+
+
+async def mark_email_delivery_unavailable(
+    db: AsyncSession,
+    delivery_id: str,
+) -> EmailDeliveryResponse:
+    """발송 큐가 없어 아무도 소비할 수 없는 요청을 terminal 상태로 확정한다.
+
+    QUEUED로 남기면 화면은 상태 변화를 기다리며 무한히 대기한다. 발송 경로가 구성되기
+    전까지는 실패로 명확히 알리는 편이 정확하다. 큐를 붙인 뒤에는 이 경로 자체가
+    실행되지 않는다(publish_email_delivery가 True를 반환).
+    """
+    delivery = await db.scalar(
+        select(EmailDelivery).where(EmailDelivery.delivery_id == delivery_id)
+    )
+    if delivery is None:
+        raise not_found("EMAIL_DELIVERY_NOT_FOUND", "이메일 발송 요청을 찾을 수 없습니다.")
+    delivery.status = EmailDeliveryStatus.FAILED.value
+    delivery.failure_code = EMAIL_QUEUE_UNAVAILABLE_CODE
+    delivery.updated_at = utcnow()
+    await db.commit()
+    await db.refresh(delivery)
+    logger.warning(
+        "Email delivery queue is not configured; marking delivery as failed: %s",
+        delivery_id,
+    )
     return EmailDeliveryResponse.model_validate(delivery, from_attributes=True)
 
 

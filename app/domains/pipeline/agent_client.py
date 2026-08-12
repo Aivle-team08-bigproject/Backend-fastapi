@@ -128,9 +128,45 @@ class AgentRuntimeClient(AgentClient):
             "output_formats": data["output_format"],
         }
 
-    async def _run_data_selection(self, payload: dict) -> dict:
+    async def run_selection_step(self, step_code: str, payload: dict) -> dict:
+        """데이터 선별의 prompt step 하나만 실행한다(AgentCore invocation 분할용).
+
+        메타데이터 조회와 실패 처리는 _run_data_selection과 동일한 경계를 쓴다.
+        """
+        return await self._run_data_selection(payload, step_code=step_code)
+
+    async def _run_data_selection(self, payload: dict, step_code: str | None = None) -> dict:
         """Neon DB COMMENT 메타데이터를 읽어 컬럼 설계 에이전트에 전달한다."""
-        from agent_runtime.data_selection.agent import run_steps as run_data_selection_steps
+        from agent_runtime.data_selection.agent import (
+            run_single_step as run_data_selection_step,
+            run_steps as run_data_selection_steps,
+        )
+
+        def _execute(schema_metadata, reference_catalogs):
+            """step_code가 있으면 그 step만, 없으면 세 step 전체를 실행한다."""
+            if step_code:
+                return run_data_selection_step(
+                    step_code,
+                    payload["raw_requirement"],
+                    payload.get("analysis", {}),
+                    payload.get("available_data", []),
+                    schema_metadata,
+                    payload.get("hitl_feedback"),
+                    reference_catalogs,
+                    payload.get("prior") or {},
+                    self.selection_step_callback,
+                    self.agent_log_callback,
+                )
+            return run_data_selection_steps(
+                payload["raw_requirement"],
+                payload.get("analysis", {}),
+                payload.get("available_data", []),
+                schema_metadata,
+                payload.get("hitl_feedback"),
+                reference_catalogs,
+                self.selection_step_callback,
+                self.agent_log_callback,
+            )
 
         # 로컬 Worker는 이 경로로 Neon 메타데이터를 직접 조회한다. AgentCore
         # Runtime은 Secret 기반 session factory를 주입해 동일한 읽기 전용 쿼리를 실행한다.
@@ -139,15 +175,7 @@ class AgentRuntimeClient(AgentClient):
         if isinstance(schema_metadata, list) and isinstance(reference_catalogs, list):
             try:
                 return await asyncio.to_thread(
-                    run_data_selection_steps,
-                    payload["raw_requirement"],
-                    payload.get("analysis", {}),
-                    payload.get("available_data", []),
-                    schema_metadata,
-                    payload.get("hitl_feedback"),
-                    reference_catalogs,
-                    self.selection_step_callback,
-                    self.agent_log_callback,
+                    _execute, schema_metadata, reference_catalogs
                 )
             except Exception as exc:
                 failure = {
@@ -188,15 +216,7 @@ class AgentRuntimeClient(AgentClient):
 
         try:
             return await asyncio.to_thread(
-                run_data_selection_steps,
-                payload["raw_requirement"],
-                payload.get("analysis", {}),
-                available_data,
-                schema_metadata,
-                payload.get("hitl_feedback"),
-                reference_catalogs,
-                self.selection_step_callback,
-                self.agent_log_callback,
+                _execute, schema_metadata, reference_catalogs
             )
         except Exception as exc:
             failure = {
@@ -355,6 +375,12 @@ _CONFLICT_RETRY_ATTEMPTS = 3
 _CONFLICT_RETRY_BASE_DELAY_SECONDS = 1.0
 # 요청이 에이전트에 도달하기 전에 발생하는 오류만 넣는다. 여기에 424를 추가하면
 # 이미 실행된 단계를 다시 실행하게 된다.
+# 데이터 선별의 prompt step 순서. invocation을 이 단위로 쪼갠다.
+_SELECTION_STEPS = (
+    "SOURCE_COLUMN_SELECTION",
+    "DERIVED_COLUMN_DESIGN",
+    "SYNTHETIC_SAMPLE_GENERATION",
+)
 _RETRYABLE_CONFLICT_CODES = frozenset(
     {"RetryableConflictException", "ThrottlingException", "TooManyRequestsException"}
 )
@@ -485,17 +511,24 @@ class AgentCoreRuntimeClient(AgentClient):
                 await asyncio.sleep(delay)
         raise last_exc  # pragma: no cover - 루프가 항상 반환하거나 raise한다
 
-    async def _invoke_remote(self, agent_name: str, model_name: str, payload: dict) -> dict:
+    async def _invoke_remote(
+        self, agent_name: str, model_name: str, payload: dict, step: str | None = None
+    ) -> dict:
         request = AgentCoreInvocationRequest(
             agent_name=agent_name,
             model_name=model_name,
             execution_id=self.execution_id,
             payload=payload,
+            step=step,
         )
         await self._log(
             "INFO",
             "AgentCore Runtime 호출을 시작했습니다.",
-            {"agent_name": agent_name, "runtime_session_id": self.runtime_session_id},
+            {
+                "agent_name": agent_name,
+                "step": step,
+                "runtime_session_id": self.runtime_session_id,
+            },
         )
         kwargs = {
             "agentRuntimeArn": self.settings.agentcore_runtime_arn,
@@ -541,7 +574,32 @@ class AgentCoreRuntimeClient(AgentClient):
         return result
 
     async def run(self, agent_name: str, model_name: str, payload: dict) -> dict:
+        if agent_name == "data-selection-agent":
+            return await self._run_selection_by_steps(agent_name, model_name, payload)
         return await self._invoke_remote(agent_name, model_name, payload)
+
+    async def _run_selection_by_steps(
+        self, agent_name: str, model_name: str, payload: dict
+    ) -> dict:
+        """데이터 선별을 prompt step 단위 invocation 3회로 나눠 실행한다.
+
+        AgentCore는 68초 언저리에서 invocation을 끊는다(2026-08-12 실측: 진짜 424
+        5건이 67~70초에 집중). 세 prompt를 한 호출에 담으면 그 한도에 반복적으로
+        걸렸다. step 하나는 10초 안팎이라 나누면 구조적으로 여유가 생기고, 재시도가
+        발생해도 한 step 안에서만 소모된다.
+
+        결과는 기존과 동일한 병합 dict라 supervisor/validation 계약은 바뀌지 않는다.
+        """
+        merged: dict = {}
+        for step in _SELECTION_STEPS:
+            step_output = await self._invoke_remote(
+                agent_name, model_name, {**payload, "prior": merged}, step=step
+            )
+            if "_agent_error" in step_output:
+                # 계약 검증 소진 등 통제된 실패는 그대로 상위로 전달한다.
+                return step_output
+            merged.update(step_output)
+        return merged
 
     @staticmethod
     def _decode_response(response: dict) -> dict:
