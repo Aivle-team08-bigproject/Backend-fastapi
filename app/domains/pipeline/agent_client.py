@@ -176,9 +176,10 @@ class AgentRuntimeClient(AgentClient):
         reference_catalogs = payload.get("reference_catalogs")
         if isinstance(schema_metadata, list) and isinstance(reference_catalogs, list):
             try:
-                return await asyncio.to_thread(
+                result = await asyncio.to_thread(
                     _execute, schema_metadata, reference_catalogs
                 )
+                return await self._apply_selection_probe(result, step_code)
             except Exception as exc:
                 failure = {
                     "_agent_error": f"selection agent failed: {exc}",
@@ -217,9 +218,10 @@ class AgentRuntimeClient(AgentClient):
             }
 
         try:
-            return await asyncio.to_thread(
+            result = await asyncio.to_thread(
                 _execute, schema_metadata, reference_catalogs
             )
+            return await self._apply_selection_probe(result, step_code)
         except Exception as exc:
             failure = {
                 "_agent_error": f"selection agent failed: {exc}",
@@ -234,6 +236,77 @@ class AgentRuntimeClient(AgentClient):
                 # 여기서 남기지 않으면 아무 데도 안 남는다.
                 await self._log("ERROR", f"선별 결과 최종 검증 실패: {exc}", {"phase": "contract"})
             return failure
+
+
+
+    async def _apply_selection_probe(self, result: dict, step_code: str | None) -> dict:
+        """원본 컬럼 선별이 끝났을 때만 실행 가능성을 검사한다."""
+        if not isinstance(result, dict) or "_step_retry" in result:
+            return result
+        # step 분할 모드에서는 원본 선별 step에서만, 전체 실행에서는 병합 결과에서 검사한다.
+        if step_code not in (None, "SOURCE_COLUMN_SELECTION"):
+            return result
+        return await self._probe_selection_feasibility(result) or result
+
+    async def _probe_selection_feasibility(self, result: dict) -> dict | None:
+        """선별 결과가 실제로 데이터를 뽑아낼 수 있는지 조회 없이 확인한다.
+
+        지금까지는 가공 단계에서야 실제 DB를 처음 만나서, 조건이 잘못돼도 선별 LLM은
+        피드백을 못 받고 두 단계를 더 진행한 뒤 실패했다. 원본 컬럼 선별 직후에
+        검사하면 같은 단계의 재시도 루프가 사유를 받아 스스로 고칠 수 있다.
+
+        실패 시 재시도용 payload를 돌려주고, 통과하거나 검사 대상이 아니면 None.
+        """
+        from agent_runtime.query import (
+            DatabaseQueryExecutor,
+            NoMatchingDataError,
+            PrivacyThresholdError,
+        )
+
+        if not (result.get("selected_tables") and result.get("selection_query")):
+            return None
+        try:
+            async with self._agent_db_session() as db:
+                distinct_customers = await DatabaseQueryExecutor(db).probe(result)
+        except NoMatchingDataError as exc:
+            return self._selection_probe_retry(
+                str(exc),
+                "필터 조건이 너무 좁거나 서로 모순됩니다. 조건 값을 실제 카탈로그 값으로 "
+                "바꾸거나 범위를 넓혀 다시 선별하세요.",
+                "INSUFFICIENT_DATA",
+            )
+        except PrivacyThresholdError as exc:
+            return self._selection_probe_retry(
+                str(exc),
+                "개인정보 보호 최소 집단 크기에 못 미칩니다. 필터 범위를 넓히거나 "
+                "식별성이 높은 컬럼을 빼고 다시 선별하세요.",
+                "PRIVACY_THRESHOLD_NOT_MET",
+            )
+        except Exception as exc:  # noqa: BLE001 - 프로브 실패가 선별을 막으면 안 된다
+            # 조회 계층 오류는 선별 산출물의 결함이 아니다. 경고만 남기고 통과시킨다.
+            await self._log("WARN", f"선별 실행 가능성 검사를 건너뜁니다: {exc}", {"phase": "probe"})
+            return None
+        await self._log(
+            "INFO",
+            f"선별 조건 실행 가능성 확인: 고유 고객 {distinct_customers}명",
+            {"phase": "probe", "distinct_customers": distinct_customers},
+        )
+        return None
+
+    @staticmethod
+    def _selection_probe_retry(error: str, hint: str, failure_code: str) -> dict:
+        return {
+            "_step_retry": {
+                "step": "SOURCE_COLUMN_SELECTION",
+                "error": error,
+                "retry_feedback": f"직전 선별 결과로는 데이터를 뽑을 수 없습니다: {error}. {hint}",
+                "failure_snapshot": {
+                    "failed_step": "SOURCE_COLUMN_SELECTION",
+                    "validation_errors": [error],
+                    "failure_code": failure_code,
+                },
+            }
+        }
 
     async def build_data_processing_plan(self, payload: dict) -> dict:
         """LLM 가공 계획만 수립한다. AgentCore에서 실행 가능한 비DB 경계다."""
