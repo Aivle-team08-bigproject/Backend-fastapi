@@ -43,6 +43,10 @@ class ProcessingError(ValueError):
     """Raised when selected data cannot be processed safely."""
 
 
+
+# 화면 미리보기용 상한. 정본은 CSV artifact이므로 전달 채널이 api가 아닐 때만 적용된다.
+PREVIEW_ROW_LIMIT = 50
+
 def process_payload(payload: dict[str, Any]) -> dict[str, Any]:
     rows = _extract_rows(payload)
     if not rows:
@@ -118,9 +122,16 @@ def process_payload(payload: dict[str, Any]) -> dict[str, Any]:
     delivery_channel = str(payload.get("analysis", {}).get("delivery_channel", "api")).lower()
     # 최종 전달 형식과 별개로 감사·재처리를 위한 정본 CSV는 항상 저장한다.
     csv_artifact = _build_csv(normalized, columns)
+    # API 전달 건은 전체 행을 그대로 싣는다. 그 외 채널(email 등)도 실무자가 승인
+    # 화면에서 산출물을 확인할 수 있도록 미리보기용 상위 N행은 항상 담는다. 정본은
+    # 언제나 CSV artifact이고, 여기 담기는 행은 화면 검토 근거일 뿐이다.
     api_result = {
-        "items": normalized if delivery_channel == "api" else [],
-        "meta": {"row_count": len(normalized)},
+        "items": normalized if delivery_channel == "api" else normalized[:PREVIEW_ROW_LIMIT],
+        "meta": {
+            "row_count": len(normalized),
+            "preview_only": delivery_channel != "api",
+            "delivery_channel": delivery_channel,
+        },
     }
     visualization = _build_visualization(normalized, columns) if "visualization" in output_formats else None
     report = _build_report(payload, len(rows), len(normalized), imputation_count, duplicates_removed) if "report" in output_formats else None
