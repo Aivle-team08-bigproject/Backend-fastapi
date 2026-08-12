@@ -12,7 +12,11 @@ from strands.models.openai import OpenAIModel
 # 한도 안에서 먼저 끊어 정상적인 재시도 경로로 보낸다.
 #
 # invocation 예산: 메타데이터 조회 ~2s + LLM read timeout + 검증 + 상태 flush ~2s.
-_BEDROCK_READ_TIMEOUT_SECONDS = int(os.getenv("AGENT_BEDROCK_READ_TIMEOUT_SECONDS", "40"))
+#
+# 25초 근거: 2026-08-12 실측에서 정상 호출은 클라이언트·Bedrock 양쪽 측정이
+# 0.9~14.5초로 일치했다(오차 100ms 이내). 멈춘 연결을 빨리 끊을수록 68초 한도 안에
+# 남는 재시도 기회가 커진다. 프롬프트가 길어져 정상 호출이 25초에 근접하면 이 값을 올린다.
+_BEDROCK_READ_TIMEOUT_SECONDS = int(os.getenv("AGENT_BEDROCK_READ_TIMEOUT_SECONDS", "25"))
 _BEDROCK_CONNECT_TIMEOUT_SECONDS = int(os.getenv("AGENT_BEDROCK_CONNECT_TIMEOUT_SECONDS", "10"))
 
 
@@ -40,6 +44,10 @@ def build_model(
                 connect_timeout=_BEDROCK_CONNECT_TIMEOUT_SECONDS,
                 read_timeout=_BEDROCK_READ_TIMEOUT_SECONDS,
                 retries={"mode": "standard", "total_max_attempts": 1},
+                # 죽은 연결 감지 보조. probe 간격은 커널 기본값(리눅스 7200초)을 따르므로
+                # 이것만으로 68초 안의 stall을 잡지는 못한다. read_timeout이 실제 방어선이고
+                # 이건 비용 0인 보조 수단이다.
+                tcp_keepalive=True,
             ),
         )
     if normalized_provider != "deepseek":
