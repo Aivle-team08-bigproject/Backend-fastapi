@@ -268,6 +268,9 @@ async def _run_stage(stage_id: int, execution_id: str) -> dict:
         client = (
             AgentCoreRuntimeClient(
                 execution_id=execution_id,
+                # run 단위 고정 세션. stage마다 새 세션을 만들면 앞 stage의 따뜻한
+                # 컨테이너와 새 세션 인스턴스 기동이 경합해 424가 난다.
+                pipeline_run_id=run_id,
                 requirement_analysis_step_callback=requirement_analysis_step_callback,
                 selection_step_callback=selection_step_callback,
                 processing_step_callback=processing_step_callback,

@@ -15,7 +15,7 @@ import json
 from collections.abc import Callable
 from contextlib import asynccontextmanager
 from typing import Protocol
-from uuid import uuid4
+from uuid import UUID, uuid4, uuid5
 
 from app.domains.pipeline.agentcore_contract import (
     AgentCoreInvocationRequest,
@@ -346,6 +346,28 @@ class AgentCoreInvocationError(RuntimeError):
     """AgentCore Runtime 호출 또는 응답 계약이 실패한 경우."""
 
 
+# runtimeSessionId를 pipeline run 하나에 고정하기 위한 고정 네임스페이스. 값이 바뀌면
+# 기존 실행의 세션 연속성이 끊기므로 변경하지 않는다.
+_RUNTIME_SESSION_NAMESPACE = UUID("6f1f1f52-1f7a-4d3e-9d2b-3f0f7a5c1e64")
+
+
+def runtime_session_id(prefix: str, pipeline_run_id: int | None) -> str:
+    """pipeline run 하나가 모든 stage에서 같은 AgentCore 세션을 쓰게 만든다.
+
+    stage마다 새 세션을 발급하면, 앞 stage를 처리한 컨테이너가 아직 살아 있는 상태에서
+    AgentCore가 새 세션용 런타임 인스턴스를 추가로 기동한다. 2026-08-12 실측에서 그
+    기동이 실패하면서, 따뜻한 컨테이너가 응답을 정상 반환했는데도 호출자는 HTTP 424
+    ``RuntimeClientError``("An error occurred when starting the runtime")를 받았다.
+    run 단위로 세션을 고정하면 뒤따르는 stage가 같은 세션으로 라우팅되어 이 경합이 없다.
+
+    run id를 알 수 없는 경로(단위 테스트, 임시 호출)는 기존처럼 임의 세션을 쓴다.
+    AgentCore는 33자 이상을 요구하므로 prefix + 32자 hex 형식을 유지한다.
+    """
+    if pipeline_run_id is None:
+        return f"{prefix}-{uuid4().hex}"
+    return f"{prefix}-{uuid5(_RUNTIME_SESSION_NAMESPACE, f'run-{pipeline_run_id}').hex}"
+
+
 class AgentCoreRuntimeClient(AgentClient):
     """AWS Bedrock AgentCore Runtime의 InvokeAgentRuntime adapter.
 
@@ -361,6 +383,7 @@ class AgentCoreRuntimeClient(AgentClient):
         processing_step_callback: ProcessingStepCallback | None = None,
         agent_log_callback: AgentLogCallback | None = None,
         client=None,
+        pipeline_run_id: int | None = None,
     ):
         from app.core.config import settings
 
@@ -372,7 +395,9 @@ class AgentCoreRuntimeClient(AgentClient):
         self.selection_step_callback = selection_step_callback
         self.processing_step_callback = processing_step_callback
         self.agent_log_callback = agent_log_callback
-        self.runtime_session_id = f"{self.settings.agentcore_session_prefix}-{uuid4().hex}"
+        self.runtime_session_id = runtime_session_id(
+            settings.agentcore_session_prefix, pipeline_run_id
+        )
         if client is not None:
             self.client = client
             return
