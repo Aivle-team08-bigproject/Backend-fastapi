@@ -421,7 +421,13 @@ class AgentCoreRuntimeClient(AgentClient):
             await self._log(
                 "ERROR",
                 "AgentCore Runtime 호출에 실패했습니다.",
-                {"agent_name": agent_name, "error_type": type(exc).__name__},
+                {
+                    "agent_name": agent_name,
+                    "error_type": type(exc).__name__,
+                    "error_message": str(exc),
+                    "cause_type": type(exc.__cause__).__name__ if exc.__cause__ else None,
+                    "cause_message": str(exc.__cause__) if exc.__cause__ else None,
+                },
             )
             if isinstance(exc, AgentCoreInvocationError):
                 raise
