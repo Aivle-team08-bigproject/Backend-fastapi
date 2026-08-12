@@ -241,6 +241,8 @@ class TaskDetailResponse(BaseModel):
     request_no: str
     run_id: int
     title: str
+    # 산출물 메일 수신자 기본값. 등록된 고객사 담당자 연락처가 있을 때만 채운다.
+    client_contact_email: str | None = None
     assignee_code: str | None
     assignee_name: str
     run_status: str | None
