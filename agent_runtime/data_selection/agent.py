@@ -2,6 +2,7 @@
 
 from copy import deepcopy
 import json
+import logging
 import re
 import time
 
@@ -423,6 +424,8 @@ JSON 하나만 출력한다. 부수적인 설명, Markdown, 코드 블록을 출
 
 _JSON_BLOCK_RE = re.compile(r"\{.*\}", re.DOTALL)
 MAX_ATTEMPTS = 3
+# AgentCore Runtime에서는 gunicorn error logger가 stderr -> CloudWatch로 나간다.
+_runtime_logger = logging.getLogger("gunicorn.error")
 
 
 class SelectionPlanningError(ValueError):
@@ -1190,6 +1193,7 @@ def _run_prompt_step(
         attempts_used = attempt
         started = time.monotonic()
         try:
+            _runtime_logger.info("step=%s attempt=%d phase=llm-start", step_code, attempt)
             raw = build_agent(system_prompt)(
                 json.dumps(retry_payload, ensure_ascii=False)
             )
@@ -1212,11 +1216,26 @@ def _run_prompt_step(
                         "finish_reason": last_finish_reason,
                     },
                 )
+            # 진행 로그는 NeonDB로만 나간다. invocation이 끊기면 DB 경로째 사라지므로
+            # 구간 경계를 stderr(CloudWatch Runtime 로그)에도 남긴다. 2026-08-12 실측에서
+            # 파생 컬럼 LLM 응답 이후 43초가 어디서 소모됐는지 판독할 수 없었다.
+            _runtime_logger.info(
+                "step=%s attempt=%d phase=validate-start elapsed=%.1fs",
+                step_code, attempt, time.monotonic() - started,
+            )
             parsed = _extract_json(raw_text)
             _normalize_dataset_names(parsed)
             validate(parsed)
+            _runtime_logger.info(
+                "step=%s attempt=%d phase=validate-ok elapsed=%.1fs",
+                step_code, attempt, time.monotonic() - started,
+            )
         except Exception as exc:  # noqa: BLE001 - 모델 계약 실패를 단계 안에서 재시도
             last_error = str(exc)
+            _runtime_logger.info(
+                "step=%s attempt=%d phase=validate-failed elapsed=%.1fs error=%s",
+                step_code, attempt, time.monotonic() - started, last_error[:200],
+            )
             # 재시도는 실패가 아니지만 왜 다시 도는지는 화면에 보여야 한다 — 안 그러면
             # 실무자 눈에는 몇 분간 아무 일도 안 일어나는 것처럼 보인다.
             if on_log is not None:
@@ -1241,6 +1260,10 @@ def _run_prompt_step(
             # 상태 저장 실패를 LLM 출력 실패로 오인해 모델을 재호출하지 않는다.
             if on_step is not None:
                 on_step(step_code, "COMPLETED", _step_summary(step_code, parsed))
+            _runtime_logger.info(
+                "step=%s attempt=%d phase=step-done elapsed=%.1fs",
+                step_code, attempt, time.monotonic() - started,
+            )
             return parsed
     error_message = f"{step_label} 단계가 {MAX_ATTEMPTS}회 시도 후에도 실패: {last_error}"
     failure_snapshot = {

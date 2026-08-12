@@ -92,6 +92,8 @@ async def invoke(request: Request) -> JSONResponse:
             session_factory=runtime_database.session_factory,
             event_loop=asyncio.get_running_loop(),
         )
+        # 상태 쓰기를 큐로 넘겨 에이전트 스레드가 DB 왕복을 기다리지 않게 한다.
+        await reporter.start()
         client = AgentRuntimeClient(
             requirement_analysis_step_callback=reporter.requirement_analysis_step_callback,
             selection_step_callback=reporter.selection_step_callback,
@@ -164,3 +166,17 @@ async def invoke(request: Request) -> JSONResponse:
         return JSONResponse(content=failure_payload)
     finally:
         _active_invocations -= 1
+        if reporter is not None:
+            # 큐에 남은 진행 이벤트를 응답 반환 직전에 flush한다. 여기서 버리면
+            # 실패 원인 분석에 필요한 마지막 상태가 사라진다.
+            drain_started = time.monotonic()
+            try:
+                await reporter.drain()
+            except Exception:  # noqa: BLE001 - flush 실패가 응답을 막으면 안 된다
+                logger.exception("Unable to drain AgentCore status events")
+            logger.info(
+                "AgentCore status drain done: execution_id=%s elapsed=%.1fs total=%.1fs",
+                invocation.execution_id,
+                time.monotonic() - drain_started,
+                time.monotonic() - started,
+            )
