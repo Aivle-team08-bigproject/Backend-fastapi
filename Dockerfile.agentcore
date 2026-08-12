@@ -10,11 +10,15 @@ RUN pip install --no-cache-dir -r requirements.txt
 COPY app ./app
 COPY agent_runtime ./agent_runtime
 
-RUN groupadd --system appuser \
-    && useradd --system --gid appuser --create-home appuser \
+RUN groupadd --system --gid 1000 appuser \
+    && useradd --system --uid 1000 --gid 1000 --create-home appuser \
     && chown -R appuser:appuser /app
 
-USER appuser
+# 숫자 UID로 지정한다. AgentCore Runtime은 비숫자 USER 지시자와 레이어 수가 겹치면
+# overlay 마운트에 실패하며 HTTP 424(Failed Dependency)를 돌려준다. 현재 이미지는
+# 10 레이어라 한계(53)와 거리가 있지만, 조건 자체를 남겨둘 이유가 없다.
+# 참고: https://docs.aws.amazon.com/bedrock-agentcore/latest/devguide/runtime-troubleshooting.html
+USER 1000
 
 EXPOSE 8080
 

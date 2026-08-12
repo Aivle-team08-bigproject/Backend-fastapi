@@ -350,6 +350,34 @@ class AgentCoreInvocationError(RuntimeError):
 # 기존 실행의 세션 연속성이 끊기므로 변경하지 않는다.
 _RUNTIME_SESSION_NAMESPACE = UUID("6f1f1f52-1f7a-4d3e-9d2b-3f0f7a5c1e64")
 
+# 세션 프로비저닝 경합은 짧게 끝나므로 총 대기가 몇 초를 넘지 않게 잡는다.
+_CONFLICT_RETRY_ATTEMPTS = 3
+_CONFLICT_RETRY_BASE_DELAY_SECONDS = 1.0
+# 요청이 에이전트에 도달하기 전에 발생하는 오류만 넣는다. 여기에 424를 추가하면
+# 이미 실행된 단계를 다시 실행하게 된다.
+_RETRYABLE_CONFLICT_CODES = frozenset(
+    {"RetryableConflictException", "ThrottlingException", "TooManyRequestsException"}
+)
+
+
+def _aws_error_code(exc: Exception) -> str | None:
+    response = getattr(exc, "response", None)
+    if not isinstance(response, dict):
+        return None
+    error = response.get("Error")
+    return error.get("Code") if isinstance(error, dict) else None
+
+
+def _is_retryable_conflict(exc: Exception) -> bool:
+    if _aws_error_code(exc) in _RETRYABLE_CONFLICT_CODES:
+        return True
+    response = getattr(exc, "response", None)
+    if isinstance(response, dict):
+        metadata = response.get("ResponseMetadata")
+        if isinstance(metadata, dict) and metadata.get("HTTPStatusCode") == 409:
+            return True
+    return False
+
 
 def runtime_session_id(prefix: str, pipeline_run_id: int | None) -> str:
     """pipeline run 하나가 모든 stage에서 같은 AgentCore 세션을 쓰게 만든다.
@@ -423,6 +451,40 @@ class AgentCoreRuntimeClient(AgentClient):
         if self.agent_log_callback is not None:
             await asyncio.to_thread(self.agent_log_callback, level, message, detail)
 
+    async def _invoke_with_conflict_retry(self, kwargs: dict):
+        """요청이 에이전트에 도달하기 전에 실패한 경우에만 다시 시도한다.
+
+        AgentCore는 세션이 프로비저닝되거나 해제되는 짧은 구간에 도착한 요청을
+        ``RetryableConflictException``(409)으로 거절한다. 이 오류는 요청이 에이전트에
+        전달되기 전에 발생하므로 재시도해도 단계가 중복 실행되지 않는다. throttling도 같다.
+
+        424 ``RuntimeClientError``는 **재시도하지 않는다**. 2026-08-12 실측에서 이 오류가
+        났을 때 Runtime 컨테이너 로그에는 이미 ``invocation returning``이 남아 있었다.
+        즉 에이전트가 실제로 실행을 마친 뒤였으므로, 재시도하면 같은 단계를 두 번 돌려
+        LLM 호출과 DB 상태 기록이 중복된다. SDK 레벨 재시도를 끈 이유도 동일하다.
+        """
+        last_exc: Exception | None = None
+        for attempt in range(1, _CONFLICT_RETRY_ATTEMPTS + 1):
+            try:
+                return await asyncio.to_thread(self.client.invoke_agent_runtime, **kwargs)
+            except Exception as exc:  # noqa: BLE001 - 전이 오류만 걸러 재시도한다
+                if not _is_retryable_conflict(exc) or attempt == _CONFLICT_RETRY_ATTEMPTS:
+                    raise
+                last_exc = exc
+                delay = _CONFLICT_RETRY_BASE_DELAY_SECONDS * (2 ** (attempt - 1))
+                await self._log(
+                    "WARN",
+                    "AgentCore 세션이 준비 중이라 잠시 후 다시 호출합니다.",
+                    {
+                        "attempt": attempt,
+                        "max_attempts": _CONFLICT_RETRY_ATTEMPTS,
+                        "retry_in_seconds": delay,
+                        "aws_error_code": _aws_error_code(exc),
+                    },
+                )
+                await asyncio.sleep(delay)
+        raise last_exc  # pragma: no cover - 루프가 항상 반환하거나 raise한다
+
     async def _invoke_remote(self, agent_name: str, model_name: str, payload: dict) -> dict:
         request = AgentCoreInvocationRequest(
             agent_name=agent_name,
@@ -443,7 +505,7 @@ class AgentCoreRuntimeClient(AgentClient):
         if self.settings.agentcore_runtime_qualifier:
             kwargs["qualifier"] = self.settings.agentcore_runtime_qualifier
         try:
-            response = await asyncio.to_thread(self.client.invoke_agent_runtime, **kwargs)
+            response = await self._invoke_with_conflict_retry(kwargs)
             result = self._decode_response(response)
         except Exception as exc:  # noqa: BLE001 - supervisor가 공통 실패 상태를 기록한다
             aws_response = getattr(exc, "response", None)
