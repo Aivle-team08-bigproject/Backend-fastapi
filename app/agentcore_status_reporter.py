@@ -43,6 +43,10 @@ logger = logging.getLogger("gunicorn.error")
 _STATUS_WRITE_TIMEOUT_SECONDS = 30
 # 상태 write가 이 시간을 넘기면 invocation이 끊기기 전에 조짐을 남긴다.
 _SLOW_STATUS_WRITE_SECONDS = 5
+# 한 stage가 만드는 이벤트는 20건 남짓이다. 넉넉히 잡되 무한 적재는 막는다.
+_STATUS_QUEUE_MAXSIZE = 256
+# 응답 반환 직전 flush 한도. 여기서 오래 기다리면 논블로킹 이점이 사라진다.
+_STATUS_DRAIN_TIMEOUT_SECONDS = 10
 
 
 class AgentCoreStatusReporter:
@@ -60,6 +64,72 @@ class AgentCoreStatusReporter:
         self.stage_name = _STAGE_BY_AGENT[agent_name]
         self.session_factory = session_factory
         self.event_loop = event_loop
+        self._queue: asyncio.Queue | None = None
+        self._consumer: asyncio.Task | None = None
+        self._dropped = 0
+
+    async def start(self) -> None:
+        """상태 쓰기를 직렬 소비하는 background consumer를 띄운다.
+
+        에이전트 스레드가 DB 왕복을 기다리지 않게 하되, 큐 하나를 순차 소비해서
+        RUNNING -> COMPLETED 순서는 그대로 유지한다.
+        """
+        self._queue = asyncio.Queue(maxsize=_STATUS_QUEUE_MAXSIZE)
+        self._consumer = asyncio.create_task(self._consume())
+
+    async def _consume(self) -> None:
+        assert self._queue is not None
+        while True:
+            operation = await self._queue.get()
+            if operation is None:
+                self._queue.task_done()
+                return
+            started = time.monotonic()
+            try:
+                await operation()
+            except Exception:  # noqa: BLE001 - 상태 기록 장애가 산출물을 폐기하면 안 된다
+                logger.exception(
+                    "AgentCore status write failed after %.1fs: execution_id=%s stage=%s",
+                    time.monotonic() - started,
+                    self.execution_id,
+                    self.stage_name.value,
+                )
+            else:
+                elapsed = time.monotonic() - started
+                if elapsed >= _SLOW_STATUS_WRITE_SECONDS:
+                    logger.warning(
+                        "AgentCore status write slow: %.1fs execution_id=%s stage=%s",
+                        elapsed,
+                        self.execution_id,
+                        self.stage_name.value,
+                    )
+            finally:
+                self._queue.task_done()
+
+    async def drain(self) -> None:
+        """남은 상태 쓰기를 flush한다. 응답 반환 직전에만 호출한다."""
+        if self._queue is None or self._consumer is None:
+            return
+        try:
+            await asyncio.wait_for(self._queue.join(), timeout=_STATUS_DRAIN_TIMEOUT_SECONDS)
+        except (TimeoutError, asyncio.TimeoutError):
+            logger.warning(
+                "AgentCore status drain timed out: execution_id=%s stage=%s pending=%d",
+                self.execution_id,
+                self.stage_name.value,
+                self._queue.qsize(),
+            )
+        if self._dropped:
+            logger.warning(
+                "AgentCore status events dropped: %d execution_id=%s",
+                self._dropped,
+                self.execution_id,
+            )
+        await self._queue.put(None)
+        try:
+            await asyncio.wait_for(self._consumer, timeout=_STATUS_DRAIN_TIMEOUT_SECONDS)
+        except (TimeoutError, asyncio.TimeoutError):
+            self._consumer.cancel()
 
     async def _context(self, db) -> tuple[PipelineRun, StageRun] | None:
         run = await db.scalar(
@@ -79,6 +149,26 @@ class AgentCoreStatusReporter:
         return (run, stage) if stage is not None else None
 
     def _run(self, operation: Callable[[], Awaitable[None]]) -> None:
+        """에이전트 스레드에서 호출된다. **절대 블로킹하지 않는다.**
+
+        이전 구현은 run_coroutine_threadsafe 후 future.result(timeout=30)로 DB 왕복을
+        기다렸다. Runtime(ap-northeast-2)과 Neon(ap-southeast-1)이 교차 리전이라 이
+        대기가 invocation 벽시계 시간을 밀어 올렸고, 진짜 424는 67~70초에 뭉쳐
+        발생했다(2026-08-12 실측). 큐에 넣고 즉시 반환한다.
+        """
+        if self._queue is not None:
+            try:
+                self.event_loop.call_soon_threadsafe(self._queue.put_nowait, operation)
+            except asyncio.QueueFull:
+                # 상태 표시는 부가 경로다. 큐가 넘치면 산출물을 지키고 이벤트를 버린다.
+                self._dropped += 1
+            except RuntimeError:
+                # loop가 이미 닫힌 종료 구간.
+                self._dropped += 1
+            return
+        self._run_blocking(operation)
+
+    def _run_blocking(self, operation: Callable[[], Awaitable[None]]) -> None:
         # AgentRuntimeClient는 모델 호출을 별도 thread에서 수행한다. RuntimeDatabase의
         # asyncpg pool은 Runtime event loop에 귀속되므로, callback thread에서 asyncio.run()
         # 으로 새 loop를 만들면 "Future attached to a different loop"가 난다. 반드시
