@@ -17,8 +17,25 @@ AgentName = Literal[
 ]
 
 
+SelectionStep = Literal[
+    "SOURCE_COLUMN_SELECTION",
+    "DERIVED_COLUMN_DESIGN",
+    "SYNTHETIC_SAMPLE_GENERATION",
+]
+
+
 class AgentCoreInvocationRequest(BaseModel):
-    """Request body sent to ``POST /invocations``."""
+    """Request body sent to ``POST /invocations``.
+
+    ``step`` splits a multi-prompt stage into one invocation per prompt step.
+    AgentCore terminates invocations that run past roughly 68 seconds
+    (2026-08-12 실측: 진짜 424 5건이 67~70초에 집중), and running all three
+    data-selection prompts in a single call reliably crossed that line.  Each
+    step is ~10 seconds, so splitting keeps every invocation far below it.
+
+    Omitting ``step`` keeps the original whole-stage behaviour for callers that
+    do not orchestrate steps themselves (로컬 실행, 기존 계약 호환).
+    """
 
     model_config = ConfigDict(extra="forbid")
 
@@ -26,6 +43,7 @@ class AgentCoreInvocationRequest(BaseModel):
     model_name: str = Field(default="", max_length=255)
     execution_id: str = Field(min_length=1, max_length=255)
     payload: dict[str, Any]
+    step: SelectionStep | None = None
 
 
 class AgentCoreInvocationResponse(BaseModel):

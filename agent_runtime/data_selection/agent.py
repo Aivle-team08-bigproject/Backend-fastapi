@@ -1362,17 +1362,11 @@ def _step_summary(step_code: str, result: dict) -> dict:
     return {"sample_count": len(result.get("sample_rows") or [])}
 
 
-def run_steps(
-    raw_requirement: str,
-    analysis: dict,
-    available_data: list[str],
-    schema_metadata: list[dict] | None = None,
-    hitl_feedback: str | None = None,
-    reference_catalogs: list[dict] | None = None,
-    on_step=None,
-    on_log=None,
-) -> dict:
-    """세 프롬프트를 실행하며 선택적으로 단계 상태 콜백을 호출한다."""
+def _prepare_common_payload(
+    raw_requirement, analysis, available_data, schema_metadata, hitl_feedback,
+    reference_catalogs, on_log=None,
+):
+    """세 prompt step이 공유하는 입력을 정규화한다. run_steps와 run_single_step이 함께 쓴다."""
     schema_metadata = deepcopy(schema_metadata or [])
     for dataset in schema_metadata:
         if isinstance(dataset, dict) and isinstance(dataset.get("dataset"), str):
@@ -1412,6 +1406,24 @@ def run_steps(
         "reference_catalogs": reference_catalogs,
         "hitl_feedback": hitl_feedback,
     }
+    return schema_metadata, available_data, reference_catalogs, common_payload
+
+
+def run_steps(
+    raw_requirement: str,
+    analysis: dict,
+    available_data: list[str],
+    schema_metadata: list[dict] | None = None,
+    hitl_feedback: str | None = None,
+    reference_catalogs: list[dict] | None = None,
+    on_step=None,
+    on_log=None,
+) -> dict:
+    """세 프롬프트를 순차 실행한다. 로컬/전체 실행 경로가 사용한다."""
+    schema_metadata, available_data, reference_catalogs, common_payload = _prepare_common_payload(
+        raw_requirement, analysis, available_data, schema_metadata, hitl_feedback,
+        reference_catalogs, on_log=on_log,
+    )
     source_result = _run_prompt_step(
         system_prompt=SOURCE_COLUMN_SELECTION_PROMPT,
         request_payload=common_payload,
@@ -1452,6 +1464,83 @@ def run_steps(
     final_result = {**source_result, **derived_result, **sample_result}
     _validate_contract(final_result, schema_metadata, reference_catalogs)
     return final_result
+
+
+def run_single_step(
+    step_code: str,
+    raw_requirement: str,
+    analysis: dict,
+    available_data: list[str],
+    schema_metadata: list[dict] | None = None,
+    hitl_feedback: str | None = None,
+    reference_catalogs: list[dict] | None = None,
+    prior: dict | None = None,
+    on_step=None,
+    on_log=None,
+) -> dict:
+    """prompt step 하나만 실행한다.
+
+    AgentCore는 68초 언저리에서 invocation을 끊는다(2026-08-12 실측). 세 prompt를 한
+    호출에 담으면 그 한도를 넘기므로, 호출자가 step 단위로 나눠 부른다. ``prior``에는
+    앞선 step의 결과를 합쳐 넘긴다.
+    """
+    schema_metadata, available_data, reference_catalogs, common_payload = _prepare_common_payload(
+        raw_requirement, analysis, available_data, schema_metadata, hitl_feedback,
+        reference_catalogs, on_log=on_log if step_code == "SOURCE_COLUMN_SELECTION" else None,
+    )
+    prior = prior or {}
+    source_result = {key: prior[key] for key in SOURCE_RESULT_KEYS if key in prior}
+    derived_result = {key: prior[key] for key in DERIVED_RESULT_KEYS if key in prior}
+
+    if step_code == "SOURCE_COLUMN_SELECTION":
+        return _run_prompt_step(
+            system_prompt=SOURCE_COLUMN_SELECTION_PROMPT,
+            request_payload=common_payload,
+            validate=lambda result: _validate_source_contract(
+                result, schema_metadata, reference_catalogs
+            ),
+            step_label="원본 컬럼 선별",
+            step_code=step_code,
+            on_step=on_step,
+            on_log=on_log,
+        )
+    if step_code == "DERIVED_COLUMN_DESIGN":
+        if not source_result:
+            raise ValueError("파생 컬럼 정의에는 검증된 원본 선별 결과가 필요함")
+        return _run_prompt_step(
+            system_prompt=DERIVED_COLUMN_DESIGN_PROMPT,
+            request_payload={**common_payload, "source_selection": source_result},
+            validate=lambda result: _validate_derived_contract(
+                result, source_result, schema_metadata, reference_catalogs
+            ),
+            step_label="파생 컬럼 정의",
+            step_code=step_code,
+            on_step=on_step,
+            on_log=on_log,
+        )
+    if step_code == "SYNTHETIC_SAMPLE_GENERATION":
+        if not source_result or not derived_result:
+            raise ValueError("합성 샘플 생성에는 원본 선별과 파생 정의 결과가 필요함")
+        sample_result = _run_prompt_step(
+            system_prompt=SYNTHETIC_SAMPLE_GENERATION_PROMPT,
+            request_payload={
+                **common_payload,
+                "source_selection": source_result,
+                "derived_design": derived_result,
+            },
+            validate=lambda result: _validate_sample_contract(
+                result, source_result, derived_result, schema_metadata, reference_catalogs
+            ),
+            step_label="합성 샘플 생성",
+            step_code=step_code,
+            on_step=on_step,
+            on_log=on_log,
+        )
+        # 마지막 step에서 병합 결과를 최종 계약으로 한 번 더 검증한다(run_steps와 동일).
+        final_result = {**source_result, **derived_result, **sample_result}
+        _validate_contract(final_result, schema_metadata, reference_catalogs)
+        return sample_result
+    raise ValueError(f"지원하지 않는 selection step: {step_code}")
 
 
 @tool

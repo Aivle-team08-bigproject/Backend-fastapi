@@ -47,6 +47,7 @@ from app.domains.pipeline.schema import (
 from app.domains.pipeline.service import (
     create_data_request,
     create_email_delivery,
+    mark_email_delivery_unavailable,
     customer_result_filename,
     get_email_delivery,
     get_email_delivery_context,
@@ -145,7 +146,7 @@ async def request_email_delivery(
         artifact_filename = ""
         artifact_mime_type = ""
 
-    await publish_email_delivery(
+    published = await publish_email_delivery(
         EmailDeliveryQueueMessage(
             delivery_id=delivery.delivery_id,
             idempotency_key=(idempotency_key or "").strip(),
@@ -170,6 +171,11 @@ async def request_email_delivery(
             api_key=payload.api_key or "",
         )
     )
+    if not published:
+        # 큐가 꺼져 있거나 미구성이면 아무도 이 요청을 소비하지 않는다. QUEUED로 두면
+        # 화면은 발송 상태가 바뀌기를 영원히 기다리며 스피너만 돈다. 발송 경로가 없다는
+        # 사실을 즉시 terminal 상태로 알려 UI가 끝날 수 있게 한다.
+        delivery = await mark_email_delivery_unavailable(db, delivery.delivery_id)
     return delivery
 
 
