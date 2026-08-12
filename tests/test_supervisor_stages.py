@@ -552,3 +552,40 @@ def test_rollback_target_maps_failure_codes_to_stages():
     # 알 수 없는 값과 None은 처음부터 다시 돈다.
     assert rollback_target("NOT_A_REAL_CODE") == StageName.REQUIREMENT_ANALYSIS
     assert rollback_target(None) == StageName.REQUIREMENT_ANALYSIS
+
+
+class UnavailableRuntimeAgentClient:
+    """AgentCore 호출 자체가 끊긴 경우 — 산출물 결함과 구분되어야 한다."""
+
+    async def run(self, agent_name: str, model_name: str, payload: dict) -> dict:
+        from app.domains.pipeline.agent_client import AgentCoreInvocationError
+
+        raise AgentCoreInvocationError("AgentCore Runtime invocation failed")
+
+
+def test_runtime_invocation_failure_is_marked_as_transport_failure():
+    """424/timeout은 AGENT_RUNTIME_UNAVAILABLE로 분류돼야 롤백 대상이 달라진다."""
+    stage = _stage("REQUIREMENT_ANALYSIS", StageRunStatus.PENDING.value, 10)
+    db = FakeDb(_run(), [stage])
+
+    outcome = asyncio.run(run_stage(db, stage, agent_client=UnavailableRuntimeAgentClient()))
+
+    assert outcome["passed"] is False
+    assert outcome["validation"]["failure_code"] == "AGENT_RUNTIME_UNAVAILABLE"
+    assert "AgentCore Runtime invocation failed" in outcome["error_message"]
+
+
+def test_agent_output_failure_keeps_null_failure_code_for_transport_classification():
+    """일반 예외는 전송 실패로 오분류되지 않는다."""
+
+    class BrokenAgentClient:
+        async def run(self, agent_name: str, model_name: str, payload: dict) -> dict:
+            raise RuntimeError("boom")
+
+    stage = _stage("REQUIREMENT_ANALYSIS", StageRunStatus.PENDING.value, 10)
+    db = FakeDb(_run(), [stage])
+
+    outcome = asyncio.run(run_stage(db, stage, agent_client=BrokenAgentClient()))
+
+    assert outcome["passed"] is False
+    assert outcome["validation"]["failure_code"] is None

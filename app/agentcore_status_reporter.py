@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import time
 from collections.abc import Awaitable, Callable
 from concurrent.futures import TimeoutError as FutureTimeoutError
 
@@ -40,6 +41,8 @@ _STAGE_BY_AGENT = {
 }
 logger = logging.getLogger("gunicorn.error")
 _STATUS_WRITE_TIMEOUT_SECONDS = 30
+# 상태 write가 이 시간을 넘기면 invocation이 끊기기 전에 조짐을 남긴다.
+_SLOW_STATUS_WRITE_SECONDS = 5
 
 
 class AgentCoreStatusReporter:
@@ -80,6 +83,7 @@ class AgentCoreStatusReporter:
         # asyncpg pool은 Runtime event loop에 귀속되므로, callback thread에서 asyncio.run()
         # 으로 새 loop를 만들면 "Future attached to a different loop"가 난다. 반드시
         # Runtime loop에 coroutine을 예약하고 완료를 기다린다.
+        started = time.monotonic()
         try:
             if self.event_loop is None:
                 # 단위 테스트 등 Runtime loop 밖에서만 쓰는 fallback이다.
@@ -94,11 +98,24 @@ class AgentCoreStatusReporter:
         except Exception:  # noqa: BLE001 - 상태 기록 장애가 에이전트 산출물을 폐기하면 안 된다
             # PostgreSQL 이벤트는 실시간 표시용 부가 경로다. 중간 상태 저장이 일시적으로
             # 실패해도 최종 산출물은 호출 FastAPI가 기록할 수 있도록 invocation을 계속한다.
+            #
+            # DB write가 막히면 DB 이벤트 자체가 안 남으므로 실패 사실을 DB에만 기록하면
+            # 증거가 사라진다. 반드시 stderr로도 남겨 CloudWatch Runtime 로그에서 보이게 한다.
             logger.exception(
-                "AgentCore status write failed: execution_id=%s stage=%s",
+                "AgentCore status write failed after %.1fs: execution_id=%s stage=%s",
+                time.monotonic() - started,
                 self.execution_id,
                 self.stage_name.value,
             )
+        else:
+            elapsed = time.monotonic() - started
+            if elapsed >= _SLOW_STATUS_WRITE_SECONDS:
+                logger.warning(
+                    "AgentCore status write slow: %.1fs execution_id=%s stage=%s",
+                    elapsed,
+                    self.execution_id,
+                    self.stage_name.value,
+                )
 
     async def _record_log(self, level: str, message: str, detail: dict | None) -> None:
         async with self.session_factory() as db:

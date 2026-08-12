@@ -15,6 +15,7 @@ from app.db.session import AsyncSessionLocal
 from app.domains.pipeline.model import (
     AnalysisStepCode,
     AnalysisStepStatus,
+    FailureCode,
     PipelineRun,
     PipelineRunStatus,
     ProcessingStepCode,
@@ -259,6 +260,11 @@ async def _run_stage(stage_id: int, execution_id: str) -> dict:
             except Exception:  # noqa: BLE001 - 로깅 실패가 파이프라인을 멈추면 안 된다
                 logger.exception("Failed to record agent log for run_id=%s", stage.pipeline_run_id)
 
+        # AGENTCORE 모드에서 substep 상태를 쓰는 주체는 Runtime 내부의
+        # AgentCoreStatusReporter다. AgentCoreRuntimeClient는 아래 step callback을
+        # 보관만 하고 호출하지 않는다(agent_log_callback만 사용). 따라서 invocation이
+        # 끊기면 FastAPI는 어느 substep이 RUNNING이었는지 모르며, 정합성 복구는
+        # status_recorder의 실패 분기가 담당한다.
         client = (
             AgentCoreRuntimeClient(
                 execution_id=execution_id,
@@ -288,6 +294,15 @@ async def _run_stage(stage_id: int, execution_id: str) -> dict:
 
         if not outcome["passed"]:
             failure_code = (outcome["validation"] or {}).get("failure_code")
+            # AgentCore 호출 자체가 끊긴 경우는 산출물 결함이 아니다. 승인된 요구사항
+            # 분석까지 되돌리지 않고 같은 단계만 다시 시도하게 한다. rollback_target의
+            # 정책 표는 "사유 -> 고정 단계" 매핑이라 "현재 단계"를 표현할 수 없으므로
+            # 현재 stage를 아는 이 자리에서 분기한다.
+            rollback_stage = (
+                stage_name
+                if failure_code == FailureCode.AGENT_RUNTIME_UNAVAILABLE.value
+                else rollback_target(failure_code)
+            )
             await record_status(
                 db,
                 run_id=run_id,
@@ -300,7 +315,7 @@ async def _run_stage(stage_id: int, execution_id: str) -> dict:
                 result=_persistable_stage_output(outcome["output"]),
                 error_message=outcome["error_message"],
                 validation_result=outcome["validation"],
-                rollback_to_stage=rollback_target(failure_code).value,
+                rollback_to_stage=rollback_stage.value,
             )
             return {"run_id": run_id, "stage_id": stage_id, "passed": False}
 

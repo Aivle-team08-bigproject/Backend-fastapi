@@ -80,7 +80,7 @@ FINAL_CONTRACT_REFERENCE = """당신은 '하나 데이터 마켓'의 DB 메타�
     }
   ],
   "selection_query": {
-    "columns": ["<source_columns에 선택된 실제 컬럼명>"],
+    "columns": [],
     "filters": {
       "<필터에 사용할 실제 컬럼명>": {
         "operator": "<eq|in|gte|lte|between|starts_with>",
@@ -152,6 +152,9 @@ FINAL_CONTRACT_REFERENCE = """당신은 '하나 데이터 마켓'의 DB 메타�
 - hitl_feedback이 있으면 이전 해석보다 우선하여 고객의 수정 의도를 새 필터와 샘플에 반영한다.
 - selected_tables는 available_data에 있는 값만 사용한다.
 - source_columns.column은 schema_metadata에 실제 존재하는 허용 컬럼만 사용한다.
+- reference_catalogs의 카탈로그 테이블(예: anon_mcc_codes)은 조회 대상이 아니므로
+  selected_tables나 source_columns에 넣지 않는다. 업종 조건은 schema_metadata에 있는
+  거래·가맹점 테이블의 mcc_code 컬럼과 selection_query.filters로 표현한다.
 - source_columns에는 고객 요청을 충족하는 데 필요한 최소 원본 컬럼만 넣는다.
 - derived_columns는 선택된 source_columns와 배열 앞쪽에서 정의한 파생 컬럼만 참조한다.
 - derived_columns는 derivation_spec 1.0으로 실행 의미와 실제 근거를 구조화한다.
@@ -159,7 +162,7 @@ FINAL_CONTRACT_REFERENCE = """당신은 '하나 데이터 마켓'의 DB 메타�
 - 고객 요청에 맞게 기존 컬럼을 계산·집계·분류·조합한 derived_columns를 최소 1개 만든다.
 - derived_columns를 단순한 원본 컬럼의 이름 변경으로 만들지 않는다.
 - retry_feedback이 있으면 실패 원인을 반드시 수정해서 전체 JSON을 다시 생성한다.
-- selection_query.columns에는 source_columns의 실제 컬럼명을 중복 없이 넣는다.
+- selection_query.columns는 빈 배열로 둔다. 서버가 source_columns에서 결정적으로 채운다.
 - top_k, limit, vector_similarity는 절대 생성하지 않는다.
 - 사용자 요구사항의 구체적인 대상·범위·조건은 DB COMMENT를 근거로 selection_query.filters에 변환한다.
 - 필터 키는 source_columns에 선택한 실제 DB 컬럼명만 사용한다.
@@ -202,9 +205,11 @@ hitl_feedback이 있으면 이전 해석보다 우선하고, retry_feedback이 �
 - 가장 가까운 실행 가능한 의미를 선택하고, 해석 근거와 확인 필요 여부는
   interpretations에 기록한다.
 - 실행 근거가 없을 때만 해당 조건을 필터에서 제외하고 catalog_issues에 기록한다.
-- selection_query.columns는 source_columns의 column 목록과 중복 없이 정확히 일치해야 한다.
-- selection_query.columns와 source_columns는 운영 DB에서 실제로 함께 조회되는 컬럼이다.
-  파생 컬럼 계산이나 샘플 생성을 위한 내부 용도라는 예외는 없다.
+- selection_query.columns는 빈 배열로 둔다. 서버가 검증된 source_columns에서 채운다.
+- source_columns는 운영 DB에서 실제로 조회되는 컬럼이다. 파생 컬럼 계산이나 샘플
+  생성을 위한 내부 용도라는 예외는 없다.
+- reference_catalogs의 카탈로그 테이블은 조회 대상이 아니므로 selected_tables나
+  source_columns에 넣지 않는다.
 - 필터는 선택한 source column만 사용하며 operator, value, reason, evidence를 포함한다.
 - 허용 filter operator는 eq, in, gte, lte, between, starts_with다.
 - 문자열 접두 범위에는 starts_with를 사용하며 문자열에 수치 범위 연산을 사용하지 않는다.
@@ -280,7 +285,7 @@ JSON 외의 내용은 절대 출력하지 않는다.
 정확한 결과는 고객 요구를 충족하면서도 운영 DB 조회 정책을 위반하지 않는
 최소 컬럼 계획이다.
 출력 전에 내부적으로 다음을 확인하라.
-1. selection_query.columns와 source_columns가 정확히 일치하는가.
+1. source_columns가 schema_metadata의 조회 대상 테이블 컬럼만 담고 있는가.
 2. 선택 컬럼이 개인정보 보호 조회 정책을 위반하지 않는가.
 3. 모든 컬럼·테이블·카탈로그 값이 제공된 메타데이터에 실제 존재하는가.
 4. JSON 외의 내용을 출력하지 않았는가.
@@ -323,7 +328,7 @@ DERIVATION_SPEC_OPERATION_CONTRACT = """operation별 parameters 정식 계약:
    "default":{"literal":null}}
 
 모든 컬럼 참조는 정확히 {"column":"컬럼명"} 객체로 표현한다. source_columns에는
-parameters 전체에서 참조한 모든 컬럼을 중복 없이 정확히 넣고 상수는 넣지 않는다.
+parameters에서 참조한 컬럼을 넣되, 최종 값은 서버가 parameters의 실제 참조로 확정한다.
 위에 명시하지 않은 별칭 키나 평면형 표현을 만들지 않는다."""
 
 
@@ -518,8 +523,11 @@ def _validate_contract(
         if key not in allowed:
             raise ValueError(f"DB 메타데이터에 없는 source column: {key}")
         selected_source_names.append(column["column"])
-    if set(query.get("columns") or []) != set(selected_source_names):
-        raise ValueError("selection_query.columns는 source_columns와 일치해야 함")
+    # selection_query.columns는 source_columns와 의미가 완전히 겹친다. LLM에게 두 배열을
+    # 따로 만들게 하고 일치를 요구하면 계약 위반이 반복되므로, 메타데이터 검증을 통과한
+    # source_columns에서 코드가 결정적으로 생성한다. 뒤따르는 필터 검증과 SelectionPlan의
+    # allowlist 검증이 그대로 적용되므로 정책 경계는 약해지지 않는다.
+    query["columns"] = list(dict.fromkeys(selected_source_names))
     filters = query.get("filters")
     if not isinstance(filters, dict):
         raise ValueError("selection_query.filters는 객체여야 함")
@@ -633,14 +641,19 @@ def _validate_contract(
 
     for column in derived_columns:
         sources = column.get("source_columns")
-        if not column.get("name") or not isinstance(sources, list) or not sources:
-            raise ValueError("모든 derived column에는 name과 source_columns가 필요함")
-        if not set(sources).issubset(available_derived_sources):
-            raise ValueError("derived column은 원본 또는 앞에서 정의된 파생 컬럼만 참조해야 함")
+        if not column.get("name"):
+            raise ValueError("모든 derived column에는 name이 필요함")
+        # source_columns는 아래에서 derivation_spec 참조로 다시 채운다. LLM 선언은
+        # 정규화 힌트로만 쓰므로 비어 있어도 실패시키지 않는다.
+        if sources is not None and not isinstance(sources, list):
+            raise ValueError("derived column의 source_columns는 배열이어야 함")
         if not column.get("derivation"):
             raise ValueError("모든 derived column에는 derivation이 필요함")
-        _normalize_derivation_spec(column)
-        _validate_derivation_spec(column, set(sources))
+        _normalize_derivation_spec(column, available_derived_sources)
+        # source_columns는 실행 의미를 담은 derivation_spec에서 파생되는 값이다. 두
+        # 표현을 LLM이 따로 만들게 하고 완전 일치를 요구하면 계약 위반이 반복되므로,
+        # 표현식이 실제로 참조한 컬럼으로 정규화한 뒤 정책 위반만 실패로 남긴다.
+        _validate_derivation_spec(column, available_derived_sources)
         available_derived_sources.add(column["name"])
 
     if not isinstance(sample_columns, list) or not sample_columns:
@@ -684,7 +697,13 @@ def _assert_exact_keys(data: dict, expected: set[str], step_name: str) -> None:
         raise ValueError(f"{step_name} 결과에 허용되지 않은 키: {', '.join(sorted(extra))}")
 
 
-def _validate_derivation_spec(column: dict, declared_sources: set[str]) -> None:
+def _validate_derivation_spec(column: dict, available_sources: set[str]) -> None:
+    """derivation_spec을 검증하고 source_columns를 표현식 참조로 정규화한다.
+
+    ``available_sources``는 이 시점까지 사용할 수 있는 컬럼(검증된 원본 + 배열 앞쪽에서
+    정의된 파생)이다. 표현식이 그 밖의 컬럼을 참조하면 실패하고, 통과하면 실제 참조
+    집합을 ``column["source_columns"]``에 되써서 선언과 표현식을 항상 일치시킨다.
+    """
     spec = column.get("derivation_spec")
     if not isinstance(spec, dict):
         raise ValueError("모든 derived column에는 derivation_spec 객체가 필요함")
@@ -720,14 +739,18 @@ def _validate_derivation_spec(column: dict, declared_sources: set[str]) -> None:
                 collect(nested)
 
     collect(parameters)
-    if referenced != declared_sources:
-        missing = sorted(declared_sources - referenced)
-        undeclared = sorted(referenced - declared_sources)
+    if not referenced:
         raise ValueError(
-            f"derived column '{column.get('name')}' source mismatch: "
-            f"declared={sorted(declared_sources)}, referenced={sorted(referenced)}, "
-            f"missing_in_expression={missing}, undeclared_in_expression={undeclared}"
+            f"derived column '{column.get('name')}'의 derivation_spec이 어떤 원본 컬럼도 "
+            "참조하지 않음"
         )
+    unavailable = sorted(referenced - available_sources)
+    if unavailable:
+        raise ValueError(
+            f"derived column '{column.get('name')}'은 원본 또는 앞에서 정의된 파생 "
+            f"컬럼만 참조해야 함: 사용할 수 없는 참조={unavailable}"
+        )
+    column["source_columns"] = sorted(referenced)
 
     result_type_by_operation = {
         "compare": {"boolean"},
@@ -848,8 +871,14 @@ def _validate_derivation_parameters(spec: dict) -> None:
     validate_expression(spec)
 
 
-def _normalize_derivation_spec(column: dict) -> None:
-    """의미가 단일하게 결정되는 LLM 별칭만 derivation_spec 계약으로 정규화한다."""
+def _normalize_derivation_spec(column: dict, available_sources: set[str] | None = None) -> None:
+    """의미가 단일하게 결정되는 LLM 별칭만 derivation_spec 계약으로 정규화한다.
+
+    맨문자열 operand를 컬럼 참조로 볼지 리터럴로 볼지 판단할 때 ``available_sources``
+    (검증된 원본 + 앞에서 정의된 파생)를 함께 사용한다. source_columns 선언에만 의존하면
+    LLM이 선언을 좁게 쓴 경우 실제 컬럼 참조가 조용히 리터럴로 굳어진다. 리터럴이 분명한
+    자리는 호출부가 prefer_literal로 표시한다.
+    """
 
     spec = column.get("derivation_spec")
     if not isinstance(spec, dict):
@@ -861,7 +890,7 @@ def _normalize_derivation_spec(column: dict) -> None:
 
     declared_sources = {
         str(source) for source in column.get("source_columns") or [] if source
-    }
+    } | (available_sources or set())
 
     def operand(value, *, prefer_literal: bool = False):
         if isinstance(value, dict):
@@ -1246,20 +1275,21 @@ def _selection_retry_hint(error: str) -> str:
             "dataset은 schema_metadata.dataset의 정식 논리명을, column은 해당 dataset의 "
             "columns.name에 실제 존재하는 값을 그대로 사용하세요. "
         )
-    if "selection_query.columns" in error:
+    if "카탈로그 테이블" in error or "anon_mcc_codes" in error:
         return (
-            "selection_query.columns를 source_columns의 column 목록과 중복 없이 정확히 "
-            "일치시키세요. "
+            "reference catalog 테이블은 조회 대상이 아닙니다. selected_tables와 "
+            "source_columns에서 빼고, 업종 조건은 거래·가맹점 테이블의 mcc_code 컬럼과 "
+            "selection_query.filters로 표현하세요. "
         )
     if "필터" in error:
         return (
             "필터 키는 선택된 source column만 사용하고 operator/value/reason/evidence를 "
             "반환 계약에 맞게 작성하세요. "
         )
-    if "source mismatch" in error:
+    if "사용할 수 없는 참조" in error or "어떤 원본 컬럼도" in error:
         return (
-            "source_columns를 임의 변경하지 말고 derivation_spec의 모든 컬럼 참조를 "
-            "{\"column\":\"컬럼명\"} 객체로 표현하세요. date_part는 "
+            "derivation_spec의 모든 컬럼 참조를 승인된 원본 또는 앞에서 정의한 파생 "
+            "컬럼으로 바꾸고 {\"column\":\"컬럼명\"} 객체로 표현하세요. date_part는 "
             "parameters={\"source\":{\"column\":\"컬럼명\"},\"part\":\"month\"}를 "
             "사용하고 column/date_part 키를 최상위 parameters에 쓰지 마세요. logical은 "
             "operands 안에 operation=compare인 중첩 expression을 사용하세요. "

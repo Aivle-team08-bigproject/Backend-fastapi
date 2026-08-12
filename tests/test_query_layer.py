@@ -327,13 +327,24 @@ def test_high_cardinality_columns_are_identifiers():
     '데이터가 없다'로 잘못 해석한다. 실측(2026-07-31)에서
     transaction_datetime(2,730종)을 차원에 넣으면 통과 0행이었다.
     """
+    # merchant_open_month는 2026-08-10 감사에서 화이트리스트 자체(blocked_columns)로
+    # 옮겨졌다. 규칙 A는 인적 속성 2개 이상일 때만 발동해서 가맹점 단독 조회를 못 막기
+    # 때문이다. 따라서 막히는 층이 컬럼마다 다르며, 어느 층이든 통과하면 안 된다.
     cases = [
-        ("transaction_datetime", ["anon_transactions", "anon_customers"]),
-        ("merchant_open_month", ["anon_merchants", "anon_customers", "anon_transactions"]),
-        ("franchise_hq_code", ["anon_merchants", "anon_customers", "anon_transactions"]),
+        ("transaction_datetime", ["anon_transactions", "anon_customers"], "개별 식별자"),
+        (
+            "merchant_open_month",
+            ["anon_merchants", "anon_customers", "anon_transactions"],
+            "columns are not allowed",
+        ),
+        (
+            "franchise_hq_code",
+            ["anon_merchants", "anon_customers", "anon_transactions"],
+            "개별 식별자",
+        ),
     ]
-    for column, tables in cases:
-        with pytest.raises(QueryPolicyError, match="개별 식별자"):
+    for column, tables, expected in cases:
+        with pytest.raises(QueryPolicyError, match=expected):
             SelectionPlan.from_agent_output(
                 {
                     "selected_tables": [{"table": t} for t in tables],

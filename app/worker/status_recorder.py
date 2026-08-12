@@ -43,6 +43,36 @@ from app.domains.pipeline.processing_steps import initial_processing_steps_snaps
 
 logger = logging.getLogger(__name__)
 
+_STEP_FAILURE_FALLBACK = "단계가 종료되어 진행 중이던 세부 단계를 실패로 마감했습니다."
+
+
+def _terminalize_running_steps(steps: dict | None, now, error_message: str | None) -> dict:
+    """단계 실패 시 아직 RUNNING인 세부 단계를 FAILED로 마감한다.
+
+    AgentCore invocation이 424/timeout으로 끊기면 마지막 substep callback이 실행되지
+    않아 snapshot에 RUNNING이 남는다. 그대로 두면 좌측 체크리스트는 진행 중, 우측
+    로그는 실패로 보여 화면이 서로 어긋난다. 아직 시작하지 않은 PENDING은 건드리지
+    않는다 — 실행되지 않은 단계는 '대기'가 정확한 표현이다.
+
+    FAILED 스냅샷은 error_message가 반드시 있어야 하므로(각 *_steps 모델 검증) 상위
+    오류 메시지가 없으면 고정 문구로 채운다.
+    """
+    if not isinstance(steps, dict):
+        return {}
+    swept = {}
+    for code, step in steps.items():
+        if not isinstance(step, dict) or step.get("status") != "RUNNING":
+            swept[code] = step
+            continue
+        failed_step = dict(step)
+        failed_step["status"] = "FAILED"
+        failed_step["completed_at"] = now.isoformat()
+        failed_step["error_message"] = (
+            failed_step.get("error_message") or error_message or _STEP_FAILURE_FALLBACK
+        )
+        swept[code] = failed_step
+    return swept
+
 
 def _publish_to_screen(event: PipelineStatusEvent) -> None:
     """Redis는 API/Worker 배포본에서만 선택적으로 사용한다.
@@ -227,18 +257,33 @@ async def persist_status_event(db: AsyncSession, event: PipelineStatusEvent) -> 
                 flag_modified(stage, "output_payload")
                 stage.completed_at = now
             elif event.stage_status == StageRunStatus.FAILED:
+                # 단계가 실패로 끝나면 남아 있는 RUNNING substep을 같은 트랜잭션에서
+                # 함께 마감한다. AgentCore invocation이 강제 종료되면 마지막 substep
+                # callback이 오지 않으므로 여기가 유일한 정합성 보장 지점이다.
                 result = dict(event.result or {})
                 if event.current_stage == "REQUIREMENT_ANALYSIS":
-                    result["analysis_steps"] = stage.output_payload.get(
-                        "analysis_steps", initial_analysis_steps_snapshot()
+                    result["analysis_steps"] = _terminalize_running_steps(
+                        stage.output_payload.get(
+                            "analysis_steps", initial_analysis_steps_snapshot()
+                        ),
+                        now,
+                        event.error_message,
                     )
                 elif event.current_stage == "DATA_SELECTION":
-                    result["selection_steps"] = stage.output_payload.get(
-                        "selection_steps", initial_selection_steps_snapshot()
+                    result["selection_steps"] = _terminalize_running_steps(
+                        stage.output_payload.get(
+                            "selection_steps", initial_selection_steps_snapshot()
+                        ),
+                        now,
+                        event.error_message,
                     )
                 elif event.current_stage == "DATA_PROCESSING":
-                    result["processing_steps"] = stage.output_payload.get(
-                        "processing_steps", initial_processing_steps_snapshot()
+                    result["processing_steps"] = _terminalize_running_steps(
+                        stage.output_payload.get(
+                            "processing_steps", initial_processing_steps_snapshot()
+                        ),
+                        now,
+                        event.error_message,
                     )
                 stage.output_payload = result
                 flag_modified(stage, "output_payload")

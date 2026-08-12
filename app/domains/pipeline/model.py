@@ -148,6 +148,9 @@ class FailureCode(str, enum.Enum):
     PROCESSING_RULE_INVALID = "PROCESSING_RULE_INVALID"
     PRIVACY_THRESHOLD_NOT_MET = "PRIVACY_THRESHOLD_NOT_MET"
     HUMAN_REJECTED = "HUMAN_REJECTED"
+    # 산출물 자체의 결함이 아니라 AgentCore Runtime 호출이 끊긴 경우. 앞 단계 산출물은
+    # 유효하므로 되돌리지 않고 같은 단계만 다시 시도한다(executor가 분기).
+    AGENT_RUNTIME_UNAVAILABLE = "AGENT_RUNTIME_UNAVAILABLE"
 
 
 class EventType(str, enum.Enum):
