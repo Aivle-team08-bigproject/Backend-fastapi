@@ -209,3 +209,36 @@ def test_gives_up_after_repeated_conflicts(monkeypatch):
     with pytest.raises(AgentCoreInvocationError):
         asyncio.run(client.run("requirement-analysis-agent", "", {}))
     assert fake.calls == 3
+
+
+def test_decodes_multibyte_json_split_across_chunks(monkeypatch):
+    """botocore StreamingBody는 1024바이트로 끊는다. 한글이 경계에 걸려도 깨지면 안 된다.
+
+    2026-08-12 실측: run 2/3/6/7의 실패가 424가 아니라 이 경로의
+    UnicodeDecodeError('utf-8' codec can't decode bytes in position 1022-1023)였다.
+    """
+    _arn(monkeypatch)
+    payload = json.dumps(
+        {"output": {"reason": "가" * 800, "ok": True}}, ensure_ascii=False
+    ).encode("utf-8")
+    # 1024바이트 경계에서 자른다. 한글이 3바이트라 대부분 글자 중간에서 잘린다.
+    chunks = [payload[i : i + 1024] for i in range(0, len(payload), 1024)]
+    assert len(chunks) > 1
+    fake = FakeAgentCoreClient({"contentType": "application/json", "response": chunks})
+    client = AgentCoreRuntimeClient("exec-1", client=fake, pipeline_run_id=7)
+
+    result = asyncio.run(client.run("data-selection-agent", "", {}))
+
+    assert result["ok"] is True
+    assert result["reason"] == "가" * 800
+
+
+def test_invalid_json_still_raises_contract_error(monkeypatch):
+    _arn(monkeypatch)
+    fake = FakeAgentCoreClient(
+        {"contentType": "application/json", "response": [b"{not json"]}
+    )
+    client = AgentCoreRuntimeClient("exec-1", client=fake, pipeline_run_id=7)
+
+    with pytest.raises(AgentCoreInvocationError, match="JSON response is invalid"):
+        asyncio.run(client.run("data-selection-agent", "", {}))
