@@ -1,8 +1,64 @@
 from decimal import Decimal
+import json
+import os
 from typing import Literal
+import boto3
 
 from pydantic import Field, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
+
+def _secret_string(secret_arn: str) -> str:
+    value = boto3.client(
+        "secretsmanager",
+        region_name=os.getenv("AWS_REGION", "ap-northeast-2"),
+    ).get_secret_value(SecretId=secret_arn).get("SecretString")
+    if not isinstance(value, str) or not value.strip():
+        raise RuntimeError(f"Secrets Manager secret is empty: {secret_arn}")
+    value = value.strip()
+    try:
+        parsed = json.loads(value)
+    except json.JSONDecodeError:
+        return value
+    if isinstance(parsed, dict):
+        for key in ("url", "connection_string", "value"):
+            candidate = parsed.get(key)
+            if isinstance(candidate, str) and candidate.strip():
+                return candidate.strip()
+        if len(parsed) == 1:
+            candidate = next(iter(parsed.values()))
+            if isinstance(candidate, str) and candidate.strip():
+                return candidate.strip()
+    raise RuntimeError("Secret JSON must contain url, connection_string, value, or one string value")
+
+
+def _normalize_psycopg_url(value: str) -> str:
+    if value.startswith("postgresql://"):
+        return "postgresql+psycopg://" + value.removeprefix("postgresql://")
+    if value.startswith("postgres://"):
+        return "postgresql+psycopg://" + value.removeprefix("postgres://")
+    return value
+
+
+def _load_runtime_secrets() -> None:
+    """Resolve Secret ARNs before SQLAlchemy engines are created.
+
+    ECS task definitions or EC2 bootstrap scripts provide only the ARNs; the
+    image never contains `.env` files or long-lived credentials.
+    """
+    db_arn = os.getenv("PORTFOLIO_APP_DATABASE_SECRET_ARN", "").strip()
+    if db_arn:
+        os.environ["PORTFOLIO_APP_DATABASE_URL"] = _normalize_psycopg_url(_secret_string(db_arn))
+
+    redis_arn = os.getenv("REDIS_SECRET_ARN", "").strip()
+    if redis_arn:
+        redis_url = _secret_string(redis_arn)
+        if not redis_url.startswith(("redis://", "rediss://")):
+            raise RuntimeError("Redis Secret must contain a redis:// or rediss:// URL")
+        os.environ["WORKER_STATUS_REDIS_URL"] = redis_url
+
+
+_load_runtime_secrets()
 
 
 class Settings(BaseSettings):
