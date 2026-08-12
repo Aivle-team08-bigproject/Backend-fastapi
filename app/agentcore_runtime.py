@@ -11,6 +11,7 @@ import traceback
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, HTTPException, Request
+from fastapi.responses import JSONResponse
 
 from app.agentcore_status_reporter import AgentCoreStatusReporter
 from app.domains.pipeline.agent_client import AgentRuntimeClient
@@ -56,7 +57,7 @@ async def ping() -> dict[str, str]:
 
 
 @runtime_app.post("/invocations")
-async def invoke(request: Request) -> dict:
+async def invoke(request: Request) -> JSONResponse:
     global _active_invocations
 
     body = await request.json()
@@ -69,6 +70,7 @@ async def invoke(request: Request) -> dict:
     model_name = invocation.model_name
     payload = invocation.payload
 
+    reporter = None
     _active_invocations += 1
     try:
         # AgentCore가 내부 step/log를 NeonDB에 직접 기록한다. Redis publish는 하지 않으며,
@@ -97,18 +99,24 @@ async def invoke(request: Request) -> dict:
                 if not isinstance(run_id, int) or run_id <= 0:
                     raise ValueError("artifact_context.pipeline_run_id is required")
                 output = await store_final_csv_artifact(output, run_id)
+        # Pydantic JSON mode와 JSONResponse 생성을 try 내부에서 끝낸다. 이전 구현은
+        # FastAPI의 응답 직렬화가 try 바깥에서 실행되어 Decimal/datetime 같은 값이
+        # 포함되면 제어되지 않은 HTTP 500으로 빠질 수 있었다.
+        response_payload = AgentCoreInvocationResponse(output=output).model_dump(mode="json")
+        return JSONResponse(content=response_payload)
     except Exception as exc:  # noqa: BLE001 - Runtime caller receives a controlled failure payload
         # Managed Runtime logs can omit worker stderr. Persist the traceback in
         # the pipeline event stream so the invoking API and UI retain the real
         # failure cause.
-        try:
-            await reporter._record_log(  # noqa: SLF001 - Runtime-owned reporter
-                "ERROR",
-                "AgentCore Runtime 내부 실행 예외",
-                {"error_type": type(exc).__name__, "traceback": traceback.format_exc()},
-            )
-        except Exception:  # noqa: BLE001 - never hide the original Runtime error
-            logger.exception("Unable to persist AgentCore Runtime failure")
+        if reporter is not None:
+            try:
+                await reporter._record_log(  # noqa: SLF001 - Runtime-owned reporter
+                    "ERROR",
+                    "AgentCore Runtime 내부 실행 예외",
+                    {"error_type": type(exc).__name__, "traceback": traceback.format_exc()},
+                )
+            except Exception:  # noqa: BLE001 - never hide the original Runtime error
+                logger.exception("Unable to persist AgentCore Runtime failure")
         logger.exception(
             "Agent execution failed: agent_name=%s execution_id=%s",
             agent_name,
@@ -117,7 +125,7 @@ async def invoke(request: Request) -> dict:
         # AgentCore의 HTTP 500은 호출자에게 RuntimeClientError만 남기고 실제 원인을
         # 버린다. 단계 실행 실패는 기존 AgentClient 계약의 _agent_error로 내려보내
         # FastAPI가 validation/failure_code 경로에서 DB와 화면에 정확히 기록하게 한다.
-        return AgentCoreInvocationResponse(
+        failure_payload = AgentCoreInvocationResponse(
             output={
                 "_agent_error": (
                     "AgentCore runtime execution failed: "
@@ -127,7 +135,7 @@ async def invoke(request: Request) -> dict:
                     agent_name, "SELECTION_RULE_INVALID"
                 ),
             }
-        ).model_dump()
+        ).model_dump(mode="json")
+        return JSONResponse(content=failure_payload)
     finally:
         _active_invocations -= 1
-    return AgentCoreInvocationResponse(output=output).model_dump()

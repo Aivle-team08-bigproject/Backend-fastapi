@@ -47,6 +47,24 @@ def test_agentcore_client_requires_runtime_arn(monkeypatch):
         AgentCoreRuntimeClient("exec-1", client=FakeAgentCoreClient({}))
 
 
+def test_agentcore_client_disables_sdk_level_retries(monkeypatch):
+    monkeypatch.setattr(
+        settings,
+        "agentcore_runtime_arn",
+        "arn:aws:bedrock-agentcore:ap-northeast-2:123456789012:runtime/test",
+    )
+    captured = {}
+
+    def fake_boto_client(_service, **kwargs):
+        captured.update(kwargs)
+        return FakeAgentCoreClient({})
+
+    monkeypatch.setattr("boto3.client", fake_boto_client)
+    AgentCoreRuntimeClient("exec-1")
+
+    assert captured["config"].retries["total_max_attempts"] == 1
+
+
 @pytest.mark.parametrize("agent_name", ["data-selection-agent", "data-processing-agent"])
 def test_agentcore_client_delegates_db_stages_to_runtime(monkeypatch, agent_name):
     monkeypatch.setattr(
