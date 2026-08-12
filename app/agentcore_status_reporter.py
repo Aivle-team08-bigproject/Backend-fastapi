@@ -7,7 +7,7 @@ Runtime은 Redis에 접속하지 않는다. 내부 단계 이벤트를 PipelineE
 from __future__ import annotations
 
 import asyncio
-from collections.abc import Callable
+from collections.abc import Awaitable, Callable
 
 from sqlalchemy import select
 
@@ -40,10 +40,18 @@ _STAGE_BY_AGENT = {
 class AgentCoreStatusReporter:
     """동기 agent callback을 Runtime 전용 DB 세션으로 안전하게 영속화한다."""
 
-    def __init__(self, *, execution_id: str, agent_name: str, session_factory):
+    def __init__(
+        self,
+        *,
+        execution_id: str,
+        agent_name: str,
+        session_factory,
+        event_loop: asyncio.AbstractEventLoop | None = None,
+    ):
         self.execution_id = execution_id
         self.stage_name = _STAGE_BY_AGENT[agent_name]
         self.session_factory = session_factory
+        self.event_loop = event_loop
 
     async def _context(self, db) -> tuple[PipelineRun, StageRun] | None:
         run = await db.scalar(
@@ -62,10 +70,17 @@ class AgentCoreStatusReporter:
         )
         return (run, stage) if stage is not None else None
 
-    def _run(self, operation: Callable[[], object]) -> None:
-        # AgentRuntimeClient는 모델 호출을 별도 thread에서 수행하므로 callback도 그 thread에서
-        # 온다. 해당 thread의 짧은 event loop에서 DB commit을 완료한 뒤 다음 agent step으로 간다.
-        asyncio.run(operation())
+    def _run(self, operation: Callable[[], Awaitable[None]]) -> None:
+        # AgentRuntimeClient는 모델 호출을 별도 thread에서 수행한다. RuntimeDatabase의
+        # asyncpg pool은 Runtime event loop에 귀속되므로, callback thread에서 asyncio.run()
+        # 으로 새 loop를 만들면 "Future attached to a different loop"가 난다. 반드시
+        # Runtime loop에 coroutine을 예약하고 완료를 기다린다.
+        if self.event_loop is None:
+            # 단위 테스트 등 Runtime loop 밖에서만 쓰는 fallback이다.
+            asyncio.run(operation())
+            return
+        future = asyncio.run_coroutine_threadsafe(operation(), self.event_loop)
+        future.result()
 
     async def _record_log(self, level: str, message: str, detail: dict | None) -> None:
         async with self.session_factory() as db:

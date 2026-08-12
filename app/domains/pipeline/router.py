@@ -542,13 +542,19 @@ async def stream_run_events(
                             )
                         ).all()
                     )
+                    # rollback은 ORM attribute를 expire한다. SSE frame을 먼저 순수 값으로
+                    # 만들어야 Neon 연결 정리 뒤에도 lazy-load 없이 안전하게 전송할 수 있다.
+                    database_frames = [
+                        (database_event.id, _stored_event_payload(database_event))
+                        for database_event in database_events
+                    ]
                     await stream_db.rollback()
-                    for database_event in database_events:
-                        last_sent_id = database_event.id
+                    for event_id, event_payload in database_frames:
+                        last_sent_id = event_id
                         yield _sse_message(
                             "status",
-                            _stored_event_payload(database_event),
-                            database_event.id,
+                            event_payload,
+                            event_id,
                         )
                         emitted = True
 

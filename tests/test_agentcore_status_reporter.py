@@ -1,3 +1,4 @@
+import asyncio
 from datetime import datetime, timezone
 
 from app.agentcore_status_reporter import AgentCoreStatusReporter
@@ -101,3 +102,32 @@ def test_runtime_agent_log_persists_without_redis(monkeypatch):
         "detail": {"tables": 2},
         "publish": False,
     }
+
+
+def test_runtime_callback_uses_runtime_event_loop(monkeypatch):
+    run, stage = _runtime_context()
+    captured = {}
+
+    async def fake_record_status(_db, **kwargs):
+        captured.update(kwargs)
+
+    monkeypatch.setattr("app.agentcore_status_reporter.record_status", fake_record_status)
+
+    async def invoke_from_agent_thread():
+        reporter = AgentCoreStatusReporter(
+            execution_id="exec-7",
+            agent_name="data-selection-agent",
+            session_factory=lambda: FakeSession(run, stage),
+            event_loop=asyncio.get_running_loop(),
+        )
+        await asyncio.to_thread(
+            reporter.selection_step_callback,
+            "SOURCE_COLUMN_SELECTION",
+            "RUNNING",
+            None,
+        )
+
+    asyncio.run(invoke_from_agent_thread())
+
+    assert captured["publish"] is False
+    assert captured["selection_step_status"].value == "RUNNING"

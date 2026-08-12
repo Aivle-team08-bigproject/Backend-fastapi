@@ -5,6 +5,7 @@ AgentCore InvokeAgentRuntime IAM 정책 경계에서 처리하고, stage 결과 
 기존 AgentRuntimeClient의 결과를 그대로 반환한다.
 """
 
+import asyncio
 import logging
 from contextlib import asynccontextmanager
 
@@ -70,6 +71,7 @@ async def invoke(request: Request) -> dict:
             execution_id=invocation.execution_id,
             agent_name=agent_name,
             session_factory=runtime_database.session_factory,
+            event_loop=asyncio.get_running_loop(),
         )
         client = AgentRuntimeClient(
             requirement_analysis_step_callback=reporter.requirement_analysis_step_callback,
