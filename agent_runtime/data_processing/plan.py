@@ -70,6 +70,51 @@ class ProcessingPlan(BaseModel):
         return self
 
 
+AGGREGATE_TYPES = frozenset({"aggregate", "window_aggregate"})
+
+
+def column_roles(operations: list[ProcessingOperation]) -> dict:
+    """집계 축과 지표를 계획에서 뽑아낸다.
+
+    **계획 수립(planning_agent)과 실행(processor)이 같은 기준을 쓰게 하려고 여기 둔다.**
+    두 곳에 복사해 두면 한쪽만 고쳤을 때 판단이 갈리고, 그때 원인을 찾기 어렵다.
+
+    왜 필요한가 — LLM 이 quality_checks 를 정할 때 "이 컬럼이 축인가 지표인가"를
+    앞 단계 operations 에서 스스로 추론해야 했고, 그 추론이 자주 틀렸다.
+    2026-08-11 E2E 에서 `transaction_hour_band`(집계 축)에 unique 를 걸어 가공이 실패했다.
+
+    키 이름은 `operation.parameters` 의 것을 그대로 쓴다. LLM 이 자기가 만든 operations
+    를 보고 있으므로, 새 이름을 주면 대응 관계를 다시 추론해야 한다.
+
+    여러 aggregate 가 있으면 **마지막 것**이 최종 결과의 축이다. 못 찾으면 빈 값을
+    돌려주고, 그때 LLM 은 기존처럼 추측한다 — 정정 가드가 뒤에서 받는다.
+    """
+    last_aggregate: ProcessingOperation | None = None
+    for operation in operations:
+        if operation.type in AGGREGATE_TYPES:
+            last_aggregate = operation
+    if last_aggregate is None:
+        return {"group_by": [], "metrics": []}
+
+    parameters = last_aggregate.parameters or {}
+    metrics = []
+    for metric in parameters.get("metrics") or []:
+        if not isinstance(metric, dict):
+            continue
+        target = metric.get("target")
+        if target:
+            metrics.append({"target": str(target), "function": str(metric.get("function", ""))})
+    return {
+        "group_by": [str(column) for column in parameters.get("group_by") or []],
+        "metrics": metrics,
+    }
+
+
+def group_by_axes(operations: list[ProcessingOperation]) -> set[str]:
+    """마지막 집계의 축 이름만."""
+    return set(column_roles(operations)["group_by"])
+
+
 class ProcessingPlanError(ValueError):
     """가공 계획이 실행 계약 또는 보안 정책을 위반했다."""
 

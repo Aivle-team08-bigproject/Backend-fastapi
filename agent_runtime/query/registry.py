@@ -87,6 +87,15 @@ transactions = Table(
     Column("ip_address", String),
     Column("device_frequency_band", String),
     Column("terminal_frequency_band", String),
+    # DB 의 GENERATED ALWAYS ... STORED 컬럼(V005). 원본과 파생값이 어긋날 수 없다.
+    #
+    # 🔑 이걸 등록하지 않으면 에이전트가 시간대를 얻으려고 transaction_datetime
+    #    (2,730종 · ROW_IDENTIFIERS)을 조회해서 직접 파생한다. 2026-08-11 E2E 에서
+    #    실제로 그렇게 돌았다. 규칙 A 는 인적속성 2개 이상일 때만 발동하므로,
+    #    "지역별 시간대" 같은 요청에서는 가드가 안 걸리고 원본 시각이 그대로 나간다.
+    #    파생 로직도 LLM 이 매번 새로 만들어서 구간 경계가 실행마다 달라질 수 있다.
+    Column("transaction_hour_band", Integer),
+    Column("transaction_weekday", Integer),
 )
 
 
@@ -162,6 +171,11 @@ CONTEXT_DIMENSIONS = frozenset({
     "merchant_country_code", "installment_months", "approval_channel",
     "pos_entry_mode", "auth_method",
     "device_frequency_band", "terminal_frequency_band",
+    # 3시간 8구간. transaction_datetime 을 대신하는 저위험 축이다.
+    #
+    # transaction_weekday 는 넣지 않는다 — 7종이라 조건은 맞지만, 차원에 넣으면
+    # 그룹이 7배로 쪼개져 k 통과율이 급락한다. 필터(WHERE)로만 쓴다.
+    "transaction_hour_band",
 })
 
 # 규칙 B가 그룹을 나누는 기준. 출력에 포함된 이 컬럼들의 조합마다
@@ -198,7 +212,18 @@ DATASETS = {
         ("merchant_id", "mcc_code", "merchant_region", "fee_tier_code", "merchant_status"),
         # anonymized의 상호명·사업자번호는 이미 대체값이라 식별에 쓸 수 없다.
         # 다만 분석에도 쓸모가 없어(브랜드를 유추할 수 없음) 노출하지 않는다.
-        frozenset({"merchant_name", "business_registration_number"}),
+        #
+        # 🔴 merchant_open_month 는 데이터로 막을 수 없어서 여기서 막는다.
+        #    (지역 77 × 업종 20 × 개업월)로 3,900개 중 3,874개(99.7%)가 유일 특정된다.
+        #    가맹점을 150 → 3,900 으로 늘려도 지역·업종이 함께 늘어 해소되지 않았고,
+        #    분기·연 단위 범주화도 효과가 없었다(3,762 / 3,366).
+        #    ROW_IDENTIFIERS 에 있지만 규칙 A 는 인적속성 2개 이상일 때만 발동하므로,
+        #    가맹점만 조회하면 그대로 통과한다. (2026-08-10 감사)
+        frozenset({
+            "merchant_name",
+            "business_registration_number",
+            "merchant_open_month",
+        }),
     ),
     "anon_customers": Dataset(
         "anon_customers",
@@ -221,6 +246,8 @@ DATASETS = {
             "currency_code",
             "krw_converted_amount",
             "merchant_country_code",
+            # 기본 목록에 두면 시간대 요청에서 datetime 을 집을 이유가 없어진다.
+            "transaction_hour_band",
         ),
         frozenset({"card_number_masked", "ip_address"}),
     ),
@@ -257,6 +284,10 @@ COLUMN_ALIASES = {
     "거래금액": "transaction_amount",
     "승인상태": "approval_status",
     "국가": "merchant_country_code",
+    # 이 매핑이 없으면 "시간대별" 요청에서 LLM 이 transaction_datetime 을 집는다.
+    "시간대": "transaction_hour_band",
+    "시각": "transaction_hour_band",
+    "요일": "transaction_weekday",
 }
 
 AMBIGUOUS_COLUMN_ALIASES = {
