@@ -1,8 +1,9 @@
-"""AgentCore Runtime 전용 PostgreSQL 읽기 세션.
+"""AgentCore Runtime 전용 PostgreSQL 세션.
 
 FastAPI backend의 Settings에는 JWT 등 Runtime에 불필요한 값이 포함돼 있다.
 이 모듈은 AgentCore execution role로 Secrets Manager에서 DB URL만 읽으므로
-Runtime이 backend 인증 설정이나 로컬 dotenv 파일에 의존하지 않는다.
+Runtime이 backend 인증 설정이나 로컬 dotenv 파일에 의존하지 않는다. 데이터셋 조회 외에
+실행 중 step/log 상태를 service pipeline 테이블에 기록한다.
 """
 
 from __future__ import annotations

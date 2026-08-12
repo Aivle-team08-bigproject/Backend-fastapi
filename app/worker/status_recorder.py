@@ -1,9 +1,11 @@
-"""작업 상태 기록 — Worker가 DB에 직접 쓰고, 그 다음 프론트 화면 갱신용으로 발행한다.
+"""작업 상태 기록 — 상태 정본은 PostgreSQL이고 화면 갱신은 선택적이다.
 
-쓰기 주체는 Worker다. Redis pub/sub은 영속화 경로가 아니라 화면 갱신 전용 통로다:
+Worker는 DB commit 뒤 Redis Pub/Sub으로 즉시 화면을 갱신한다. AgentCore Runtime은 같은
+영속화 함수를 Redis 없이 호출하고, FastAPI SSE가 DB event polling으로 전달한다:
 
     Worker --(1) DB write--> PostgreSQL
            --(2) publish---> Redis --> FastAPI SSE --> 프론트 화면
+    AgentCore Runtime -- DB write --> PostgreSQL --> FastAPI SSE polling
 
 (2)가 실패해도 상태는 이미 (1)에서 남아 있으므로 유실되지 않는다. 반대로 (1)이 실패하면
 발행도 하지 않는다 — 화면에 DB에 없는 상태가 보이는 상황을 안 만든다.
@@ -34,13 +36,23 @@ from app.domains.pipeline.model import (
 )
 from app.worker.status_event import PipelineStatusEvent
 from app.domains.pipeline.failure import public_failure, public_step_metadata
-from app.worker.status_publisher import publish_to_screen
 from app.domains.pipeline.analysis_steps import initial_analysis_steps_snapshot
 from app.domains.pipeline.selection_steps import initial_selection_steps_snapshot
 from app.domains.pipeline.processing_steps import initial_processing_steps_snapshot
 
 
 logger = logging.getLogger(__name__)
+
+
+def _publish_to_screen(event: PipelineStatusEvent) -> None:
+    """Redis는 API/Worker 배포본에서만 선택적으로 사용한다.
+
+    AgentCore Runtime 이미지는 PostgreSQL을 상태 정본으로 사용하며 Redis 클라이언트를
+    포함하지 않는다. Runtime이 상태를 쓴 경우 FastAPI SSE의 DB event polling이 전달한다.
+    """
+    from app.worker.status_publisher import publish_to_screen
+
+    publish_to_screen(event)
 
 
 async def persist_status_event(db: AsyncSession, event: PipelineStatusEvent) -> bool:
@@ -317,6 +329,7 @@ async def record_agent_log(
     current_stage: str | None = None,
     stage_run_id: int | None = None,
     detail: dict | None = None,
+    publish: bool = True,
 ) -> PipelineStatusEvent | None:
     """에이전트 내부 기술 로그를 남긴다 — 상태 전이가 아니라 관찰 기록이다.
 
@@ -362,7 +375,8 @@ async def record_agent_log(
         occurred_at=now,
     )
     await db.commit()
-    publish_to_screen(event)
+    if publish:
+        _publish_to_screen(event)
     return event
 
 
@@ -388,6 +402,7 @@ async def record_status(
     processing_step_status=None,
     attempt_no: int | None = None,
     step_metadata: dict | None = None,
+    publish: bool = True,
 ) -> PipelineStatusEvent | None:
     """상태를 DB에 쓰고, 성공하면 화면 갱신용으로 발행한다.
 
@@ -425,5 +440,6 @@ async def record_status(
     )
     if not await persist_status_event(db, event):
         return None
-    publish_to_screen(event)
+    if publish:
+        _publish_to_screen(event)
     return event

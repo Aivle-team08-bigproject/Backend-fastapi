@@ -523,21 +523,57 @@ async def stream_run_events(
                 yield _sse_message("snapshot", snapshot, boundary_id or None)
 
                 last_sent_id = boundary_id
+                idle_polls = 0
                 while True:
-                    message = await pubsub.get_message(timeout=15)
-                    if message is None:
-                        yield ": heartbeat\n\n"
-                        continue
-                    event = PipelineStatusEvent.model_validate_json(message["data"])
-                    if event.run_id != run_id:
-                        continue
-                    if event.event_id is not None and event.event_id <= last_sent_id:
-                        continue
-                    if event.event_id is not None:
-                        last_sent_id = event.event_id
-                    yield _sse_message(
-                        "status", event.model_dump_json(), event.event_id
+                    # Worker 이벤트는 Redis Pub/Sub으로 즉시 수신한다. AgentCore Runtime은
+                    # Redis 권한 없이 PostgreSQL PipelineEvent만 기록하므로 1초 polling으로
+                    # 같은 SSE 계약에 합류한다. DB id를 cursor로 써 양쪽 경로의 중복도 막는다.
+                    message = await pubsub.get_message(timeout=1)
+                    emitted = False
+                    database_events = list(
+                        (
+                            await stream_db.scalars(
+                                select(PipelineEvent)
+                                .where(
+                                    PipelineEvent.pipeline_run_id == run_id,
+                                    PipelineEvent.id > last_sent_id,
+                                )
+                                .order_by(PipelineEvent.id)
+                            )
+                        ).all()
                     )
+                    await stream_db.rollback()
+                    for database_event in database_events:
+                        last_sent_id = database_event.id
+                        yield _sse_message(
+                            "status",
+                            _stored_event_payload(database_event),
+                            database_event.id,
+                        )
+                        emitted = True
+
+                    # DB cursor를 먼저 전진시켜 Runtime이 기록한 앞선 이벤트를 건너뛰지
+                    # 않는다. Worker Pub/Sub은 commit 뒤에만 발행되므로 여기서는 즉시성
+                    # 보조 경로이며, DB event가 이미 있으면 중복 없이 무시된다.
+                    if message is not None:
+                        event = PipelineStatusEvent.model_validate_json(message["data"])
+                        if event.run_id == run_id and (
+                            event.event_id is None or event.event_id > last_sent_id
+                        ):
+                            if event.event_id is not None:
+                                last_sent_id = event.event_id
+                            yield _sse_message(
+                                "status", event.model_dump_json(), event.event_id
+                            )
+                            emitted = True
+
+                    if emitted:
+                        idle_polls = 0
+                    else:
+                        idle_polls += 1
+                        if idle_polls >= 15:
+                            idle_polls = 0
+                            yield ": heartbeat\n\n"
             except asyncio.CancelledError:
                 raise
             finally:
