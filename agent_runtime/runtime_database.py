@@ -10,7 +10,7 @@ from __future__ import annotations
 import asyncio
 import json
 import os
-from urllib.parse import quote
+from urllib.parse import parse_qsl, quote, urlencode, urlsplit, urlunsplit
 
 import boto3
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
@@ -24,9 +24,19 @@ class RuntimeDatabase:
         """Use the asyncpg dialect bundled in the AgentCore image."""
         value = value.strip()
         if value.startswith("postgresql://"):
-            return "postgresql+asyncpg://" + value.removeprefix("postgresql://")
+            value = "postgresql+asyncpg://" + value.removeprefix("postgresql://")
         if value.startswith("postgres://"):
-            return "postgresql+asyncpg://" + value.removeprefix("postgres://")
+            value = "postgresql+asyncpg://" + value.removeprefix("postgres://")
+        if value.startswith("postgresql+asyncpg://"):
+            parsed = urlsplit(value)
+            # sslmode/channel_binding are libpq options and asyncpg rejects
+            # them as unexpected keyword arguments. TLS remains enabled by
+            # the Neon endpoint and asyncpg's default SSL negotiation.
+            query = urlencode(
+                [pair for pair in parse_qsl(parsed.query, keep_blank_values=True)
+                 if pair[0] not in {"sslmode", "channel_binding"}]
+            )
+            return urlunsplit(parsed._replace(query=query))
         return value
 
     def __init__(self) -> None:
