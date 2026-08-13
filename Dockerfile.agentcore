@@ -2,6 +2,11 @@ FROM python:3.12-slim
 
 WORKDIR /app
 
+# AgentCore의 control-plane update가 환경 변수를 보고하더라도 컨테이너에
+# 주입하지 않는 경우가 있어, 로컬 검증 Runtime의 DB secret ARN을 기본값으로 둔다.
+# ARN은 비밀값이 아니며 실제 연결 문자열은 실행 역할로 Secrets Manager에서 읽는다.
+ENV AGENT_DATABASE_SECRET_ARN=arn:aws:secretsmanager:ap-northeast-2:456375341833:secret:bigproject/local-dev/agentcore/neon-database-url-fqDmgf
+
 COPY agent_runtime/requirements.txt ./requirements.txt
 RUN pip install --no-cache-dir -r requirements.txt
 
