@@ -933,9 +933,7 @@ async def submit_stage_review(
             execution_id=execution_id,
         )
 
-    if reviewed_stage == StageName.REQUIREMENT_ANALYSIS and (
-        payload.delivery_channel is not None or payload.output_formats is not None
-    ):
+    if reviewed_stage == StageName.REQUIREMENT_ANALYSIS:
         if stage_run is None:
             raise DomainException(
                 status.HTTP_409_CONFLICT,
@@ -949,18 +947,15 @@ async def submit_stage_review(
                 if payload.delivery_channel is not None
                 else {}
             ),
-            **(
-                {"output_formats": payload.output_formats}
-                if payload.output_formats is not None
-                else {}
-            ),
+            # 전달 기능은 현재 CSV 단일 산출물만 제공한다. 이전 클라이언트가
+            # output_formats를 보내더라도 요청값을 신뢰하지 않는다.
+            "output_formats": ["csv"],
         }
         data_request = await db.get(DataRequest, run.data_request_id)
         if data_request is not None:
             if payload.delivery_channel is not None:
                 data_request.delivery_channels = [payload.delivery_channel]
-            if payload.output_formats is not None:
-                data_request.output_formats = payload.output_formats
+            data_request.output_formats = ["csv"]
             data_request.updated_at = now
 
     if reviewed_stage == STAGE_ORDER[-1]:
