@@ -221,7 +221,7 @@ class StageReviewRequest(BaseModel):
     failure_code: FailureCode | None = None
     # 요구사항 분석 단계 승인 시에만 사용. AI가 판단한 전달 설정을 실무자가 덮어쓴다.
     delivery_channel: Literal["email", "api"] | None = None
-    output_formats: list[Literal["csv", "visualization", "report"]] | None = Field(
+    output_formats: list[Literal["csv"]] | None = Field(
         default=None, min_length=1
     )
 
