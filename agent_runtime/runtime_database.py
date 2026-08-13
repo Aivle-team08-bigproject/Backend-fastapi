@@ -64,7 +64,10 @@ class RuntimeDatabase:
             try:
                 parsed = json.loads(value)
             except json.JSONDecodeError:
-                return value
+                # Plain-string Secrets Manager entries are the deployed
+                # format.  Normalize them too; otherwise a
+                # postgresql+psycopg URL selects unavailable psycopg2.
+                return self._normalize_database_url(value)
             if not isinstance(parsed, dict):
                 raise RuntimeError("database secret JSON must be an object")
             connection_string = parsed.get("connection_string") or parsed.get("url")
