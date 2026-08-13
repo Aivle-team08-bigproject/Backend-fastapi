@@ -11,6 +11,7 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+import ssl
 from urllib.parse import parse_qsl, quote, urlencode, urlsplit, urlunsplit
 
 import boto3
@@ -92,6 +93,10 @@ class RuntimeDatabase:
         database_url = await asyncio.to_thread(read_secret)
         self._engine = create_async_engine(
             database_url,
+            # asyncpg does not honor libpq's sslmode query option.  Neon
+            # rejects a plaintext PostgreSQL startup, so TLS must be
+            # explicitly required after _normalize_database_url removes it.
+            connect_args={"ssl": ssl.create_default_context()},
             echo=False,
             future=True,
             pool_pre_ping=True,
