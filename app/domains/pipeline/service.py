@@ -11,6 +11,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.common.errors import DomainException, conflict, forbidden, not_found, unauthorized
+from app.common.pii.guard import guard_text
 from app.common.time_utils import utcnow
 from app.core.config import settings
 from app.domains.pipeline.model import (
@@ -184,8 +185,22 @@ HARDCODED_VIEW_PAYLOADS = {
 
 
 async def create_data_request(
-    db: AsyncSession, payload: CreateDataRequestRequest, owner: Employee
+    db: AsyncSession,
+    payload: CreateDataRequestRequest,
+    owner: Employee,
+    actor_ip: str | None = None,
 ) -> CreateDataRequestResponse:
+    # 무엇을 만들기 전에 검사한다. HITL 게이트에서 판단하면 이미 LLM 으로 나간 뒤다.
+    await guard_text(
+        payload.raw_requirement,
+        source_table="data_requests",
+        source_column="raw_requirement",
+        source_endpoint="POST /api/v1/data-requests",
+        confirmed=payload.confirm_pii,
+        actor_employee_code=getattr(owner, "employee_code", None),
+        actor_ip=actor_ip,
+    )
+
     now = utcnow()
     client_payload = payload.client
     company_name = client_payload.company_name if client_payload is not None else payload.requester_name
@@ -814,6 +829,7 @@ async def submit_stage_review(
     run_id: int,
     reviewer: Employee,
     payload: StageReviewRequest,
+    actor_ip: str | None = None,
 ) -> StageReviewResponse:
     """단계 산출물에 대한 사람 검토(HITL)를 반영한다.
 
@@ -821,6 +837,23 @@ async def submit_stage_review(
     COMPLETED로 마감한다. 반려면 실패 사유에 따라 되돌아갈 단계를 정해서 그 단계부터
     재시도할 StageRun 행을 새 attempt로 만든다.
     """
+    # 검토 의견도 그대로 저장돼 다음 단계 프롬프트에 실린다. 요구사항과 같은 기준으로 검사한다.
+    #
+    # source 를 reviews 가 아니라 pipeline_runs 로 잡는 이유: 값이 저장되는 곳은
+    # reviews.feedback 이지만 그 행은 이 검사를 통과한 뒤에 만들어진다. reviews.id 를
+    # 쓰면 항상 NULL 이 되어 (source_table, source_id) 인덱스가 무의미해진다. 실제로
+    # 조회 가능한 조합인 run_id 를 남기고, 어느 필드였는지는 source_column 에 적는다.
+    await guard_text(
+        payload.feedback,
+        source_table="pipeline_runs",
+        source_column="reviews.feedback",
+        source_endpoint="POST /api/v1/runs/{run_id}/review",
+        confirmed=payload.confirm_pii,
+        source_id=run_id,
+        actor_employee_code=getattr(reviewer, "employee_code", None),
+        actor_ip=actor_ip,
+    )
+
     run = await db.get(PipelineRun, run_id)
     if run is None:
         raise not_found("PIPELINE_RUN_NOT_FOUND", "파이프라인 실행을 찾을 수 없습니다.")

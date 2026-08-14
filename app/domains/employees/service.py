@@ -9,6 +9,7 @@ from sqlalchemy.orm import selectinload
 from app.core import security
 from app.common.time_utils import utcnow
 from app.common.errors import bad_request, conflict, not_found
+from app.common.pii.guard import guard_text
 from app.domains.auth.model.session_model import LoginSession
 from app.domains.auth.schema.auth_schema import SignupRequest
 from app.domains.employees.model import (
@@ -331,8 +332,25 @@ async def approve_signup(
 
 
 async def reject_signup(
-    db: AsyncSession, employee_code: str, reason: str, operator_code: str
+    db: AsyncSession,
+    employee_code: str,
+    reason: str,
+    operator_code: str,
+    confirm_pii: bool = False,
+    actor_ip: str | None = None,
 ) -> Employee:
+    # 반려 사유는 employees 행에 그대로 남고 신청자에게 노출된다. 담당자가 신청서에서
+    # 본 개인정보를 사유에 옮겨 적는 경로를 여기서 끊는다.
+    await guard_text(
+        reason,
+        source_table="employees",
+        source_column="rejected_reason",
+        source_endpoint="POST /api/admin/employees/signup-requests/{employee_code}/reject",
+        confirmed=confirm_pii,
+        actor_employee_code=operator_code,
+        actor_ip=actor_ip,
+    )
+
     employee = await _find_employee(db, employee_code)
     if employee.status != EmployeeStatus.PENDING_APPROVAL:
         raise bad_request("SIGNUP_NOT_PENDING", "승인 대기 중인 가입 신청이 아닙니다.")

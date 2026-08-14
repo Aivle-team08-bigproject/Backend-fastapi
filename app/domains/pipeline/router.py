@@ -1,13 +1,14 @@
 import asyncio
 import json
 
-from fastapi import APIRouter, Depends, Header, status
+from fastapi import APIRouter, Depends, Header, Request, status
 from fastapi.responses import FileResponse, RedirectResponse, StreamingResponse
 from redis.asyncio import Redis
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.common.errors import not_found
+from app.common.pii.guard import client_ip
 from app.common.security_deps import CurrentAuth, get_current_auth
 from app.core.config import settings
 from app.db.session import AsyncSessionLocal, get_db
@@ -78,10 +79,11 @@ AGENT_LOG_REPLAY_LIMIT = 200
 )
 async def create_request(
     payload: CreateDataRequestRequest,
+    request: Request,
     auth: CurrentAuth = Depends(get_current_auth),
     db: AsyncSession = Depends(get_db),
 ) -> CreateDataRequestResponse:
-    return await create_data_request(db, payload, auth.employee)
+    return await create_data_request(db, payload, auth.employee, actor_ip=client_ip(request))
 
 
 @router.get("/runs/{run_id}", response_model=PipelineRunResponse)
@@ -275,11 +277,12 @@ async def get_run_processing_result(
 async def review_run_stage(
     run_id: int,
     payload: StageReviewRequest,
+    request: Request,
     auth: CurrentAuth = Depends(get_current_auth),
     db: AsyncSession = Depends(get_db),
 ) -> StageReviewResponse:
     """단계 산출물 검토(HITL). 승인 시 다음 단계로, 반려 시 해당 단계로 되돌린다."""
-    return await submit_stage_review(db, run_id, auth.employee, payload)
+    return await submit_stage_review(db, run_id, auth.employee, payload, actor_ip=client_ip(request))
 
 
 @router.get("/runs/{run_id}/result-download-url")
