@@ -49,6 +49,8 @@ class ApproveSignupRequest(BaseModel):
 
 class RejectSignupRequest(BaseModel):
     reason: str = Field(..., min_length=1, max_length=500)
+    # 반려 사유에 개인정보가 섞였을 때의 확인 플래그. 파이프라인 쪽과 같은 규약이다.
+    confirm_pii: bool = False
 
 
 class DepartmentResponse(BaseModel):
