@@ -43,6 +43,9 @@ class CreateDataRequestRequest(BaseModel):
     client: ClientCreateRequest | None = None
     contract: ContractCreateRequest | None = None
     data_sensitivity: Literal["NONE", "POSSIBLE", "UNKNOWN"] = "UNKNOWN"
+    # DLP 가 FLAG(전화번호·이메일 등)를 띄웠을 때 사용자가 확인하고 재제출했는지.
+    # BLOCK(주민등록번호 등)은 이 값과 무관하게 막힌다.
+    confirm_pii: bool = False
 
 
 class CreateDataRequestResponse(BaseModel):
@@ -216,6 +219,8 @@ class StageReviewRequest(BaseModel):
     # FAILED 실행을 rollback_to_stage부터 다시 큐에 넣는다.
     retry: bool = False
     feedback: str | None = Field(default=None, max_length=4000)
+    # 검토 의견에 개인정보가 섞였을 때의 확인 플래그. CreateDataRequestRequest 와 같다.
+    confirm_pii: bool = False
     # 선택값이 있으면 실패 정책표로 롤백 단계를 정한다. 없으면 현재 HITL 게이트 기준으로
     # 요구사항→요구사항 분석, 샘플→선별, 최종 산출물→가공 단계부터 다시 실행한다.
     failure_code: FailureCode | None = None

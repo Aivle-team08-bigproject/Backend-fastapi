@@ -1,9 +1,10 @@
 import uuid
 
-from fastapi import APIRouter, Depends, status
+from fastapi import APIRouter, Depends, Request, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.common.masking import mask_phone
+from app.common.pii.guard import client_ip
 from app.common.security_deps import CurrentAuth, require_any_permission, require_permission
 from app.db.session import get_db
 from app.common.time_utils import utcnow
@@ -139,11 +140,17 @@ async def approve_signup_request(
 async def reject_signup_request(
     employee_code: str,
     payload: RejectSignupRequest,
+    request: Request,
     auth: CurrentAuth = Depends(require_permission(PermissionCode.EMPLOYEE_UPDATE)),
     db: AsyncSession = Depends(get_db),
 ) -> EmployeeResponse:
     employee = await employee_service.reject_signup(
-        db, employee_code, payload.reason, auth.employee.employee_code
+        db,
+        employee_code,
+        payload.reason,
+        auth.employee.employee_code,
+        confirm_pii=payload.confirm_pii,
+        actor_ip=client_ip(request),
     )
     return _to_response(employee)
 
