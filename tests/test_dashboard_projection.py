@@ -232,7 +232,9 @@ def test_completed_work_is_visible_but_excluded_from_priority_aggregates(
     completed = dashboard_factory.create(
         pipeline_status="COMPLETED",
         current_stage="COMPLETED",
-        stage_code="COMPLETED",
+        # Production runs can finish with the last real stage still selected;
+        # the terminal PipelineRun status must classify the task as completed.
+        stage_code="DATA_PROCESSING",
         stage_status="COMPLETED",
         review_type="FINAL",
         review_decision="APPROVED",

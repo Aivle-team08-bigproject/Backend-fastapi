@@ -110,6 +110,25 @@ async def login(
     )
 
 
+@router.post("/review-auto-login", response_model=LoginResponse)
+async def review_auto_login(
+    request: Request,
+    response: Response,
+    db: AsyncSession = Depends(get_db),
+) -> LoginResponse:
+    """심사 기간에만 runtime Secret 설정으로 열리는 자동 로그인 경로."""
+    ip_address = request.client.host if request.client else None
+    user_agent = request.headers.get("user-agent")
+    result = await auth_service.review_auto_login(db, ip_address, user_agent)
+    _set_refresh_cookie(response, result.raw_refresh_token, result.session.expires_at)
+    return LoginResponse(
+        access_token=result.access_token,
+        expires_in_seconds=_expires_in_seconds(result.access_token_expires_at),
+        expires_at=result.access_token_expires_at,
+        employee=_to_summary(result.employee),
+    )
+
+
 @router.post("/refresh", response_model=TokenResponse)
 async def refresh(
     request: Request,

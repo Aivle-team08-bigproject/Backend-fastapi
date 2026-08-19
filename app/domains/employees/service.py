@@ -445,6 +445,12 @@ async def change_status(
 
     previous_status = employee.status.value
     employee.status = status
+    # 비활성/잠금 계정을 다시 활성화하면 로그인 차단 상태도 함께 해제해야 한다.
+    # status만 ACTIVE로 바꾸면 locked_until이 남아 auth_service.login에서
+    # ACCOUNT_LOCKED로 계속 거부되는 문제가 발생한다.
+    if status == EmployeeStatus.ACTIVE:
+        employee.locked_until = None
+        employee.failed_login_count = 0
     employee.auth_version += 1
     employee.updated_at = utcnow()
 

@@ -233,6 +233,37 @@ def test_column_design_contract_accepts_comment_based_filter_and_interpretation(
     _validate_contract(selection, SCHEMA_METADATA)
 
 
+def test_column_design_contract_normalizes_singleton_in_filter_value():
+    selection = _selection()
+    selection["selection_query"]["filters"] = {
+        "krw_converted_amount": {
+            "operator": "in",
+            "value": 10000,
+            "reason": "특정 금액의 결제를 요청함",
+            "evidence": "원화 환산 금액이라는 컬럼 COMMENT",
+        }
+    }
+
+    _validate_contract(selection, SCHEMA_METADATA)
+
+    assert selection["selection_query"]["filters"]["krw_converted_amount"]["value"] == [10000]
+
+
+def test_column_design_contract_does_not_guess_between_filter_boundaries():
+    selection = _selection()
+    selection["selection_query"]["filters"] = {
+        "krw_converted_amount": {
+            "operator": "between",
+            "value": 10000,
+            "reason": "금액 범위를 요청함",
+            "evidence": "원화 환산 금액이라는 컬럼 COMMENT",
+        }
+    }
+
+    with pytest.raises(ValueError, match="between 필터 value는 배열"):
+        _validate_contract(selection, SCHEMA_METADATA)
+
+
 def test_column_design_contract_rejects_filter_without_comment_evidence():
     selection = _selection()
     selection["selection_query"]["filters"] = {
@@ -522,6 +553,100 @@ def test_derived_comparison_symbol_is_normalized_to_executor_contract():
     assert spec["parameters"]["operator"] == "gte"
 
 
+def test_derived_result_type_is_repaired_for_deterministic_operations():
+    selection = _selection()
+    column = selection["derived_columns"][0]
+    column["data_type"] = "string"
+    column["derivation_spec"] = {
+        "spec_version": "1.0",
+        "operation": "compare",
+        "parameters": {
+            "operator": "eq",
+            "left": {"column": "krw_converted_amount"},
+            "right": {"literal": 10000},
+        },
+        "evidence": "금액 비교 결과는 참/거짓으로 표현됨",
+    }
+
+    _validate_contract(selection, SCHEMA_METADATA)
+
+    assert column["data_type"] == "boolean"
+
+
+def test_bucketize_normalizer_sorts_bins_and_rebuilds_mismatched_labels():
+    selection = _selection()
+    column = selection["derived_columns"][0]
+    column.update(
+        {
+            "name": "결제금액구간",
+            "data_type": "string",
+            "derivation": "결제 금액을 구간으로 분류",
+            "derivation_spec": {
+                "spec_version": "1.0",
+                "operation": "bucketize",
+                "parameters": {
+                    "source": {"column": "krw_converted_amount"},
+                    "bins": [100000, 0, 10000, 10000],
+                    "labels": ["소액"],
+                },
+                "evidence": "원화 환산 금액 COMMENT와 고객 요청",
+            },
+        }
+    )
+
+    _validate_contract(selection, SCHEMA_METADATA)
+
+    assert column["derivation_spec"]["parameters"] == {
+        "source": {"column": "krw_converted_amount"},
+        "bins": [0, 10000, 100000],
+        "labels": ["구간 1 (0~10000)", "구간 2 (10000~100000)"],
+    }
+
+
+def test_bucketize_with_non_numeric_bounds_is_excluded_when_other_derivation_remains():
+    selection = _selection()
+    selection["derived_columns"].append(
+        {
+            "name": "잘못된결제구간",
+            "data_type": "string",
+            "source_columns": ["krw_converted_amount"],
+            "derivation": "잘못된 경계로 금액 구간 분류",
+            "derivation_spec": {
+                "spec_version": "1.0",
+                "operation": "bucketize",
+                "parameters": {
+                    "source": {"column": "krw_converted_amount"},
+                    "bins": [0, "알수없음", 10000],
+                    "labels": ["소액", "고액"],
+                },
+                "evidence": "원화 환산 금액 COMMENT",
+            },
+            "description": "복구할 수 없는 잘못된 구간",
+        }
+    )
+
+    _validate_contract(selection, SCHEMA_METADATA)
+
+    assert [column["name"] for column in selection["derived_columns"]] == ["고객결제금액"]
+    assert selection["interpretations"][-1]["term"] == "잘못된결제구간"
+
+
+def test_derived_description_is_repaired_from_derivation_when_missing():
+    column = {"name": "결제구간", "derivation": "금액을 구간별로 분류"}
+
+    selection_agent._normalize_derived_description(column)
+
+    assert column["description"] == "금액을 구간별로 분류"
+
+
+def test_date_part_result_type_is_repaired_to_integer():
+    column = {"data_type": "string", "derivation_spec": {"operation": "date_part"}}
+
+    selection_agent._normalize_derived_result_type(column)
+
+    assert column["data_type"] == "integer"
+
+
 def test_deepseek_date_part_aliases_are_normalized_to_single_contract():
     column = {
         "name": "transaction_month",
@@ -733,6 +858,46 @@ def test_selection_failure_keeps_safe_model_response_diagnostics(monkeypatch):
         "finish_reason": "max_tokens",
     }
     assert events[-1][1] == "FAILED"
+
+
+def test_split_selection_retry_does_not_fail_before_third_attempt(monkeypatch):
+    class EmptyResult:
+        stop_reason = "max_tokens"
+
+        def __str__(self):
+            return "응답에 JSON이 없습니다"
+
+    monkeypatch.setattr(selection_agent, "build_agent", lambda _prompt: lambda _message: EmptyResult())
+
+    second_attempt_events = []
+    second = selection_agent._run_prompt_step(
+        system_prompt="test",
+        request_payload={},
+        validate=lambda _value: None,
+        step_label="원본 컬럼 선별",
+        step_code="SOURCE_COLUMN_SELECTION",
+        on_step=lambda code, status, metadata: second_attempt_events.append((code, status, metadata)),
+        max_attempts=1,
+        attempt_offset=1,
+        raise_on_exhaustion=False,
+    )
+    assert "_step_retry" in second
+    assert second_attempt_events == []
+
+    third_attempt_events = []
+    third = selection_agent._run_prompt_step(
+        system_prompt="test",
+        request_payload={},
+        validate=lambda _value: None,
+        step_label="원본 컬럼 선별",
+        step_code="SOURCE_COLUMN_SELECTION",
+        on_step=lambda code, status, metadata: third_attempt_events.append((code, status, metadata)),
+        max_attempts=1,
+        attempt_offset=2,
+        raise_on_exhaustion=False,
+    )
+    assert "_step_retry" in third
+    assert third_attempt_events[-1][1] == "FAILED"
 
 
 def test_validation_errors_are_human_readable_but_keep_technical_text():

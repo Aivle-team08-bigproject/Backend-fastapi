@@ -235,3 +235,15 @@ class StageReviewResponse(BaseModel):
     next_stage: str | None
     rollback_to_stage: str | None
     execution_id: str | None
+
+
+class AdminPipelineRecoveryRequest(BaseModel):
+    mode: Literal["RESTART", "REQUIREMENT_ANALYSIS"]
+
+
+class AdminPipelineRecoveryResponse(BaseModel):
+    run_id: int
+    mode: Literal["RESTART", "REQUIREMENT_ANALYSIS"]
+    run_status: PipelineRunStatus
+    next_stage: str
+    execution_id: str | None

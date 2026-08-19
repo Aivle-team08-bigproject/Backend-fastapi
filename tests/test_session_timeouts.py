@@ -9,6 +9,11 @@ import time
 from tests.test_auth_flow import _login_as_admin
 
 
+def test_default_absolute_session_lifetime_is_four_hours(settings):
+    assert settings.session_normal_ttl_minutes == 240
+    assert settings.session_remember_me_ttl_hours == 4
+
+
 def test_idle_timeout_logs_out_after_inactivity(client, settings, monkeypatch):
     monkeypatch.setattr(settings, "session_idle_timeout_minutes", 1 / 60)  # 1초
 

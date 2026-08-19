@@ -25,6 +25,7 @@ from app.domains.pipeline.model import (
     StageRun,
     StageRunStatus,
 )
+from scripts.demo_requirements import build_demo_requirement
 
 
 BASE_TASKS = [
@@ -441,7 +442,7 @@ async def upsert_dashboard_data() -> int:
                     requester_name=company,
                     title=f"{company} 데이터 가공 요청의 건",
                     business_purpose=data_type,
-                    raw_requirement=detail,
+                    raw_requirement=build_demo_requirement(f"{company} 데이터 가공 요청", data_type),
                     output_formats=["CSV"],
                     delivery_channels=["API"],
                     analysis_condition=metadata,
@@ -455,7 +456,7 @@ async def upsert_dashboard_data() -> int:
                 request.client_id = client.id
                 request.title = f"{company} 데이터 가공 요청의 건"
                 request.business_purpose = data_type
-                request.raw_requirement = detail
+                request.raw_requirement = build_demo_requirement(f"{company} 데이터 가공 요청", data_type)
                 request.analysis_condition = metadata
                 request.status = db_status
                 request.created_at = created_at

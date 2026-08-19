@@ -206,6 +206,21 @@ def require_permission(code: PermissionCode):
     return _dependency
 
 
+def require_admin_or_permission(code: PermissionCode):
+    """ADMIN 역할은 기본 관리자 권한으로 간주하고, 그 외에는 개별 권한을 검사한다."""
+    async def _dependency(
+        auth: CurrentAuth = Depends(get_current_auth),
+    ) -> CurrentAuth:
+        if auth.employee.role_code != EmployeeRole.ADMIN.value and code not in auth.permissions:
+            raise forbidden(
+                "FORBIDDEN",
+                "해당 기능을 실행할 권한이 없습니다.",
+            )
+        return auth
+
+    return _dependency
+
+
 def require_any_permission(*codes: PermissionCode):
     async def _dependency(
         auth: CurrentAuth = Depends(get_current_auth),

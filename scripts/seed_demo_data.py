@@ -34,6 +34,7 @@ from app.domains.pipeline.model import (
     StageRun,
     StageRunStatus,
 )
+from scripts.demo_requirements import build_demo_requirement
 
 
 REQUESTS = [
@@ -42,7 +43,7 @@ REQUESTS = [
         "client": "정부 기관",
         "title": "특정 지역 인구 밀집도·시간대 분석 데이터",
         "purpose": "지역별 인구 밀집도·시간대 분석 (정책/행정 목적 추정)",
-        "raw": "특정 지역의 인구 정보 데이터 (밀집 지역, 밀집 시간 등)",
+        "raw": build_demo_requirement("특정 지역 인구 밀집도·시간대 분석 데이터", "지역별 인구 밀집도·시간대 분석"),
         "source": "resident_address·merchant_address 지오코딩 + transaction_datetime 기반 지역·시간대별 결제 밀도 파생",
         "questions": ["대상 지역 범위(전국/특정 시군구)", "밀집 기준(연령/시간대 세분화 여부)", "재배포 조건"],
     },
@@ -51,7 +52,7 @@ REQUESTS = [
         "client": "부동산 관련 업체",
         "title": "지역별 가맹점 매출 기반 부동산 시세 분석 데이터",
         "purpose": "부동산 시세 분석/추정",
-        "raw": "유동 인구 혹은 지역별 가맹점 매출을 통한 주변 부동산 시세 분석용 데이터",
+        "raw": build_demo_requirement("지역별 가맹점 매출 기반 부동산 시세 분석 데이터", "부동산 시세 분석 및 추정"),
         "source": "merchant_id 기준 transaction_amount 집계 + merchant_address 지오코딩으로 지역별 매출·유동인구 추정치 파생",
         "questions": ["분석 대상 지역", "집계 단위(동/상권 단위)", "시세 데이터 자체 보유 여부(연계 필요 시 외부 데이터 추가 확인)"],
     },
@@ -60,7 +61,7 @@ REQUESTS = [
         "client": "학원 (마케팅 목적)",
         "title": "주변 서점 이용률·이용자 연령대 마케팅 분석 데이터",
         "purpose": "학원 마케팅 전략 수립",
-        "raw": "주변 서점 이용률, 이용자 연령대 분석 등 마케팅용 데이터",
+        "raw": build_demo_requirement("주변 서점 이용률·이용자 연령대 마케팅 분석 데이터", "학원 마케팅 전략 수립"),
         "source": "mcc_code(서점/학원 업종) 필터링 + birth_date 기반 연령 계산으로 이용 고객 연령 분포 파생",
         "questions": ["분석 대상 상권 범위", "서점/학원 외 추가 업종 포함 여부"],
     },
@@ -69,7 +70,7 @@ REQUESTS = [
         "client": "언론사 (경제 담당 기자)",
         "title": "경제 기획 기사용 소비 패턴 분석 데이터",
         "purpose": "경제 기획 기사 취재",
-        "raw": "기획 기사 작성을 위한 경제 관련 데이터",
+        "raw": build_demo_requirement("경제 기획 기사용 소비 패턴 분석 데이터", "경제 기획 기사 취재"),
         "source": "annual_income_krw, occupation, resident_address 등을 조합한 소득/직업/지역별 소비 패턴 파생 (개인식별 불가 수준 비식별화 필수)",
         "questions": ["기사 주제(구체적 소재)", "비식별화 수준", "기사 게재 시 데이터 출처 표기 방식"],
     },
@@ -78,7 +79,7 @@ REQUESTS = [
         "client": "연구/모델링 목적 (신용카드 부정사용 방지)",
         "title": "신용카드 이상거래 탐지 모델 연구 데이터",
         "purpose": "AI 모델 학습 — 이상거래 탐지",
-        "raw": "신용카드 부정 사용 방지 예측 모델 연구용 데이터 (이상 결제 탐지 관련)",
+        "raw": build_demo_requirement("신용카드 이상거래 탐지 모델 연구 데이터", "AI 모델 학습 및 이상거래 탐지"),
         "source": "decline_reason_code, auth_method, ip_address, pos_entry_mode, transaction_amount 시계열 패턴 등 raw 신호를 피처로 제공 (fraud_score 등 결과 레이블은 원본에 없음 — 모델이 직접 학습)",
         "questions": ["레이블링 데이터 별도 제공 필요 여부", "개인정보 비식별화 수준", "데이터 기간/샘플 규모"],
     },

@@ -7,7 +7,7 @@ from redis.asyncio import Redis
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.common.errors import not_found
+from app.common.errors import forbidden, not_found
 from app.common.security_deps import CurrentAuth, get_current_auth
 from app.core.config import settings
 from app.db.session import AsyncSessionLocal, get_db
@@ -43,6 +43,8 @@ from app.domains.pipeline.schema import (
     SamplePreviewResponse,
     StageReviewRequest,
     StageReviewResponse,
+    AdminPipelineRecoveryRequest,
+    AdminPipelineRecoveryResponse,
 )
 from app.domains.pipeline.service import (
     create_data_request,
@@ -59,6 +61,7 @@ from app.domains.pipeline.service import (
     issue_customer_api_key,
     result_download_filename,
     submit_stage_review,
+    admin_recover_pipeline_run,
 )
 from app.domains.pipeline.email_queue import EmailDeliveryQueueMessage, publish_email_delivery
 from app.worker.file_storage import generate_download_url, resolve_storage_key
@@ -280,6 +283,19 @@ async def review_run_stage(
 ) -> StageReviewResponse:
     """단계 산출물 검토(HITL). 승인 시 다음 단계로, 반려 시 해당 단계로 되돌린다."""
     return await submit_stage_review(db, run_id, auth.employee, payload)
+
+
+@router.post("/runs/{run_id}/admin-recovery", response_model=AdminPipelineRecoveryResponse)
+async def recover_pipeline_run_as_admin(
+    run_id: int,
+    payload: AdminPipelineRecoveryRequest,
+    auth: CurrentAuth = Depends(get_current_auth),
+    db: AsyncSession = Depends(get_db),
+) -> AdminPipelineRecoveryResponse:
+    """관리자 전용 데모/고아 실행 복구. 이전 실행 이벤트는 새 execution_id로 무시한다."""
+    if auth.employee.role_code != "ADMIN":
+        raise forbidden("ADMIN_REQUIRED", "관리자 권한이 필요한 기능입니다.")
+    return await admin_recover_pipeline_run(db, run_id, auth.employee, payload.mode)
 
 
 @router.get("/runs/{run_id}/result-download-url")

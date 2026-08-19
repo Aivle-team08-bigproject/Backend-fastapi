@@ -1,4 +1,5 @@
 from decimal import Decimal
+from datetime import datetime
 import json
 import os
 from typing import Literal
@@ -66,6 +67,9 @@ def _load_runtime_secrets() -> None:
             "ANON_HASH_SALT",
             "DEEPSEEK_API_KEY",
             "INTERNAL_SERVICE_KEY",
+            "REVIEW_AUTO_LOGIN_ENABLED",
+            "REVIEW_AUTO_LOGIN_EMAIL",
+            "REVIEW_AUTO_LOGIN_EXPIRES_AT",
         ):
             value = bundle.get(key)
             if isinstance(value, str) and value.strip() and not os.getenv(key):
@@ -168,7 +172,13 @@ class Settings(BaseSettings):
     agentcore_session_scope: Literal["invocation", "run"] = "invocation"
     agentcore_endpoint_url: str | None = None
     agentcore_connect_timeout_seconds: int = 10
-    agentcore_read_timeout_seconds: int = 900
+    # AgentCore selection step는 보통 수 초~수십 초 안에 끝난다. 15분 timeout은
+    # 응답이 끊긴 invocation을 RUNNING으로 방치하므로, SDK가 빠르게 실패를 반환해
+    # supervisor의 AGENT_RUNTIME_UNAVAILABLE 복구 경로를 타게 한다.
+    agentcore_read_timeout_seconds: int = 75
+    pipeline_stale_run_after_seconds: int = 120
+    pipeline_stale_monitor_interval_seconds: int = 30
+    pipeline_stale_auto_recovery_max_attempts: int = 2
 
     # --- 문서 텍스트 추출 (documents 도메인) ---
     # 원본 파일은 디스크에 저장하지 않고 메모리에서 바로 파싱 후 폐기한다(A안).
@@ -182,15 +192,22 @@ class Settings(BaseSettings):
     jwt_issuer: str = "portfolio-data-market"
     jwt_audience: str = "portfolio-operator-platform"
     jwt_secret: str
-    access_token_ttl_minutes: int = 10
+    access_token_ttl_minutes: int = 120
 
     # --- 세션 정책 ---
     # 유휴시간(idle timeout): 자리비움 상태에서 자동 로그아웃되는 기준 (국내 금융권 관행)
-    session_idle_timeout_minutes: float = 10
+    session_idle_timeout_minutes: float = 120
     # 절대 타임아웃: 로그인 시각(createdAt) 기준, 계속 활동해도 이 시간이 지나면 무조건 종료
-    session_normal_ttl_minutes: float = 30
-    session_remember_me_ttl_hours: float = 8
+    session_normal_ttl_minutes: float = 240
+    # "로그인 상태 유지"도 보안 정책상 절대 세션 만료 4시간을 넘기지 않는다.
+    session_remember_me_ttl_hours: float = 4
     max_active_sessions: int = 3
+
+    # 심사 환경 전용 자동 로그인. 기본값은 꺼져 있으며, 런타임 Secret에서 명시적으로
+    # 활성화·대상 계정·종료 시각을 모두 주입한 경우에만 /api/auth/review-auto-login이 열린다.
+    review_auto_login_enabled: bool = False
+    review_auto_login_email: str | None = None
+    review_auto_login_expires_at: datetime | None = None
 
     # 마지막 DB 갱신 이후 최소 몇 초가 지나야 다시 갱신할지
     session_activity_touch_interval_seconds: int = 30

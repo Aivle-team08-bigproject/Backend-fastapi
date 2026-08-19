@@ -3,6 +3,7 @@
 from copy import deepcopy
 import json
 import logging
+import math
 import re
 import time
 
@@ -10,7 +11,11 @@ from strands import Agent, tool
 from agent_runtime.data_selection.config import settings
 from agent_runtime.model_factory import build_model
 from agent_runtime.query import SelectionPlan
-from agent_runtime.query.registry import canonical_dataset
+from agent_runtime.query.registry import (
+    PERSON_ATTRIBUTES,
+    ROW_IDENTIFIERS,
+    canonical_dataset,
+)
 
 
 FINAL_CONTRACT_REFERENCE = """당신은 '하나 데이터 마켓'의 DB 메타데이터 기반 컬럼 설계 에이전트다.
@@ -51,6 +56,13 @@ FINAL_CONTRACT_REFERENCE = """당신은 '하나 데이터 마켓'의 DB 메타�
   ]
 }
 
+우선순위 규칙:
+사용자가 "이전보다 자세히", "더 구체적으로", "상세하게" 또는 같은 의미의 표현을
+사용하면 이전 결과보다 설명·근거·구간 정의를 더 구체적으로 작성해야 한다. 이 요구는
+출력 JSON 계약과 개인정보 보호 정책을 지키는 범위에서 반드시 반영한다. 단, 상세화를
+위해 source_columns, derived_columns, selection_query의 필수 구조를 생략하거나 임의의
+컬럼·값을 만들어서는 안 된다.
+
 반드시 아래 JSON 형식으로만 응답한다:
 {
   "selected_tables": [
@@ -85,7 +97,7 @@ FINAL_CONTRACT_REFERENCE = """당신은 '하나 데이터 마켓'의 DB 메타�
     "filters": {
       "<필터에 사용할 실제 컬럼명>": {
         "operator": "<eq|in|gte|lte|between|starts_with>",
-        "value": "<단일 값 또는 in/between용 배열>",
+      "value": "<eq/starts_with는 단일 값, in/between은 배열>",
         "reason": "<사용자 요구사항에서 이 조건이 필요한 이유>",
         "evidence": "<해당 테이블·컬럼 COMMENT를 근거로 한 해석>"
       }
@@ -168,6 +180,8 @@ FINAL_CONTRACT_REFERENCE = """당신은 '하나 데이터 마켓'의 DB 메타�
 - 사용자 요구사항의 구체적인 대상·범위·조건은 DB COMMENT를 근거로 selection_query.filters에 변환한다.
 - 필터 키는 source_columns에 선택한 실제 DB 컬럼명만 사용한다.
 - 필터 operator는 eq, in, gte, lte, between, starts_with 중 하나만 사용한다.
+- operator가 in이면 value는 반드시 하나 이상의 배열이어야 한다. 값이 하나여도
+  [값]으로 감싸며, between이면 정확히 [하한, 상한] 배열을 사용한다.
 - 문자열 접두 범위(예: '서울특별시'로 시작하는 지역)는 starts_with를 사용한다.
   문자열 범위를 gte, lte, between으로 표현하지 않는다.
 - 필터의 reason에는 사용자 요구사항과의 관계를, evidence에는 DB COMMENT 기반 판단 근거를 적는다.
@@ -202,6 +216,9 @@ hitl_feedback이 있으면 이전 해석보다 우선하고, retry_feedback이 �
 - source_columns는 schema_metadata에 실제 존재하는 컬럼만 사용한다.
 - DB COMMENT를 컬럼 의미 판단의 최우선 근거로 사용한다.
 - 고객 요구를 충족하는 데 필요한 최소 컬럼만 선택한다.
+- source_columns는 고객에게 반환할 컬럼뿐 아니라 selection_query.filters의 조건 평가에
+  필요한 컬럼까지 포함하는 최소 폐쇄 집합이다. 필터 평가에 필요한 컬럼을 반환하지
+  않더라도 source_columns에서 제외하지 않는다.
 - 자연어 카테고리는 reference_catalogs에 제공된 실제 항목만 사용한다.
 - 가장 가까운 실행 가능한 의미를 선택하고, 해석 근거와 확인 필요 여부는
   interpretations에 기록한다.
@@ -212,41 +229,73 @@ hitl_feedback이 있으면 이전 해석보다 우선하고, retry_feedback이 �
 - reference_catalogs의 카탈로그 테이블은 조회 대상이 아니므로 selected_tables나
   source_columns에 넣지 않는다.
 - 필터는 선택한 source column만 사용하며 operator, value, reason, evidence를 포함한다.
+- 필터 컬럼 폐쇄 불변조건: selection_query.filters의 모든 키는 source_columns의
+  column 값에 동일한 문자열로 반드시 한 번씩 존재해야 한다. 반대로 source_columns의
+  컬럼을 필터 키로 쓸 필요는 없다.
+- 필터를 만들 때 먼저 필터 키를 확정하고, 각 필터 키에 대응하는 dataset·data_type·COMMENT를
+  source_columns에 추가한 뒤 나머지 출력 컬럼을 더한다. 필터 키를 source_columns에
+  누락한 JSON은 절대 반환하지 않는다.
 - 허용 filter operator는 eq, in, gte, lte, between, starts_with다.
 - 문자열 접두 범위에는 starts_with를 사용하며 문자열에 수치 범위 연산을 사용하지 않는다.
 - top_k, limit, vector_similarity를 만들지 않는다.
 규칙END.
 
 제약사항:
-개인정보 보호 조회 정책을 반드시 준수한다.
+개인정보 보호 조회 정책을 반드시 준수한다. 아래 목록은 추상적인 설명이 아니라
+컬럼명에 직접 적용하는 결정 규칙이다.
 
-인적 속성:
-gender, age_band, resident_region, postal_code, occupation,
-annual_income_band, marital_status
+인적 속성 컬럼(사람의 특성을 나타내며 조합될수록 재식별 가능성이 높아지는 컬럼):
+- gender: 성별
+- age_band: 연령대
+- resident_region: 거주 지역
+- postal_code: 우편번호
+- occupation: 직업
+- annual_income_band: 소득 구간
+- marital_status: 혼인 상태
 
-식별자 또는 고차원 컬럼:
-customer_id, card_number_masked, transaction_id,
-merchant_id, merchant_name, business_registration_number, ip_address,
-transaction_datetime, card_issue_month, merchant_open_month,
-franchise_hq_code
+고차원·개별 식별 컬럼(값이 한 행·고객·가맹점·세부 시점을 사실상 가리키는 컬럼):
+- customer_id: 고객 식별자
+- card_number_masked: 마스킹된 카드번호
+- transaction_id: 거래 식별자
+- merchant_id: 가맹점 식별자
+- merchant_name: 개별 가맹점명
+- business_registration_number: 사업자등록번호
+- ip_address: IP 주소
+- transaction_datetime: 거래 발생 일시
+- card_issue_month: 카드 발급 월
+- merchant_open_month: 가맹점 개업 월
+- franchise_hq_code: 가맹점 본사 코드
 
-- 인적 속성을 2개 이상 선택하면 식별자 또는 고차원 컬럼을 하나도 선택하지 않는다.
-- 위 금지 조합은 source_columns와 selection_query.columns 모두에 적용한다.
-- transaction_datetime처럼 파생 컬럼 계산에 필요한 원본 컬럼도 식별자 또는 고차원
-  컬럼으로 취급한다. 파생에 필요하다는 이유로 정책을 우회하지 않는다.
-- 시간·고객·가맹점 단위 컬럼이 반드시 필요하면 인적 속성은 최대 1개만 선택한다.
-- 고객 요청이 금지 조합을 요구하면 개인정보 보호 정책을 지키는 최소 컬럼 조합으로
-  단순화하고, interpretations에 제외 또는 단순화한 차원과 사유를 기록한다.
+강제 판단 규칙:
+1. source_columns와 selection_query.columns를 각각 검사한다. 두 목록 중 하나라도
+   인적 속성 2개 이상과 고차원·개별 식별 컬럼 1개 이상을 포함하면 금지 조합이다.
+2. 금지 조합 예: [gender, age_band, resident_region, transaction_datetime],
+   [gender, age_band, customer_id], [age_band, resident_region, merchant_id].
+3. 금지 조합이면 실패하거나 그대로 출력하지 않는다. 고차원·개별 식별 컬럼을
+   우선 제외하고, 집단 분석에 필요한 인적 속성만 남긴다. 예를 들어
+   [age_band, gender, resident_region, transaction_datetime] 요청은
+   [age_band, gender, resident_region]으로 단순화한다.
+4. 거래 시점이 필요하면 transaction_datetime을 직접 선택하지 말고, 허용된 집단형
+   컬럼인 transaction_hour_band 또는 요구사항에 맞는 월·일자 집계 파생 컬럼으로
+   대체한다. 이때 원본 transaction_datetime이 source_columns에 포함되지 않도록 한다.
+5. 고객·가맹점 단위 분석이 반드시 필요하면 인적 속성은 최대 1개만 선택한다.
+   예: [age_band, customer_id]와 [gender, transaction_datetime]은 허용하지만,
+   [age_band, gender, customer_id]와 [gender, age_band, transaction_datetime]은 금지한다.
+6. 고차원 컬럼을 제외하거나 인적 속성을 줄인 경우 interpretations에 반드시 다음을
+   기록한다: term=제외·단순화한 컬럼, interpreted_as=안전한 집단 단위 대체,
+   reason=개인정보 보호 규칙상 인적 속성 2개 이상과 고차원·개별 식별 컬럼의 조합 금지,
+   requires_confirmation=true.
+
+허용 예시:
+["gender", "age_band", "mcc_name"]
+["age_band", "gender", "transaction_hour_band"]
+["gender", "transaction_datetime"]
+["age_band", "customer_id"]
 
 금지 예시:
 ["gender", "age_band", "customer_id"]
 ["gender", "age_band", "merchant_id"]
-["gender", "age_band", "transaction_datetime"]
-
-허용 예시:
-["gender", "age_band", "mcc_name"]
-["gender", "transaction_datetime"]
-["age_band", "customer_id"]
+["gender", "age_band", "resident_region", "transaction_datetime"]
 제약사항END.
 
 출력형식:
@@ -262,7 +311,7 @@ JSON 외의 내용은 절대 출력하지 않는다.
   "selection_query": {
     "columns": ["선택한 실제 컬럼명"],
     "filters": {"컬럼명": {
-      "operator": "eq|in|gte|lte|between|starts_with", "value": "값 또는 배열",
+      "operator": "eq|in|gte|lte|between|starts_with", "value": "eq/starts_with는 값, in/between은 배열",
       "reason": "사용자 요구 근거", "evidence": "COMMENT·카탈로그 근거"
     }}
   },
@@ -282,15 +331,20 @@ JSON 외의 내용은 절대 출력하지 않는다.
 }
 출력형식END.
 
-긍정 강화:
+최종 검증 체크리스트:
 정확한 결과는 고객 요구를 충족하면서도 운영 DB 조회 정책을 위반하지 않는
-최소 컬럼 계획이다.
+최소 폐쇄 컬럼 계획이다. 여기서 최소 폐쇄란 출력·파생 계산·필터 조건에 필요한
+모든 원본 컬럼을 포함하고, 그 외의 원본 컬럼은 포함하지 않는다는 뜻이다.
 출력 전에 내부적으로 다음을 확인하라.
 1. source_columns가 schema_metadata의 조회 대상 테이블 컬럼만 담고 있는가.
 2. 선택 컬럼이 개인정보 보호 조회 정책을 위반하지 않는가.
 3. 모든 컬럼·테이블·카탈로그 값이 제공된 메타데이터에 실제 존재하는가.
-4. JSON 외의 내용을 출력하지 않았는가.
-긍정 강화END."""
+4. selection_query.filters의 모든 키가 source_columns의 column 목록에 동일한 문자열로
+   포함되어 있는가. 하나라도 없으면 해당 필터 컬럼을 source_columns에 추가하라.
+5. source_columns에서 필터에 필요한 컬럼을 제거해 최소화하지 않았는가.
+6. selection_query.columns는 빈 배열인가.
+7. JSON 외의 내용을 출력하지 않았는가.
+최종 검증 체크리스트END."""
 
 
 DERIVATION_SPEC_OPERATION_CONTRACT = """operation별 parameters 정식 계약:
@@ -483,6 +537,122 @@ def _normalize_dataset_names(data: dict) -> dict:
     return data
 
 
+def _normalize_filter_columns(data: dict, schema_metadata: list[dict]) -> dict:
+    """필터 키가 원본 목록에서 빠진 모델 응답을 메타데이터로 보완한다."""
+    query = data.get("selection_query")
+    source_columns = data.get("source_columns")
+    if not isinstance(query, dict) or not isinstance(query.get("filters"), dict):
+        return data
+    if not isinstance(source_columns, list):
+        source_columns = []
+        data["source_columns"] = source_columns
+    existing = {
+        item.get("column")
+        for item in source_columns
+        if isinstance(item, dict) and isinstance(item.get("column"), str)
+    }
+    selected_tables = {
+        item.get("table")
+        for item in data.get("selected_tables") or []
+        if isinstance(item, dict)
+    }
+    for filter_name in query["filters"]:
+        if filter_name in existing:
+            continue
+        matches = [
+            (dataset, column)
+            for dataset in schema_metadata
+            if not selected_tables or dataset.get("dataset") in selected_tables
+            for column in dataset.get("columns", [])
+            if isinstance(column, dict) and column.get("name") == filter_name
+        ]
+        if len(matches) != 1:
+            continue
+        dataset, column = matches[0]
+        source_columns.append(
+            {
+                "dataset": dataset["dataset"],
+                "column": column["name"],
+                "data_type": column.get("data_type", ""),
+                "comment": column.get("comment", ""),
+                "reason": "selection_query.filters에서 사용하는 조건 컬럼",
+            }
+        )
+        existing.add(filter_name)
+    return data
+
+
+def _normalize_filter_values(data: dict) -> dict:
+    """단일 값으로 반환된 ``in`` 필터를 singleton 배열로 정규화한다.
+
+    ``in``은 값 하나만 있어도 의미가 ``[값]``과 동일하므로 안전하게 보정할 수
+    있다. 반면 ``between``은 두 경계의 순서와 개수가 의미를 가지므로 추측하지
+    않고 기존 검증에서 명시적으로 실패시킨다.
+    """
+    query = data.get("selection_query")
+    filters = query.get("filters") if isinstance(query, dict) else None
+    if not isinstance(filters, dict):
+        return data
+    for condition in filters.values():
+        if not isinstance(condition, dict) or condition.get("operator") != "in":
+            continue
+        value = condition.get("value")
+        if value is not None and not isinstance(value, list):
+            condition["value"] = [value]
+    return data
+
+
+def _normalize_privacy_selection(data: dict) -> dict:
+    """모델이 만든 고위험 조합을 정책에 따라 결정적으로 단순화한다."""
+    source_columns = data.get("source_columns")
+    if not isinstance(source_columns, list):
+        return data
+    names = {
+        item.get("column")
+        for item in source_columns
+        if isinstance(item, dict) and isinstance(item.get("column"), str)
+    }
+    person_attributes = names & PERSON_ATTRIBUTES
+    identifiers = names & ROW_IDENTIFIERS
+    if len(person_attributes) < 2 or not identifiers:
+        return data
+
+    # 개인정보 보호 경계를 LLM 재시도 결과에 맡기지 않는다. 식별 컬럼과 그 필터를
+    # 제거하고, 제거 사실은 고객에게 보이는 interpretations에 남긴다.
+    removed = sorted(identifiers)
+    data["source_columns"] = [
+        item
+        for item in source_columns
+        if not isinstance(item, dict) or item.get("column") not in identifiers
+    ]
+    query = data.get("selection_query")
+    if isinstance(query, dict) and isinstance(query.get("filters"), dict):
+        query["filters"] = {
+            key: value
+            for key, value in query["filters"].items()
+            if key not in identifiers
+        }
+    interpretations = data.get("interpretations")
+    if not isinstance(interpretations, list):
+        interpretations = []
+        data["interpretations"] = interpretations
+    existing_terms = {
+        item.get("term") for item in interpretations if isinstance(item, dict)
+    }
+    for column in removed:
+        if column in existing_terms:
+            continue
+        interpretations.append(
+            {
+                "term": column,
+                "interpreted_as": "개인정보 보호를 위해 제외한 고차원·개별 식별 컬럼",
+                "reason": "개인정보 보호 규칙상 인적 속성 2개 이상과 고차원·개별 식별 컬럼의 조합 금지",
+                "requires_confirmation": True,
+            }
+        )
+    return data
+
+
 def _validate_contract(
     data: dict,
     schema_metadata: list[dict],
@@ -506,6 +676,11 @@ def _validate_contract(
         raise ValueError("source_columns는 비어 있지 않은 배열이어야 함")
     if not isinstance(derived_columns, list):
         raise ValueError("derived_columns는 배열이어야 함")
+    # bucketize는 숫자 경계가 맞으면 labels 누락·개수 불일치를 코드로 안전하게
+    # 복구할 수 있다. 반대로 경계 자체가 숫자 구간으로 성립하지 않으면 의미를
+    # 추측하지 않고 해당 파생 컬럼만 제외한다. 이 목록은 in-place로 보정해 다음
+    # 합성 샘플 단계에도 동일한 파생 컬럼 계획이 전달되게 한다.
+    _normalize_bucketize_columns(derived_columns, interpretations)
     if not derived_columns:
         raise ValueError("derived_columns는 최소 1개 이상이어야 함")
     if not isinstance(query, dict):
@@ -534,6 +709,9 @@ def _validate_contract(
     # source_columns에서 코드가 결정적으로 생성한다. 뒤따르는 필터 검증과 SelectionPlan의
     # allowlist 검증이 그대로 적용되므로 정책 경계는 약해지지 않는다.
     query["columns"] = list(dict.fromkeys(selected_source_names))
+    # LLM이 단일 값의 in 조건을 반환해도 의미가 변하지 않으므로, 계약 검증 전에
+    # singleton 배열로 보정한다. between은 보정하지 않아 잘못된 경계를 숨기지 않는다.
+    _normalize_filter_values(data)
     filters = query.get("filters")
     if not isinstance(filters, dict):
         raise ValueError("selection_query.filters는 객체여야 함")
@@ -659,6 +837,7 @@ def _validate_contract(
         # source_columns는 실행 의미를 담은 derivation_spec에서 파생되는 값이다. 두
         # 표현을 LLM이 따로 만들게 하고 완전 일치를 요구하면 계약 위반이 반복되므로,
         # 표현식이 실제로 참조한 컬럼으로 정규화한 뒤 정책 위반만 실패로 남긴다.
+        _normalize_derived_result_type(column)
         _validate_derivation_spec(column, available_derived_sources)
         available_derived_sources.add(column["name"])
 
@@ -770,6 +949,127 @@ def _validate_derivation_spec(column: dict, available_sources: set[str]) -> None
     }
     if column.get("data_type") not in result_type_by_operation[spec["operation"]]:
         raise ValueError("derived column data_type이 derivation_spec 결과 타입과 맞지 않음")
+
+
+def _normalize_derived_result_type(column: dict) -> None:
+    """명확한 operation 결과 타입만 검증 전에 안전하게 보정한다.
+
+    LLM이 operation은 올바르게 선택했지만 data_type을 이전 예시의 값으로
+    복사하는 경우가 있어, 결과 타입이 하나로 결정되는 operation만 보정한다.
+    conditional/map_values/date_part처럼 여러 타입이 가능한 operation은
+    의미를 추측하지 않고 기존 검증·재시도 흐름을 유지한다.
+    """
+    spec = column.get("derivation_spec")
+    if not isinstance(spec, dict):
+        return
+    operation = spec.get("operation")
+    current = column.get("data_type")
+    deterministic_types = {
+        "compare": "boolean",
+        "logical": "boolean",
+    }
+    target = deterministic_types.get(operation)
+    if target and current != target:
+        column["data_type"] = target
+        return
+
+    if operation in {"arithmetic", "aggregate"} and current not in {"integer", "number"}:
+        column["data_type"] = "number"
+        return
+
+    if operation == "bucketize" and current not in {"string", "integer"}:
+        column["data_type"] = "string"
+        return
+
+    if operation == "date_part" and current != "integer":
+        column["data_type"] = "integer"
+
+
+def _bucket_label(left: int | float, right: int | float, index: int) -> str:
+    """LLM label을 안전하게 복구할 수 없을 때 사용하는 결정적 구간명."""
+    return f"구간 {index + 1} ({left:g}~{right:g})"
+
+
+def _normalize_bucketize_columns(
+    derived_columns: list,
+    interpretations: object,
+) -> None:
+    """bucketize의 모호하지 않은 형식 오류만 검증 전에 복구한다.
+
+    정렬·중복 제거 후 두 개 이상의 유한한 숫자 경계가 남으면 구간의 의미는
+    그대로다. labels는 구간 수만 충족하면 되는 표시 문자열이므로, 누락·불일치 시
+    경계에서 결정적으로 생성한다. 수치 경계를 만들 수 없는 bucketize는 복구 시
+    의미를 추측하게 되므로 해당 파생 컬럼만 제외한다.
+    """
+    kept: list[dict] = []
+    dropped_names: list[str] = []
+    for column in derived_columns:
+        if not isinstance(column, dict):
+            kept.append(column)
+            continue
+        spec = column.get("derivation_spec")
+        if not isinstance(spec, dict) or spec.get("operation") != "bucketize":
+            kept.append(column)
+            continue
+        parameters = spec.get("parameters")
+        raw_bins = parameters.get("bins") if isinstance(parameters, dict) else None
+        if not isinstance(raw_bins, list):
+            dropped_names.append(str(column.get("name") or "이름 없는 구간 파생 컬럼"))
+            continue
+        numeric_bins = [
+            value
+            for value in raw_bins
+            if isinstance(value, (int, float))
+            and not isinstance(value, bool)
+            and math.isfinite(value)
+        ]
+        # 숫자가 아닌 경계를 제거하거나 임의의 수치로 대체하면 구간 의미가 바뀐다.
+        if len(numeric_bins) != len(raw_bins):
+            dropped_names.append(str(column.get("name") or "이름 없는 구간 파생 컬럼"))
+            continue
+        bins = sorted(set(numeric_bins))
+        if len(bins) < 2:
+            dropped_names.append(str(column.get("name") or "이름 없는 구간 파생 컬럼"))
+            continue
+
+        parameters["bins"] = bins
+        expected_count = len(bins) - 1
+        raw_labels = parameters.get("labels")
+        if (
+            not isinstance(raw_labels, list)
+            or len(raw_labels) != expected_count
+            or not all(isinstance(label, str) and label.strip() for label in raw_labels)
+        ):
+            parameters["labels"] = [
+                _bucket_label(left, right, index)
+                for index, (left, right) in enumerate(zip(bins, bins[1:]))
+            ]
+        else:
+            parameters["labels"] = [label.strip() for label in raw_labels]
+        kept.append(column)
+
+    if len(kept) != len(derived_columns):
+        derived_columns[:] = kept
+        if isinstance(interpretations, list):
+            interpretations.append(
+                {
+                    "term": ", ".join(dropped_names),
+                    "interpreted_as": "수치 구간 경계를 확정할 수 없어 파생 컬럼에서 제외",
+                    "reason": "bucketize 경계가 유한한 숫자 구간으로 성립하지 않아 임의 보정을 하지 않음",
+                    "requires_confirmation": True,
+                }
+            )
+
+
+def _normalize_derived_description(column: dict) -> None:
+    """설명 누락 시 LLM이 이미 제공한 의미 문장으로만 보완한다."""
+    description = column.get("description")
+    if isinstance(description, str) and description.strip():
+        return
+    for candidate in (column.get("derivation"), column.get("name")):
+        if isinstance(candidate, str) and candidate.strip():
+            column["description"] = candidate.strip()
+            return
 
 
 def _validate_derivation_parameters(spec: dict) -> None:
@@ -1095,6 +1395,10 @@ def _validate_source_contract(
     schema_metadata: list[dict],
     reference_catalogs: list[dict],
 ) -> None:
+    # 메타데이터를 알고 있는 검증 경계에서만 정규화한다. LLM 실행 루프는
+    # schema_metadata를 직접 소유하지 않으므로 여기서 참조하면 안 된다.
+    _normalize_filter_columns(data, schema_metadata)
+    _normalize_privacy_selection(data)
     _assert_exact_keys(data, SOURCE_RESULT_KEYS, "원본 컬럼 선별")
     source_columns = data.get("source_columns")
     if not isinstance(source_columns, list) or not source_columns:
@@ -1149,6 +1453,9 @@ def _validate_derived_contract(
     source_names = {item.get("column") for item in source_columns if isinstance(item, dict)}
     if set(names) & source_names:
         raise ValueError("derived column 이름은 원본 컬럼명과 충돌할 수 없음")
+    for item in derived_columns:
+        _normalize_derived_result_type(item)
+        _normalize_derived_description(item)
     allowed_types = {"string", "integer", "number", "boolean", "date", "datetime"}
     if any(
         item.get("data_type") not in allowed_types or not item.get("description")
@@ -1304,7 +1611,11 @@ def _run_prompt_step(
         # 실패가 아니므로 마감하지 않지만, 마지막 회차까지 실패하면 여기서 FAILED로
         # 마감해야 한다. 회차 분할 전에는 이 함수가 소진 시 직접 FAILED를 찍었는데,
         # 분할하면서 그 경로가 끊겨 화면이 계속 '진행 중'으로 남았다(2026-08-12 회귀).
-        if on_step is not None and attempts_used + attempt_offset >= TOTAL_ATTEMPTS:
+        # ``attempts_used`` already contains the externally supplied offset because
+        # the loop starts at ``1 + attempt_offset``. Adding the offset again marks
+        # the second invocation as the final failure (2 + 1 >= 3), even though the
+        # third invocation has not started yet.
+        if on_step is not None and attempts_used >= TOTAL_ATTEMPTS:
             on_step(step_code, "FAILED", failure_snapshot)
         return {
             "_step_retry": {
@@ -1354,6 +1665,12 @@ def _humanize(error: str) -> str:
     return "결과가 요구한 형식과 맞지 않습니다."
 
 def _selection_retry_hint(error: str) -> str:
+    if "bins/labels" in error:
+        return (
+            "bucketize는 parameters={source:{column:\"수치컬럼\"}, bins:[하한, 경계..., 상한], "
+            "labels:[구간명...]}만 사용하세요. bins는 유한한 숫자 2개 이상을 오름차순으로 "
+            "한 번씩만 넣고 labels 개수는 반드시 len(bins)-1과 같게 만드세요. "
+        )
     if "인적 속성 여러 개와 개별 식별자" in error:
         return (
             "gender, age_band 등 인적 속성을 2개 이상 선택했다면 customer_id, "

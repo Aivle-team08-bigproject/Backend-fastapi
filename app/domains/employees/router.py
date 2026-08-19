@@ -4,7 +4,12 @@ from fastapi import APIRouter, Depends, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.common.masking import mask_phone
-from app.common.security_deps import CurrentAuth, require_any_permission, require_permission
+from app.common.security_deps import (
+    CurrentAuth,
+    require_admin_or_permission,
+    require_any_permission,
+    require_permission,
+)
 from app.db.session import get_db
 from app.common.time_utils import utcnow
 from app.domains.auth.model.session_model import LoginSession
@@ -126,7 +131,7 @@ async def list_signup_requests(
 async def approve_signup_request(
     employee_code: str,
     payload: ApproveSignupRequest,
-    auth: CurrentAuth = Depends(require_permission(PermissionCode.EMPLOYEE_PERMISSION_MANAGE)),
+    auth: CurrentAuth = Depends(require_admin_or_permission(PermissionCode.EMPLOYEE_PERMISSION_MANAGE)),
     db: AsyncSession = Depends(get_db),
 ) -> EmployeeResponse:
     employee = await employee_service.approve_signup(
@@ -174,7 +179,7 @@ async def create_employee(
 async def replace_permissions(
     employee_code: str,
     payload: UpdatePermissionsRequest,
-    auth: CurrentAuth = Depends(require_permission(PermissionCode.EMPLOYEE_PERMISSION_MANAGE)),
+    auth: CurrentAuth = Depends(require_admin_or_permission(PermissionCode.EMPLOYEE_PERMISSION_MANAGE)),
     db: AsyncSession = Depends(get_db),
 ) -> EmployeeResponse:
     employee = await employee_service.replace_permissions(
@@ -187,7 +192,7 @@ async def replace_permissions(
 async def replace_role(
     employee_code: str,
     payload: UpdateRoleRequest,
-    auth: CurrentAuth = Depends(require_permission(PermissionCode.EMPLOYEE_PERMISSION_MANAGE)),
+    auth: CurrentAuth = Depends(require_admin_or_permission(PermissionCode.EMPLOYEE_PERMISSION_MANAGE)),
     db: AsyncSession = Depends(get_db),
 ) -> EmployeeResponse:
     employee = await employee_service.replace_role(
@@ -200,7 +205,7 @@ async def replace_role(
 async def change_status(
     employee_code: str,
     payload: UpdateStatusRequest,
-    auth: CurrentAuth = Depends(require_permission(PermissionCode.EMPLOYEE_UPDATE)),
+    auth: CurrentAuth = Depends(require_admin_or_permission(PermissionCode.EMPLOYEE_UPDATE)),
     db: AsyncSession = Depends(get_db),
 ) -> EmployeeResponse:
     employee = await employee_service.change_status(
@@ -212,7 +217,7 @@ async def change_status(
 @router.post("/{employee_code}/reset-password", response_model=ResetPasswordResponse)
 async def reset_password(
     employee_code: str,
-    auth: CurrentAuth = Depends(require_permission(PermissionCode.EMPLOYEE_UPDATE)),
+    auth: CurrentAuth = Depends(require_admin_or_permission(PermissionCode.EMPLOYEE_UPDATE)),
     db: AsyncSession = Depends(get_db),
 ) -> ResetPasswordResponse:
     employee, temporary_password = await employee_service.reset_password(

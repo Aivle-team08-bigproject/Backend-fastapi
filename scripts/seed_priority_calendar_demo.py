@@ -15,14 +15,20 @@ from app.common.time_utils import utcnow
 from app.db.session import AsyncSessionLocal, engine
 from app.domains.employees.model import Employee
 from app.domains.pipeline.model import (
+    Artifact,
+    ArtifactType,
     Client,
     DataRequest,
     DataRequestStatus,
     PipelineRun,
     PipelineRunStatus,
+    PiiScanStatus,
+    Review,
+    ReviewDecision,
     StageRun,
     StageRunStatus,
 )
+from scripts.demo_requirements import build_demo_requirement
 
 OWNER_EMAIL = "whddhs6645@company.com"
 
@@ -39,6 +45,17 @@ TASKS = [
     ("DEMO-09", "펜타건설", "지역별 부동산 거래 동향 분석", PipelineRunStatus.FAILED, "DATA_SELECTION", StageRunStatus.FAILED, 3),
     ("DEMO-10", "옥타곤제약", "약국 처방 데이터 소비 패턴", PipelineRunStatus.COMPLETED, "DATA_PROCESSING", StageRunStatus.COMPLETED, -5),
 ]
+
+STAGE_ORDER = ("REQUIREMENT_ANALYSIS", "DATA_SELECTION", "DATA_PROCESSING", "DELIVERY")
+REVIEW_TYPE_BY_STAGE = {
+    "REQUIREMENT_ANALYSIS": "REQUIREMENT",
+    "DATA_SELECTION": "SAMPLE",
+    "DATA_PROCESSING": "FINAL",
+}
+ARTIFACT_TYPE_BY_STAGE = {
+    "DATA_SELECTION": ArtifactType.SAMPLE.value,
+    "DATA_PROCESSING": ArtifactType.FINAL.value,
+}
 
 
 async def upsert_demo_tasks() -> int:
@@ -87,7 +104,7 @@ async def upsert_demo_tasks() -> int:
                     owner_name=owner.name,
                     requester_name=company,
                     title=title,
-                    raw_requirement=f"{title} 관련 데이터 가공을 요청합니다.",
+                    raw_requirement=build_demo_requirement(title, f"{company}의 업무 분석"),
                     output_formats=["CSV", "XLSX"],
                     delivery_channels=["FILE_DOWNLOAD"],
                     analysis_condition=analysis_condition,
@@ -103,6 +120,7 @@ async def upsert_demo_tasks() -> int:
                 request.owner_id = owner.id
                 request.owner_name = owner.name
                 request.title = title
+                request.raw_requirement = build_demo_requirement(title, f"{company}의 업무 분석")
                 request.analysis_condition = analysis_condition
                 request.status = request_status
                 request.updated_at = now
@@ -128,30 +146,90 @@ async def upsert_demo_tasks() -> int:
                 run.current_stage = current_stage
                 run.updated_at = now
 
-            stage = await db.scalar(
-                select(StageRun).where(
-                    StageRun.pipeline_run_id == run.id,
-                    StageRun.stage_code == current_stage,
-                    StageRun.attempt_no == 1,
-                )
-            )
-            if stage is None:
-                db.add(
-                    StageRun(
-                        pipeline_run_id=run.id,
-                        stage_code=current_stage,
-                        attempt_no=1,
-                        status=stage_status,
-                        executor="CELERY",
-                        input_payload={"request_no": request_no},
-                        output_payload={},
-                        created_at=created_at,
-                        started_at=created_at,
-                        completed_at=now if stage_status in (StageRunStatus.COMPLETED, StageRunStatus.FAILED) else None,
+            current_index = STAGE_ORDER.index(current_stage)
+            stages: dict[str, StageRun] = {}
+            for stage_index, stage_code in enumerate(STAGE_ORDER):
+                if stage_index > current_index:
+                    continue
+                is_current = stage_code == current_stage
+                effective_status = stage_status if is_current else StageRunStatus.COMPLETED
+                stage = await db.scalar(
+                    select(StageRun).where(
+                        StageRun.pipeline_run_id == run.id,
+                        StageRun.stage_code == stage_code,
+                        StageRun.attempt_no == 1,
                     )
                 )
-            else:
-                stage.status = stage_status
+                if stage is None:
+                    stage = StageRun(
+                        pipeline_run_id=run.id,
+                        stage_code=stage_code,
+                        attempt_no=1,
+                        status=effective_status,
+                        executor="AGENTCORE_DIRECT",
+                        input_payload={"request_no": request_no, "stage": stage_code},
+                        output_payload=(
+                            {"summary": f"{stage_code} 데모 결과", "record_count": 128}
+                            if effective_status == StageRunStatus.COMPLETED
+                            else {}
+                        ),
+                        validation_result={"status": "PASSED"} if effective_status == StageRunStatus.COMPLETED else {},
+                        created_at=created_at,
+                        started_at=created_at,
+                        completed_at=now if effective_status in (StageRunStatus.COMPLETED, StageRunStatus.FAILED) else None,
+                    )
+                    db.add(stage)
+                    await db.flush()
+                else:
+                    stage.status = effective_status
+                    stage.output_payload = (
+                        {"summary": f"{stage_code} 데모 결과", "record_count": 128}
+                        if effective_status == StageRunStatus.COMPLETED
+                        else stage.output_payload or {}
+                    )
+                    stage.completed_at = now if effective_status in (StageRunStatus.COMPLETED, StageRunStatus.FAILED) else None
+                stages[stage_code] = stage
+
+                review_type = REVIEW_TYPE_BY_STAGE.get(stage_code)
+                if effective_status == StageRunStatus.COMPLETED and (not is_current or run_status == PipelineRunStatus.COMPLETED) and review_type:
+                    review = await db.scalar(
+                        select(Review).where(
+                            Review.stage_run_id == stage.id,
+                            Review.review_type == review_type,
+                        )
+                    )
+                    if review is None:
+                        db.add(
+                            Review(
+                                data_request_id=request.id,
+                                stage_run_id=stage.id,
+                                reviewer_id=owner.id,
+                                reviewer_name=owner.name,
+                                review_type=review_type,
+                                decision=ReviewDecision.APPROVED.value,
+                                feedback="데모 시연용 사전 승인 기록입니다.",
+                                created_at=now,
+                            )
+                        )
+
+                artifact_type = ARTIFACT_TYPE_BY_STAGE.get(stage_code)
+                if artifact_type and effective_status == StageRunStatus.COMPLETED:
+                    storage_key = f"demo/{request_no}/{artifact_type.lower()}-result.csv"
+                    artifact = await db.scalar(select(Artifact).where(Artifact.storage_key == storage_key))
+                    if artifact is None:
+                        db.add(
+                            Artifact(
+                                pipeline_run_id=run.id,
+                                stage_run_id=stage.id,
+                                artifact_type=artifact_type,
+                                storage_key=storage_key,
+                                mime_type="text/csv",
+                                size_bytes=18432,
+                                checksum=f"demo-{suffix.lower()}-{artifact_type.lower()}",
+                                pii_scan_status=PiiScanStatus.PASSED.value,
+                                created_at=now,
+                            )
+                        )
 
         await db.commit()
         return created_count

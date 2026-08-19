@@ -167,6 +167,9 @@ class DashboardTaskQuery(BaseModel):
     assignee: str | None = Field(default=None, max_length=40)
     created_from: date | None = None
     created_to: date | None = None
+    due_from: date | None = None
+    due_to: date | None = None
+    created_sort: Literal["asc", "desc"] = "desc"
     page: int = Field(default=1, ge=1)
     page_size: Literal[30, 50, 100] = 30
 
@@ -237,6 +240,22 @@ class TaskHistoryResponse(BaseModel):
     created_at: datetime
 
 
+class RequirementDraftResponse(BaseModel):
+    """요구사항 수정 화면으로 회귀할 때 복원할 수 있는 등록 입력값."""
+
+    raw_requirement: str
+    title: str
+    customer_name: str
+    business_registration_number: str | None = None
+    contact_name: str | None = None
+    contact_email: str | None = None
+    contact_phone: str | None = None
+    start_date: str | None = None
+    end_date: str | None = None
+    delivery_due_date: str | None = None
+    data_sensitivity: str = "UNKNOWN"
+
+
 class TaskDetailResponse(BaseModel):
     request_no: str
     run_id: int
@@ -251,6 +270,8 @@ class TaskDetailResponse(BaseModel):
     attempt_no: int | None
     rollback_to_stage: str | None
     error_message: str | None
+    failure_code: str | None = None
+    requirement_draft: RequirementDraftResponse
     stages: list[TaskStageDetailResponse]
     available_actions: list[str]
     history: list[TaskHistoryResponse] = Field(default_factory=list)
@@ -354,6 +375,7 @@ class DeveloperDashboardResponse(BaseModel):
 class MemberResponse(BaseModel):
     name: str
     user_id: str
+    email: str | None = None
     role: str
     role_bg: str
     role_color: str

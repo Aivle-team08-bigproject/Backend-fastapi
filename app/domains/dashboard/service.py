@@ -35,6 +35,7 @@ from app.domains.dashboard.schema import (
     TaskRowResponse,
     TaskViewResponse,
     TaskDetailResponse,
+    RequirementDraftResponse,
     TaskStageDetailResponse,
     TaskArtifactDetailResponse,
     TaskHistoryResponse,
@@ -56,9 +57,11 @@ from app.domains.pipeline.model import (
     EventType,
     PipelineEvent,
     PipelineRun,
+    PipelineRunStatus,
     Review,
     StageRun,
 )
+from app.domains.pipeline.failure import public_failure
 from app.domains.employees.model import Employee, EmployeeStatus, PermissionCode
 
 
@@ -211,7 +214,11 @@ def _projection_query():
     latest_stage = _latest_stage_run_subquery()
     latest_review = _latest_review_subquery()
 
+    # A completed run does not necessarily have a synthetic COMPLETED StageRun.
+    # The last real stage can remain DATA_PROCESSING (or DELIVERY), so the run
+    # terminal state must take precedence over the latest stage-code mapping.
     stage_group = case(
+        (latest_run.c.run_status == PipelineRunStatus.COMPLETED.value, literal("COMPLETED")),
         (latest_stage.c.stage_code.is_(None), literal("UNKNOWN")),
         *(
             (latest_stage.c.stage_code == stage_code, literal(stage_group))
@@ -490,6 +497,16 @@ def _task_filters(projection, query: DashboardTaskQuery, owner_id: int | None = 
                 query.created_to + timedelta(days=1), time.min, tzinfo=ZoneInfo("UTC")
             )
         )
+    if query.due_from is not None:
+        predicates.append(
+            projection.c.due_at >= datetime.combine(query.due_from, time.min, tzinfo=ZoneInfo("UTC"))
+        )
+    if query.due_to is not None:
+        predicates.append(
+            projection.c.due_at < datetime.combine(
+                query.due_to + timedelta(days=1), time.min, tzinfo=ZoneInfo("UTC")
+            )
+        )
     return predicates
 
 
@@ -584,9 +601,11 @@ async def get_dashboard_tasks(
     total_count = int(
         await db.scalar(select(func.count()).select_from(filtered.subquery("filtered_dashboard_tasks"))) or 0
     )
+    created_at_order = projection.c.created_at.asc() if query.created_sort == "asc" else projection.c.created_at.desc()
+    request_no_order = projection.c.request_no.asc() if query.created_sort == "asc" else projection.c.request_no.desc()
     result = await db.execute(
         filtered
-        .order_by(projection.c.created_at.desc(), projection.c.request_no.desc())
+        .order_by(created_at_order, request_no_order)
         .limit(query.page_size)
         .offset((query.page - 1) * query.page_size)
     )
@@ -800,6 +819,23 @@ async def get_task_detail(
         available_actions = ["DOWNLOAD"]
 
     client = await db.get(Client, request.client_id) if request.client_id else None
+    latest_failed_stage = next(
+        (stage for stage in reversed(stage_runs) if stage.status == "FAILED"),
+        None,
+    )
+    failure = public_failure(
+        stage=latest_failed_stage.stage_code if latest_failed_stage else None,
+        result=latest_failed_stage.output_payload if latest_failed_stage else None,
+        validation_result=latest_failed_stage.validation_result if latest_failed_stage else None,
+        rollback_to_stage=run.rollback_to_stage,
+        error_message=(latest_failed_stage.error_message if latest_failed_stage else None) or run.error_message,
+    )
+    contract = await db.scalar(
+        select(Contract)
+        .where(Contract.data_request_id == request.id)
+        .order_by(Contract.created_at.desc(), Contract.id.desc())
+        .limit(1)
+    )
     return TaskDetailResponse(
         # 고객사 연락처가 없으면 None. 화면이 로그인 사용자 이메일로 대체하지 않는다.
         client_contact_email=(client.contact_email or None) if client else None,
@@ -814,6 +850,20 @@ async def get_task_detail(
         attempt_no=run.attempt_no,
         rollback_to_stage=run.rollback_to_stage,
         error_message=run.error_message,
+        failure_code=failure.get("failure_code") if failure else None,
+        requirement_draft=RequirementDraftResponse(
+            raw_requirement=request.raw_requirement,
+            title=request.title,
+            customer_name=client.company_name if client else request.requester_name or "",
+            business_registration_number=client.business_registration_number if client else None,
+            contact_name=client.contact_name if client else None,
+            contact_email=client.contact_email if client else None,
+            contact_phone=client.contact_phone if client else None,
+            start_date=contract.start_date.isoformat() if contract and contract.start_date else None,
+            end_date=contract.end_date.isoformat() if contract and contract.end_date else None,
+            delivery_due_date=contract.delivery_due_at.date().isoformat() if contract and contract.delivery_due_at else None,
+            data_sensitivity=request.data_sensitivity or "UNKNOWN",
+        ),
         stages=[
             TaskStageDetailResponse(
                 stage_code=stage.stage_code,
@@ -1120,6 +1170,7 @@ async def get_member_management(db: AsyncSession) -> MemberManagementResponse:
             MemberResponse(
                 name=employee.name,
                 user_id=employee.employee_code,
+                email=employee.email,
                 role=role,
                 role_bg=role_bg,
                 role_color=role_color,

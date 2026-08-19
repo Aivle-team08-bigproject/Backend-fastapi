@@ -52,6 +52,7 @@ from app.domains.pipeline.schema import (
     SamplePreviewResponse,
     StageReviewRequest,
     StageReviewResponse,
+    AdminPipelineRecoveryResponse,
 )
 from app.domains.pipeline.failure import public_failure
 from app.domains.pipeline.plan_integrity import (
@@ -1063,6 +1064,7 @@ async def _reopen_from(
             StageRunStatus.COMPLETED.value,
             StageRunStatus.PENDING.value,
             StageRunStatus.FAILED.value,
+            StageRunStatus.RUNNING.value,
         }:
             stage.status = StageRunStatus.ROLLED_BACK.value
 
@@ -1083,6 +1085,47 @@ async def _reopen_from(
                 created_at=now,
             )
         )
+
+
+async def admin_recover_pipeline_run(
+    db: AsyncSession,
+    run_id: int,
+    admin: Employee,
+    mode: str,
+) -> AdminPipelineRecoveryResponse:
+    """관리자가 깨진 데모 실행을 처음 또는 요구사항 분석부터 재실행한다."""
+    run = await db.get(PipelineRun, run_id)
+    if run is None:
+        raise not_found("PIPELINE_RUN_NOT_FOUND", "파이프라인 실행을 찾을 수 없습니다.")
+    if mode not in {"RESTART", "REQUIREMENT_ANALYSIS"}:
+        raise DomainException(status.HTTP_422_UNPROCESSABLE_ENTITY, "INVALID_RECOVERY_MODE", "지원하지 않는 복구 방식입니다.")
+
+    target = StageName.REQUIREMENT_ANALYSIS if mode in {"RESTART", "REQUIREMENT_ANALYSIS"} else StageName.DATA_SELECTION
+    now = utcnow()
+    await _reopen_from(db, run, target, now)
+    run.status = PipelineRunStatus.QUEUED.value
+    run.current_stage = target.value
+    run.progress_percent = 0
+    run.rollback_to_stage = target.value
+    run.error_message = None
+    run.completed_at = None
+    run.updated_at = now
+    db.add(PipelineEvent(
+        pipeline_run_id=run.id,
+        event_type=EventType.PROGRESS.value,
+        severity="WARN",
+        message=("관리자가 작업을 처음부터 다시 실행했습니다." if mode == "RESTART" else "관리자가 요구사항 분석부터 다시 실행했습니다."),
+        payload={"admin_recovery": True, "mode": mode, "admin_employee_code": admin.employee_code},
+        occurred_at=now,
+    ))
+    execution_id = await _redispatch(db, run, now)
+    return AdminPipelineRecoveryResponse(
+        run_id=run.id,
+        mode=mode,
+        run_status=PipelineRunStatus.QUEUED,
+        next_stage=target.value,
+        execution_id=execution_id,
+    )
 
 
 async def _redispatch(db: AsyncSession, run: PipelineRun, now) -> str:

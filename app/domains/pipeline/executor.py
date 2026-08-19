@@ -306,6 +306,25 @@ async def _run_stage(stage_id: int, execution_id: str) -> dict:
                 if failure_code == FailureCode.AGENT_RUNTIME_UNAVAILABLE.value
                 else rollback_target(failure_code)
             )
+            # 최종 상태 이벤트는 체크리스트용이라 로그 패널에 표시되지 않는다.
+            # 같은 실패를 운영자가 추적할 수 있도록 명시적인 ERROR 관찰 로그도
+            # 상태 확정 전에 별도로 영속화한다.
+            try:
+                await _record_agent_log_isolated(
+                    run_id=run_id,
+                    execution_id=execution_id,
+                    message=f"{stage_name.value} 최종 실패: {outcome['error_message']}",
+                    level="ERROR",
+                    current_stage=stage_name.value,
+                    stage_run_id=stage_id,
+                    detail={
+                        "phase": "stage-finalization",
+                        "failure_code": failure_code,
+                        "error_message": outcome["error_message"],
+                    },
+                )
+            except Exception:  # noqa: BLE001 - 관찰 로그 장애가 상태 확정을 막지 않게 한다
+                logger.exception("Failed to record final failure log for run_id=%s", run_id)
             await record_status(
                 db,
                 run_id=run_id,

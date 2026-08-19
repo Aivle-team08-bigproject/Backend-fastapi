@@ -12,6 +12,10 @@ from app.domains.pipeline.selection_steps import (
     selection_step_message,
     selection_step_progress,
 )
+from agent_runtime.data_selection.agent import (
+    _normalize_filter_columns,
+    _normalize_privacy_selection,
+)
 
 
 NOW = datetime.now(timezone.utc)
@@ -86,3 +90,50 @@ def test_snapshot_rejects_missing_step_and_invalid_status_fields():
 
     with pytest.raises(ValidationError, match="requires error_message"):
         SelectionStepSnapshot(status=SelectionStepStatus.FAILED)
+
+
+def test_privacy_normalizer_removes_identifiers_and_filters_from_high_risk_combo():
+    result = {
+        "source_columns": [
+            {"column": "gender"},
+            {"column": "age_band"},
+            {"column": "transaction_datetime"},
+        ],
+        "selection_query": {
+            "filters": {
+                "transaction_datetime": {
+                    "operator": "gte",
+                    "value": "2026-08-01T00:00:00+09:00",
+                }
+            }
+        },
+        "interpretations": [],
+    }
+
+    _normalize_privacy_selection(result)
+
+    assert [item["column"] for item in result["source_columns"]] == [
+        "gender",
+        "age_band",
+    ]
+    assert result["selection_query"]["filters"] == {}
+    assert result["interpretations"][0]["term"] == "transaction_datetime"
+    assert result["interpretations"][0]["requires_confirmation"] is True
+
+
+def test_filter_normalizer_adds_missing_source_column_from_metadata():
+    result = {
+        "selected_tables": [{"table": "anon_transactions"}],
+        "source_columns": [{"dataset": "anon_transactions", "column": "gender"}],
+        "selection_query": {"filters": {"mcc_code": {"operator": "eq", "value": 5411}}},
+    }
+    metadata = [{
+        "dataset": "anon_transactions",
+        "columns": [
+            {"name": "mcc_code", "data_type": "integer", "comment": "업종 코드"},
+        ],
+    }]
+
+    _normalize_filter_columns(result, metadata)
+
+    assert {item["column"] for item in result["source_columns"]} == {"gender", "mcc_code"}

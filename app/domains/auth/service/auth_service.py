@@ -162,6 +162,73 @@ async def login(
     )
 
 
+async def review_auto_login(
+    db: AsyncSession,
+    ip_address: str | None,
+    user_agent: str | None,
+) -> LoginResult:
+    """심사 기간에만 활성화되는 서버 측 자동 로그인.
+
+    비밀번호는 클라이언트로 전달하거나 번들에 포함하지 않는다. 런타임 Secret에서
+    활성화·대상 이메일·종료 시각을 모두 설정했을 때만 동작한다.
+    """
+    expires_at = settings.review_auto_login_expires_at
+    email = settings.review_auto_login_email
+    if (
+        not settings.review_auto_login_enabled
+        or not email
+        or expires_at is None
+        or as_utc(expires_at) <= utcnow()
+    ):
+        raise not_found("REVIEW_AUTO_LOGIN_DISABLED", "심사용 자동 로그인이 활성화되지 않았습니다.")
+
+    result = await db.execute(
+        select(Employee)
+        .options(selectinload(Employee.permissions))
+        .where(Employee.email == email.lower())
+    )
+    employee = result.scalar_one_or_none()
+    if employee is None or employee.status != EmployeeStatus.ACTIVE:
+        raise forbidden("REVIEW_AUTO_LOGIN_ACCOUNT_UNAVAILABLE", "심사용 자동 로그인 계정을 사용할 수 없습니다.")
+
+    now = utcnow()
+    employee.failed_login_count = 0
+    employee.locked_until = None
+    employee.last_login_at = now
+    employee.updated_at = now
+    await _enforce_concurrent_session_limit(db, employee.id, now)
+
+    raw_refresh_token = security.generate_raw_refresh_token()
+    session = LoginSession(
+        id=uuid.uuid4(),
+        employee_id=employee.id,
+        refresh_token_hash=security.hash_refresh_token(raw_refresh_token),
+        remember_me=True,
+        ip_address=ip_address,
+        user_agent=(user_agent or "")[:500] or None,
+        created_at=now,
+        last_seen_at=now,
+        expires_at=now + _absolute_ttl(True),
+    )
+    db.add(session)
+    await db.flush()
+    access_token, access_token_expires_at = security.create_access_token(
+        employee_code=employee.employee_code,
+        session_id=session.id,
+        auth_version=employee.auth_version,
+        name=employee.name,
+        department=employee.department.name if employee.department else None,
+    )
+    await db.commit()
+    return LoginResult(
+        employee=employee,
+        session=session,
+        raw_refresh_token=raw_refresh_token,
+        access_token=access_token,
+        access_token_expires_at=access_token_expires_at,
+    )
+
+
 async def refresh(
     db: AsyncSession,
     raw_refresh_token: str | None,
